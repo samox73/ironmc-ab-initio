@@ -157,9 +157,15 @@ pub struct GammaModel {
     pub cbm_energy_ev: f64,
     /// R_p vectors of the el-ph grid (for the per-q phonon Fourier).
     pub irvec_g: Vec<[i64; 3]>,
-    /// `gbar[rp][cart-mode]`: electron legs already collapsed onto the CBM and
-    /// both WS degeneracies folded in. Short-range only (long-range = item 7).
-    pub gbar: Vec<Vec<Cf>>,
+    /// CBM eigenvector at Γ (the ket electron leg, `u[orb]`).
+    pub u_cbm: Vec<Cf>,
+    /// `gbar_open[rp][bra_orb][cart]`: the **ket** leg collapsed onto the Γ CBM
+    /// and both WS degeneracies folded in, but the **bra** electron leg left
+    /// open. Short-range only (long-range = [`crate::longrange`]). Collapsing
+    /// the bra with `u_cbm` too gives the reduced Γ-vertex ([`Self::g_cart`]);
+    /// collapsing it with the CBM at k+q gives the exact vertex
+    /// ([`Self::g_cart_exact`]) — needed only to validate the round-trip.
+    pub gbar_open: Vec<Vec<Vec<Cf>>>,
 }
 
 impl GammaModel {
@@ -168,48 +174,88 @@ impl GammaModel {
         let nmodes = epw.nmodes;
         let (evals, evecs) = interpolate_h(epw, wig, [0.0; 3]);
         let cbm = 0; // ascending → lowest = CBM
-        let u = &evecs[cbm]; // u[orb]
+        let u = evecs[cbm].clone(); // u[orb]
 
-        // gbar[rp][a] = Σ_{re,n,m} conj(u_n) g(re,rp,a,n,m) u_m
-        //              / ( ndegen_k(re,n,m) · ndegen_g(rp,0,a/3) )
+        // gbar_open[rp][n][a] = Σ_{re,m} g(re,rp,a,n,m) u_m
+        //                       / ( ndegen_k(re,n,m) · ndegen_g(rp,0,a/3) )
+        // ket leg collapsed on the Γ CBM; bra leg n left open.
         // ndegen_g is iw-independent for LiF (all WFs co-centered on Li), so we
-        // index its electron slot at 0 after the CBM rotation.
+        // index its electron slot at 0 after the ket rotation.
         // ponytail: iw=0 slot is LiF-specific; a multi-centre material would
         //   apply ndegen_g before rotating the electron legs.
-        let mut gbar = vec![vec![C0; nmodes]; wig.g.nr()];
+        let mut gbar_open = vec![vec![vec![C0; nmodes]; nbnd]; wig.g.nr()];
         for rp in 0..wig.g.nr() {
             for a in 0..nmodes {
                 let dg = wig.g.ndegen(rp, 0, a / 3);
                 if dg <= 0 {
                     continue;
                 }
-                let mut acc = C0;
-                for re in 0..epw.nrr_k {
-                    for n in 0..nbnd {
+                for n in 0..nbnd {
+                    let mut acc = C0;
+                    for re in 0..epw.nrr_k {
                         for m in 0..nbnd {
                             let dk = wig.k.ndegen(re, n, m);
                             if dk > 0 {
-                                acc += u[n].conj() * epmat.g(re, rp, a, n, m) * u[m] / dk as f64;
+                                acc += epmat.g(re, rp, a, n, m) * u[m] / dk as f64;
                             }
                         }
                     }
+                    gbar_open[rp][n][a] = acc / dg as f64;
                 }
-                gbar[rp][a] = acc / dg as f64;
             }
         }
-        GammaModel { nmodes, cbm, cbm_energy_ev: evals[cbm], irvec_g: wig.g.irvec.clone(), gbar }
+        GammaModel {
+            nmodes,
+            cbm,
+            cbm_energy_ev: evals[cbm],
+            irvec_g: wig.g.irvec.clone(),
+            u_cbm: u,
+            gbar_open,
+        }
+    }
+
+    /// Fourier the open-bra tensor to fractional q: `Σ_{R_p} e^{i2π q·R_p}
+    /// gbar_open[R_p][n][a]` → `[bra_orb][cart]`.
+    fn g_open_at(&self, q: [f64; 3]) -> Vec<Vec<Cf>> {
+        let mut out = vec![vec![C0; self.nmodes]; self.u_cbm.len()];
+        for rp in 0..self.irvec_g.len() {
+            let f = phase(q, self.irvec_g[rp]);
+            for n in 0..self.u_cbm.len() {
+                for a in 0..self.nmodes {
+                    out[n][a] += f * self.gbar_open[rp][n][a];
+                }
+            }
+        }
+        out
+    }
+
+    /// Contract the open bra leg with `u_bra` → Cartesian coupling `[cart]` (Ry).
+    fn contract_bra(&self, open: &[Vec<Cf>], u_bra: &[Cf]) -> Vec<Cf> {
+        (0..self.nmodes)
+            .map(|a| (0..u_bra.len()).map(|n| u_bra[n].conj() * open[n][a]).sum())
+            .collect()
+    }
+
+    /// Reduced short-range coupling in the **Cartesian atomic-displacement
+    /// basis** (`imode = 3κ+α`), CBM band, in **Ry** — the frame in which EPW
+    /// subtracts the long-range part, so [`crate::longrange::g_long_cart`] adds
+    /// to this directly. Both electron legs use the Γ CBM (the reduced Γ-model).
+    pub fn g_cart(&self, q: [f64; 3]) -> Vec<Cf> {
+        let u = self.u_cbm.clone();
+        self.contract_bra(&self.g_open_at(q), &u)
+    }
+
+    /// Exact short-range coupling `g(Γ→Γ+q)`: ket = Γ CBM, **bra = CBM at k+q**
+    /// (`u_bra` from `interpolate_h(q)`). Resolves the electron-leg
+    /// k-dependence the reduced [`Self::g_cart`] drops — used to close the A2
+    /// round-trip against the coarse `.epb`. Cartesian basis, Ry.
+    pub fn g_cart_exact(&self, q: [f64; 3], u_bra: &[Cf]) -> Vec<Cf> {
+        self.contract_bra(&self.g_open_at(q), u_bra)
     }
 
     /// Short-range coupling per phonon branch at fractional q (eV), CBM band.
     pub fn g_branches(&self, q: [f64; 3], ph: &Phonons) -> Vec<Cf> {
-        // Cartesian-mode coupling: g_cart[a] = Σ_rp e^{i2π q·R_p} gbar[rp][a].
-        let mut g_cart = vec![C0; self.nmodes];
-        for rp in 0..self.irvec_g.len() {
-            let f = phase(q, self.irvec_g[rp]);
-            for a in 0..self.nmodes {
-                g_cart[a] += f * self.gbar[rp][a];
-            }
-        }
+        let g_cart = self.g_cart(q);
         // project onto branches with the polarization vectors.
         (0..self.nmodes)
             .map(|v| {
@@ -260,12 +306,14 @@ mod tests {
         // 1 branch, 2 R_p vectors, trivial polarization: exercises the per-q
         // phase, Fourier sum, branch projection and Ry→eV scale on known inputs.
         // (The full gbar build needs real epmatwp, which A0 shipped as NaN.)
+        // 1 band ⇒ u_cbm=[1], so gbar_open[rp][0][0] is the Cartesian coupling.
         let model = GammaModel {
             nmodes: 1,
             cbm: 0,
             cbm_energy_ev: 0.0,
             irvec_g: vec![[0, 0, 0], [1, 0, 0]],
-            gbar: vec![vec![Cf::new(2.0, 0.0)], vec![Cf::new(0.0, 1.0)]],
+            u_cbm: vec![Cf::new(1.0, 0.0)],
+            gbar_open: vec![vec![vec![Cf::new(2.0, 0.0)]], vec![vec![Cf::new(0.0, 1.0)]]],
         };
         let ph = Phonons { omega_thz: vec![5.0], evec: vec![vec![Cf::new(1.0, 0.0)]] };
         // q=1/4 ⇒ phase at R_p=(1,0,0) is e^{iπ/2}=i, so g_cart = 2 + i·i = 1.

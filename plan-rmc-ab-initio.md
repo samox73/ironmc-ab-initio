@@ -29,8 +29,12 @@ disentanglement windows retuned to the NC band edges (CBM=9.614 eV, p-triplet to
 The `gmap_sym` patch turned out **irrelevant** to the NaN — kept as a harmless latent-bug
 guard.
 
-Next: **A1 item 7** (longrange). Items 1–6 DONE + validated (all 8 rmc-ab-initio tests
-green). **Not yet committed** — commit the A1 crate + dataset before starting item 7.
+Next: **A1 item 8** (model output) + Phase B. Items 1–7 **and A2 DONE + validated**:
+the A2 round-trip closes to **machine precision** — at all 215 nonzero coarse q,
+`g_full(epb) = g_short(exact bra) + ⟨u_{Γ+q}|u_Γ⟩·g_L` to worst cos=1.000000,
+|ratio−1|=3e−7 (`tests/epb_lif.rs`). New modules `longrange` (item 7) + `epb` (A2 reader);
+`reconstruct` grew an open-bra tensor (`g_cart_exact`) so the round-trip resolves the
+electron-leg k-dependence the reduced Γ-vertex drops. **Not yet committed.**
 
 ---
 
@@ -123,31 +127,48 @@ interpolation) / `longrange` (polar term) / `model` (the reduced artifact + B-si
      `g_L ∝ (i·4πe²/Ω) Σ_G [(q+G)·Z*_κ·e_ν,κ / ((q+G)·ε∞·(q+G))] · e^{−i(q+G)·τ_κ}`
      with an Ewald Gaussian cutoff `e^{−(q+G)·ε∞·(q+G)/(4·α_Ew)}`. Total
      `g = g_short(epmatwp) + g_L`. Match EPW's convention exactly — this restores
-     LiF's dominant 1/q coupling. Validate hard in A2.
+     LiF's dominant 1/q coupling. Validate hard in A2. **DONE** — `src/longrange.rs`
+     ports `rgd_blk_epw` (3D dipole branch, `alph=1`, `gmax=14`, `e2=2`) in the
+     **Cartesian atom-displacement basis** (`imode=3κ+α`, Ry), band-diagonal in the
+     smooth basis (`[U_{k+q}U_k†]` deferred to the consumer — see A2). Returns the
+     pure dipole term Phase B consumes.
   8. **`model` output** (~easy): reduced `|g(Γ,q,ν)|²` on a q-grid + `ω_ν(q)` + `ε(Γ)`
      + α_LiF constants. Feed the Phase-B `Model` directly, or a small `serde` cache to
      avoid re-reading the 146 MB `epmatwp` each run.
 
-  **Status (2026-08-10): items 1–6 DONE + validated** against the real (finite,
-  norm-conserving) `datasets/LiF` files — all 8 `rmc-ab-initio` tests green: dims
+  **Status (2026-08-10): items 1–7 + A2 DONE + validated** against the real (finite,
+  norm-conserving) `datasets/LiF` files — all `rmc-ab-initio` tests green: dims
   `4/279/6/401/340`, Ef=0.0526, ε∞=2.044, Z*=±1.055; H(Γ) CBM=9.614 eV below the 3-fold
   p-manifold (24.380); D(Γ) acoustic sum rule + TO=11.954 THz; reduced `|g(Γ,q,LO)|²`
   finite from the real tensor. Item 5 used the nalgebra real-2n×2n embedding +
-  Gram-Schmidt (robust to LiF's degenerate p/TO manifolds). **Item 7 next, then 8.**
-  One commit per landed group (`feat:`), per AGENTS.md — the crate is not yet committed.
+  Gram-Schmidt (robust to LiF's degenerate p/TO manifolds). Item 7 + A2 land the
+  `longrange` + `epb` modules and an open-bra tensor in `reconstruct`
+  (`g_cart_exact`); the A2 round-trip is **exact to machine precision** (below).
+  **Item 8 next, then Phase B.** One commit per landed group (`feat:`), per AGENTS.md —
+  the crate is not yet committed.
 
-- **A2 — round-trip validation (now unblocked — coarse epb is finite).** Add a `.epb`
-  reader. Format **byte-verified** (patt126's mixed-record assumption is WRONG): a
-  **single Fortran record** (leading+trailing length marker; `scipy FortranFile.read_record`
-  reads it whole), layout `nqc(i4), xqc(3,nqc), et(20,nkc), dynq(6,6,nqc),
-  epmatq(15,15,6,nkc,nqc), zstar+epsi(27 reals)`. Note `et` has **20** bands (full nscf,
-  CBM=index 5) but `epmatq` **15**, of which only a 5×5 block is populated; k=Γ is the
-  pool-local k with minimal CBM eigenvalue. **Key leverage:** the epb is written *before*
-  EPW's long-range subtraction, so its g is the **FULL** coupling (short + long) — hence
-  `epb − short-range-reconstruction ≈ g_L`, a direct real-data target for item 7. Asserts:
-  (i) reconstructed short-range g matches `epb − g_L` at the coarse q; (ii)
-  `|g(Γ,q→0,LO)|²` shows the 1/q Fröhlich divergence. Proves readers + reconstruction +
-  longrange together before Phase B.
+- **A2 — round-trip validation. DONE + exact.** `src/epb.rs` reads one `.epb` pool file:
+  a **single Fortran record** (4-byte leading+trailing length markers), layout
+  `nqc(i4), xqc(3,nqc), et_loc(nbnd,nks), dynq(nm,nm,nqc), epmatq(nbndep,nbndep,nks,nm,nqc),
+  zstar+epsi(27 reals)`, all LE f64/c16 col-major. **Corrections to the earlier
+  byte-guess:** the mode axis of `epmatq` is `nks·nmodes` interior (not `nmodes,nkc`),
+  `et_loc` is the full `nbnd=20` band set, `nbndep=15` (bands 6–20), and CBM = **kept-band
+  local index 0** in `epmatq` (≠ `et` index 5). `nks` (pool-local k, 22 for epb1) is
+  recovered from the record length. epb1 holds Γ at pool-local `ik=0`; we keep the ~100 MB
+  `epmatq` as raw bytes and decode only the CBM slice on demand.
+  **Result:** the epb is the FULL coupling (short+long), so
+  `g_full = g_short(exact bra u_{Γ+q}) + ⟨u_{Γ+q}|u_Γ⟩·g_L` — the overlap
+  `⟨u_{Γ+q}|u_Γ⟩` is EPW's `[U_{k+q}U_k†]_{CBM}` rotating the smooth-basis `g_L` into the
+  epb's raw KS gauge. Over **all 215 nonzero coarse q** the round-trip closes to worst
+  cos=1.000000, |ratio−1|=3e−7 (gauge-invariant: epb KS states carry an arbitrary per-k
+  phase). Plus the Fröhlich **1/q** signature: `‖g_L‖` grows toward Γ. Proves readers +
+  reconstruction + longrange together (`tests/epb_lif.rs`).
+
+  **Note for Phase B:** the *reduced* Γ-vertex (both legs `u_Γ`, `⟨u|u⟩=1`) does **not**
+  close the round-trip — it overshoots ‖·‖ by ~9% at the nearest shell because it can't
+  resolve the CBM's k-dependent character (‖overlap‖ falls from 0.94 at the first shell to
+  0 at the zone boundary). The exact bra + overlap is validation-only; whether Phase B needs
+  it (vs the q-only reduced vertex) is a B2/B4 accuracy call.
 
 ## Phase B — `rmc-ab-initio` crate in ironmc (Rust) [new, additive]
 

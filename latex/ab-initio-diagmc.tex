@@ -99,7 +99,10 @@ and energies are reported back in meV via $\hbar\omega_{\mathrm{LO}}$.
     $1/q$ divergence that dominates the LiF polaron. \textsc{epw} was run with
     \texttt{lpolar=.true.}, which \emph{subtracts} the long-range part before
     Wannierization, so $\gshort$ from the tensor is short-ranged and $\glong$ must be
-    added back analytically (Section~\ref{sec:overview}, Eq.~\eqref{eq:longrange}).
+    added back analytically (Eq.~\eqref{eq:longrange}). \emph{Done:} implemented as a
+    from-scratch port of \textsc{epw}'s \texttt{rgd\_blk\_epw} (Ewald parameters
+    $\Lambda_{\mathrm{Ew}}=1$, $g_{\max}=14$, $e^{2}=2$~Ry) and validated to machine
+    precision against the coarse Bloch \texttt{.epb} (Section~\ref{sec:pitfalls}, P6).
 
   \item[G4 --- Clean Rust reader.] Implement the \textsc{epw}-file readers and the Wannier
     reconstruction from scratch in Rust, with no Python at runtime. The existing Python
@@ -115,21 +118,28 @@ and energies are reported back in meV via $\hbar\omega_{\mathrm{LO}}$.
 \end{description}
 
 \noindent
-The long-range term used for G3 (Verdi--Giustino form, at the $\Gamma$ slice) is
+The long-range term used for G3 (Verdi--Giustino form) is
 \begin{equation}
-  \glong_{\nu}(\qv) \;=\;
-  i\,\frac{4\pi e^{2}}{\Omega}\sum_{\kappa}\sum_{\Gv\neq-\qv}
+  \glong_{mn\nu}(\kv,\qv) \;=\;
+  i\,\frac{4\pi e^{2}}{\Omega}\sum_{\kappa}
   \left(\frac{\hbar}{2M_{\kappa}\omega_{\nu\qv}}\right)^{\!1/2}
+  \sum_{\Gv\neq-\qv}
   \frac{(\qv+\Gv)\cdot\Zst_{\kappa}\cdot\mathbf{e}_{\kappa\nu}(\qv)}
        {(\qv+\Gv)\cdot\epsinf\cdot(\qv+\Gv)}\,
   e^{-i(\qv+\Gv)\cdot\bm{\tau}_{\kappa}}\,
-  e^{-\frac{(\qv+\Gv)\cdot\epsinf\cdot(\qv+\Gv)}{4\Lambda}},
+  e^{-\frac{(\qv+\Gv)\cdot\epsinf\cdot(\qv+\Gv)}{4\Lambda}}
+  \bigl[U_{\kv+\qv}U_{\kv}^{\dagger}\bigr]_{mn},
   \label{eq:longrange}
 \end{equation}
 with $\Omega$ the cell volume, $M_{\kappa},\bm{\tau}_{\kappa}$ the atomic masses and
 positions, $\mathbf{e}_{\kappa\nu}$ the phonon eigenvectors, and $\Lambda$ an Ewald
-range-separation parameter. As $q\to0$ this behaves as $1/q$, reproducing the Fr\"ohlich
-tail $|g_{F}(\qv)|^{2}\propto\alpha/q^{2}$.
+range-separation parameter. The final factor $[U_{\kv+\qv}U_{\kv}^{\dagger}]_{mn}$ is the
+electron-band rotation into the smooth (Wannier) gauge; at the $\Gamma$-slice ($\kv=\Gamma$,
+single conduction band) it reduces to the conduction-band Bloch overlap
+$\langle u_{\Gamma+\qv}|u_{\Gamma}\rangle$. Restoring it is essential to the exact
+short/long decomposition of Eq.~\eqref{eq:split}; see Section~\ref{sec:pitfalls}, P6. As
+$q\to0$ the term behaves as $1/q$, reproducing the Fr\"ohlich tail
+$|g_{F}(\qv)|^{2}\propto\alpha/q^{2}$.
 
 \section{Non-goals (deliberate scope of the first prototype)}
 \label{sec:nongoals}
@@ -277,8 +287,15 @@ rediscovered; the blow-by-blow diagnosis, with reproducing commands, lives in
     $5\times5$ block is populated); a na\"ive parse silently mis-aligns and yields a
     \emph{false positive} --- a ``the coarse data looks fine'' reading that briefly sent the
     debugging down a wrong path.
-    \emph{Fix:} the true record layout was reverse-engineered and byte-verified, and the
-    Rust reader uses it directly.
+    \emph{Fix:} the true record layout was reverse-engineered and byte-verified --- a
+    \emph{single} unformatted Fortran record (4-byte length markers)
+    $[\,n_{qc},\,\mathbf{x}_{qc}(3,n_{qc}),\,\varepsilon(20,n_{k}),\,D(6,6,n_{qc}),\,
+    g(15,15,n_{k},6,n_{qc}),\,\Zst,\epsinf\,]$, all little-endian and column-major, one file
+    per pool with the pool-local $n_{k}$ recovered from the record length. Two indexing
+    traps: the coupling's mode axis sits \emph{interior} (stride $n_{k}\!\cdot\!6$, not
+    $6\!\cdot\!n_{k}$), and the conduction-band minimum is kept-band local index $0$ in the
+    coupling array but eigenvalue index $5$ in $\varepsilon$. The Rust reader uses this
+    directly and decodes only the needed conduction-band slice on demand.
 
   \item[P5 --- \textsc{epw} coarse-grid prerequisites (reproducibility).]
     Several setup constraints are load-bearing and non-obvious: the \texttt{nscf}
@@ -291,6 +308,36 @@ rediscovered; the blow-by-blow diagnosis, with reproducing commands, lives in
     \texttt{dis\_win\_max}) must be re-tuned against the new \texttt{nscf} eigenvalues ---
     otherwise the frozen conduction-band minimum, which must stay exact, can slip out of its
     window.
+
+  \item[P6 --- The polar term lives in the Cartesian displacement basis, and carries an
+    electron-band rotation.]
+    Two subtleties in Eq.~\eqref{eq:longrange} decide whether the split
+    $g=\gshort+\glong$ of Eq.~\eqref{eq:split} actually closes, and both were found by
+    round-tripping against the coarse \texttt{.epb} (which stores the \emph{full},
+    pre-subtraction coupling).
+    \emph{(i)~Basis.} \textsc{epw} subtracts $\glong$ from the coupling in the
+    \emph{Cartesian atomic-displacement} basis ($\kappa\alpha$, i.e.\ per atom and Cartesian
+    direction), \emph{before} the phonon-eigenvector projection $\mathbf{e}_{\kappa\nu}(\qv)$
+    and the $(\hbar/2M_{\kappa}\omega)^{1/2}$ mode factor. So the reconstructed short-range
+    part and the re-added $\glong$ must both be formed in that basis and summed there;
+    projecting onto branches first is inconsistent. The mode factor and eigenvector
+    projection are applied afterwards by the consumer.
+    \emph{(ii)~Gauge.} The band-rotation factor $[U_{\kv+\qv}U_{\kv}^{\dagger}]_{mn}$ --- at
+    the $\Gamma$-slice the conduction-band Bloch overlap
+    $\langle u_{\Gamma+\qv}|u_{\Gamma}\rangle$ --- is easy to drop under the ``vertex depends
+    on $\qv$ only'' reduction (both electron legs rotated with $U_{\Gamma}$, overlap
+    $\equiv1$). Dropping it puts the polar term in the wrong electron gauge: near $\Gamma$
+    the reduced sum still overshoots $\lVert g\rVert$ by $\sim\!9\%$, and the overlap itself
+    falls from $\approx0.94$ at the first coarse shell to $0$ at the zone boundary as the
+    conduction-band character changes with $\kv$. Restoring the exact bra ($u_{\Gamma+\qv}$)
+    and the overlap makes the decomposition exact.
+    \emph{Result:} against all $215$ non-zero coarse $\qv$,
+    $g_{\mathrm{full}}=\gshort+\langle u_{\Gamma+\qv}|u_{\Gamma}\rangle\,\glong$ to machine
+    precision --- gauge-invariant cosine $=1.000000$ and $|\text{ratio}-1|\sim3\times10^{-7}$
+    (the \texttt{.epb} Kohn--Sham states carry an arbitrary per-$\kv$ phase, so the check is
+    on direction and magnitude, not the raw complex difference). The reduced $\qv$-only
+    vertex remains the object the sampler consumes; the exact bra $+$ overlap is used only to
+    prove the reconstruction and the polar term against real data.
 \end{description}
 
 \end{document}
