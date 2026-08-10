@@ -1,0 +1,15 @@
+LiF phonons on a 6x6x6 coarse q-grid (dvscf for EPW)
+&inputph
+    prefix   = 'LiF'
+    outdir   = './out'
+    fildyn   = 'LiF.dyn'
+    fildvscf = 'dvscf'
+    ldisp    = .true.
+    nq1      = 6
+    nq2      = 6
+    nq3      = 6
+    epsil    = .true.        ! dielectric tensor + Born charges -> LiF LO-TO / EPW lpolar
+    tr2_ph   = 1.0d-16
+    amass(1) = 6.941
+    amass(2) = 18.998
+/

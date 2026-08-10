@@ -1,0 +1,31 @@
+&control
+    calculation   = 'scf'
+    prefix        = 'LiF'
+    restart_mode  = 'from_scratch'
+    pseudo_dir    = '/home/samox/studies/phd/datasets/pseudo-dojo/nc-sr-pbe-standard/'
+    outdir        = './out'
+    verbosity     = 'high'
+    tprnfor       = .true.
+    tstress       = .true.
+/
+&system
+    ibrav       = 2
+    celldm(1)   = 7.67420569894     ! bohr (~4.07 Ang, PBE). Update from vc-relax (relax.in).
+    nat         = 2
+    ntyp        = 2
+    ecutwfc     = 96.0      ! Pseudo Dojo NC-SR-PBE 'high' hint (F-limited: 96 Ry; Li 82)
+    ecutrho     = 384.0     ! NC pseudos: 4 x ecutwfc
+    occupations = 'fixed'     ! LiF is a wide-gap insulator: no smearing
+/
+&electrons
+    conv_thr    = 1.0d-12
+    mixing_beta = 0.7
+/
+ATOMIC_SPECIES
+Li   6.941    Li.upf
+F   18.998    F.upf
+ATOMIC_POSITIONS crystal
+Li   0.00  0.00  0.00
+F    0.50  0.50  0.50
+K_POINTS automatic
+8 8 8 0 0 0

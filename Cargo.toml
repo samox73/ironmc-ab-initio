@@ -9,6 +9,7 @@ members = [
     "crates/rmc",
     # apps (physics/benchmark applications, used for perf regression testing, see README)
     "crates/apps/cube-spike",
+    "crates/apps/rmc-ab-initio",
     "crates/apps/rmc-frohlich",
     "crates/apps/rmc-minimal",
 ]

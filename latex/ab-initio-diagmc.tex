@@ -1,0 +1,296 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\kv}{\mathbf{k}}
+\newcommand{\qv}{\mathbf{q}}
+\newcommand{\Gv}{\mathbf{G}}
+\newcommand{\Rv}{\mathbf{R}}
+\newcommand{\Zst}{\mathbf{Z}^{*}}
+\newcommand{\epsinf}{\bm{\varepsilon}_{\infty}}
+\newcommand{\gshort}{g^{\mathcal{S}}}
+\newcommand{\glong}{g^{\mathcal{L}}}
+
+\title{An \emph{ab-initio} Diagrammatic Monte Carlo prototype\\
+       for the LiF electron polaron}
+\author{Samuel Recker}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note fixes the \textbf{goals}, deliberate \textbf{non-goals}, and
+\textbf{deferred} extensions of the \texttt{rmc-ab-initio} project: a diagrammatic
+Monte Carlo (DiagMC) prototype, built on the \texttt{ironmc} engine, that replaces the
+analytic Fr\"ohlich electron--phonon vertex $|g(\qv)|^{2}\propto\alpha/q^{2}$ with the
+\emph{real} electron--phonon matrix elements $g(\kv,\qv,\nu)$ obtained from
+density-functional perturbation theory and Wannier interpolation (Quantum \textsc{espresso}
+$+$ \textsc{epw}). The first validation material is the electron polaron in LiF, a
+wide-gap ionic insulator that sits close to the textbook Fr\"ohlich limit and therefore
+provides a built-in analytic cross-check. The scope below is the \emph{first} prototype;
+Section~\ref{sec:deferred} records what is intentionally postponed.
+\end{abstract}
+
+\section{Overview}
+\label{sec:overview}
+
+\texttt{ironmc} is a Rust DiagMC engine that samples the imaginary-time self-energy
+expansion of a polaron. Its only physics application today is the \emph{analytic}
+Fr\"ohlich model, whose vertex and dispersions are closed-form scalars. This project adds
+a second, \emph{ab-initio} model: the same sampler, but with a material-specific
+electron--phonon (e--ph) vertex read from a real DFT/DFPT + Wannier calculation.
+
+The data pipeline is
+\[
+  \underbrace{\text{pw.x},\ \text{ph.x}}_{\text{Quantum \textsc{espresso}}}
+  \;\longrightarrow\;
+  \underbrace{\text{epw.x}}_{\text{Wannier e--ph tensors}}
+  \;\longrightarrow\;
+  \underbrace{\text{Rust reader + reconstruction}}_{\texttt{crates/apps/rmc-ab-initio}}
+  \;\longrightarrow\;
+  \text{DiagMC}.
+\]
+DFPT supplies the phonons, the Born effective charges $\Zst_{\kappa}$, and the electronic
+dielectric tensor $\epsinf$; \textsc{epw} supplies the e--ph coupling in the localized
+Wannier representation $g(\Rv_{e},\Rv_{p})$, from which $g(\kv,\qv,\nu)$ is recovered by an
+inverse Fourier transform.
+
+\paragraph{Why LiF.}
+Rocksalt LiF has a single, non-degenerate conduction-band minimum at $\Gamma$, one
+dominant longitudinal-optical (LO) branch, and an intermediate-to-strong Fr\"ohlich
+coupling $\alpha\approx5$. It is therefore the cleanest first material: nearly the
+textbook Fr\"ohlich case, with a genuine analytic limit to validate against.
+
+\paragraph{Units.}
+We work in Fr\"ohlich units $\hbar=m^{*}=\omega_{\mathrm{LO}}=1$. In these units the
+parabolic electron dispersion is exactly $p^{2}/2$ and the Einstein LO phonon is exactly
+$1$, so the \emph{only} material-specific quantity in the parabolic prototype is the
+vertex $|g(\qv)|^{2}$. The Fr\"ohlich coupling is
+\begin{equation}
+  \alpha \;=\; \frac{e^{2}}{\hbar}\,
+  \sqrt{\frac{m^{*}}{2\hbar\omega_{\mathrm{LO}}}}\,
+  \left(\frac{1}{\varepsilon_{\infty}}-\frac{1}{\varepsilon_{0}}\right),
+  \label{eq:alpha}
+\end{equation}
+and energies are reported back in meV via $\hbar\omega_{\mathrm{LO}}$.
+
+\section{Goals}
+\label{sec:goals}
+
+\begin{description}
+  \item[G1 --- Real vertex.] Drive the DiagMC sampler with the \emph{ab-initio} e--ph
+    vertex in place of the analytic one. The vertex is decomposed as
+    \begin{equation}
+      g_{mn\nu}(\kv,\qv) \;=\; \gshort_{mn\nu}(\kv,\qv)\;+\;\glong_{mn\nu}(\kv,\qv),
+      \label{eq:split}
+    \end{equation}
+    the short-range (Wannier-interpolated) part plus the long-range polar part.
+
+  \item[G2 --- Engine untouched.] Reuse the state-generic \texttt{ironmc} engine
+    (\texttt{Runner}, \texttt{Update}, \texttt{MetropolisKernel}) \emph{bit-for-bit}. In
+    Fr\"ohlich units the mass and phonon-energy constants never change, so the ab-initio
+    model enters through a single vertex-weight seam rather than an engine rewrite.
+
+  \item[G3 --- Correct polar long range.] Restore the long-range Fr\"ohlich
+    $1/q$ divergence that dominates the LiF polaron. \textsc{epw} was run with
+    \texttt{lpolar=.true.}, which \emph{subtracts} the long-range part before
+    Wannierization, so $\gshort$ from the tensor is short-ranged and $\glong$ must be
+    added back analytically (Section~\ref{sec:overview}, Eq.~\eqref{eq:longrange}).
+
+  \item[G4 --- Clean Rust reader.] Implement the \textsc{epw}-file readers and the Wannier
+    reconstruction from scratch in Rust, with no Python at runtime. The existing Python
+    post-processor (\texttt{patt126-ab-initio-diagmc}) is used as a \emph{reference only},
+    not copied; the rewrite also fixes a latent index assumption in the reference.
+
+  \item[G5 --- Two-front validation.] Benchmark the LiF electron polaron against
+    \emph{both}
+    (i) Fr\"ohlich-limit DiagMC energetics at $\alpha_{\mathrm{LiF}}$
+        (Mishchenko \emph{et al.}, 2000), and
+    (ii) \emph{ab-initio} LiF polaron numbers
+        (Sio, Verdi, Ponc\'e, Giustino, 2019).
+\end{description}
+
+\noindent
+The long-range term used for G3 (Verdi--Giustino form, at the $\Gamma$ slice) is
+\begin{equation}
+  \glong_{\nu}(\qv) \;=\;
+  i\,\frac{4\pi e^{2}}{\Omega}\sum_{\kappa}\sum_{\Gv\neq-\qv}
+  \left(\frac{\hbar}{2M_{\kappa}\omega_{\nu\qv}}\right)^{\!1/2}
+  \frac{(\qv+\Gv)\cdot\Zst_{\kappa}\cdot\mathbf{e}_{\kappa\nu}(\qv)}
+       {(\qv+\Gv)\cdot\epsinf\cdot(\qv+\Gv)}\,
+  e^{-i(\qv+\Gv)\cdot\bm{\tau}_{\kappa}}\,
+  e^{-\frac{(\qv+\Gv)\cdot\epsinf\cdot(\qv+\Gv)}{4\Lambda}},
+  \label{eq:longrange}
+\end{equation}
+with $\Omega$ the cell volume, $M_{\kappa},\bm{\tau}_{\kappa}$ the atomic masses and
+positions, $\mathbf{e}_{\kappa\nu}$ the phonon eigenvectors, and $\Lambda$ an Ewald
+range-separation parameter. As $q\to0$ this behaves as $1/q$, reproducing the Fr\"ohlich
+tail $|g_{F}(\qv)|^{2}\propto\alpha/q^{2}$.
+
+\section{Non-goals (deliberate scope of the first prototype)}
+\label{sec:nongoals}
+
+These are conscious simplifications, chosen so the prototype is small, exact where it
+matters, and cheaply validated. Each is lifted in Section~\ref{sec:deferred}.
+
+\begin{description}
+  \item[N1 --- Electron polaron only.] The single, non-degenerate conduction-band minimum
+    at $\Gamma$. The hole/valence polaron (degenerate top valence band) is out of scope.
+
+  \item[N2 --- $\Gamma$-slice vertex.] We approximate $g(\kv,\qv)\approx g(\Gamma,\qv)$,
+    i.e.\ the vertex depends on the phonon momentum $\qv$ only, evaluated as if the
+    electron sits at the band bottom. True electron-momentum dependence is a non-goal
+    here.
+
+  \item[N3 --- One Einstein LO branch.] Keep only the Fr\"ohlich-active LO branch and
+    treat it as dispersionless at $\omega_{\mathrm{LO}}$. The remaining branches and the
+    dispersion $\omega_{\mathrm{LO}}(\qv)$ are not modeled.
+
+  \item[N4 --- No tensor compression.] The reduced object the sampler needs is the scalar
+    field $|g(\Gamma,\qv,\mathrm{LO})|^{2}$, which is small on any grid. It is precomputed
+    once and interpolated; \emph{no} SVD/Tucker low-rank compression is used. (Fixing
+    $\kv=\Gamma$ is itself an exact, lossless dimensional reduction that supersedes
+    lossy compression in this regime.)
+
+  \item[N5 --- Reweighting, not native sampling.] The ab-initio vertex is introduced by
+    reweighting the existing analytic Fr\"ohlich importance-sampling envelope, not by a
+    native $|g_{\text{ab}}(\qv)|^{2}$ momentum sampler.
+
+  \item[N6 --- No engine parameterization.] The engine's mass/phonon-energy constants stay
+    fixed at unity (Fr\"ohlich units); no \texttt{MASS}/\texttt{OMEGA} genericization is
+    introduced for the parabolic prototype.
+
+  \item[N7 --- No GPU path.] The ab-initio model targets the CPU driver only; the GPU
+    (\texttt{\#[cube]}) mirror is not extended to it.
+
+  \item[N8 --- Single material.] LiF is the sole validation target; this is not yet a
+    general multi-material framework.
+\end{description}
+
+\section{Deferred to future work}
+\label{sec:deferred}
+
+Listed roughly in the order they would be relaxed. None of these require reworking the
+Phase-A readers or reconstruction; they extend the same pipeline.
+
+\begin{description}
+  \item[D1 --- Full $g(\kv,\qv)$ $\kv$-dependence.] Relaxing the $\Gamma$-slice (N2) turns
+    the vertex into a function on the six-dimensional $(\kv,\qv)$ space, which cannot be
+    precomputed onto a grid. This is exactly the regime where \textbf{SVD/Tucker
+    compression + on-the-fly evaluation} of the Wannier tensor becomes necessary
+    (reversing N4). Relevant at strong coupling, where the electron explores momenta away
+    from $\Gamma$.
+
+  \item[D2 --- Multi-branch, dispersive phonons.] Include all phonon branches and the
+    momentum dependence $\omega_{\nu}(\qv)$, replacing the single Einstein LO branch (N3).
+
+  \item[D3 --- Non-parabolic electrons.] A non-parabolic $\varepsilon(\kv)$ requires
+    genericizing the engine's dispersion (the deferred \texttt{MASS}/\texttt{OMEGA}
+    parameterization and \texttt{Model}-trait seam), lifting N6.
+
+  \item[D4 --- Native $\qv$-sampler.] A momentum sampler drawn directly from
+    $|g_{\text{ab}}(\qv)|^{2}$, replacing the reweighting of N5 for sampling efficiency.
+
+  \item[D5 --- Hole polaron.] The degenerate valence-band-maximum polaron (lifting N1),
+    which needs a multi-band, degenerate treatment.
+
+  \item[D6 --- GPU path.] A \texttt{\#[cube]} GPU implementation of the ab-initio model
+    (lifting N7), guarded by the existing lockstep parity tests.
+
+  \item[D7 --- More materials.] Generalize beyond LiF once the LiF prototype is validated
+    (lifting N8).
+\end{description}
+
+\section{Validation ladder}
+\label{sec:validation}
+
+The goals of Section~\ref{sec:goals} are checked in three rungs of increasing physical
+content:
+\begin{enumerate}
+  \item \textbf{Refactor parity.} The Fr\"ohlich model, re-expressed through the new
+    ab-initio code path, reproduces the existing engine's $\alpha=1$ benchmark
+    ($E\approx-1.016$, $Z\approx0.59$).
+  \item \textbf{Fr\"ohlich-limit + unit bridge.} Fed the \emph{analytic}
+    $|g(\qv)|^{2}\propto\alpha_{\mathrm{LiF}}/q^{2}$, the ab-initio model must match the
+    pure Fr\"ohlich engine at $\alpha_{\mathrm{LiF}}$ against Mishchenko \emph{et al.}
+    (2000); and the \emph{real} tensor's $|g(\Gamma,\qv\!\to\!0,\mathrm{LO})|^{2}$ must
+    recover the same $1/q^{2}$ asymptote.
+  \item \textbf{Material comparison.} The real LiF vertex yields a polaron formation
+    energy and effective mass compared to Sio \emph{et al.} (2019).
+\end{enumerate}
+
+\section{Practical pitfalls and fixes (A0/A1)}
+\label{sec:pitfalls}
+
+Turning the \textsc{epw} run into a \emph{usable} vertex meant working through several
+failures whose symptoms were misleading. They are recorded here so they are not
+rediscovered; the blow-by-blow diagnosis, with reproducing commands, lives in
+\texttt{datasets/LiF/EPH-NAN-DIAGNOSIS.md}.
+
+\begin{description}
+  \item[P1 --- Ultrasoft pseudopotentials give an all-\texttt{NaN} e--ph tensor (root
+    cause).]
+    The first A0 deck used ultrasoft pseudopotentials (SSSP-efficiency GBRV). \textsc{epw}'s
+    electron--phonon matrix elements are only supported with \emph{norm-conserving}
+    pseudopotentials --- the ultrasoft augmentation charge is not carried into the coupling.
+    The coupling came out finite \emph{only} at $\qv=\Gamma$ (the trivial reference $q$,
+    which needs no symmetry rotation) and \texttt{NaN} at every other $\qv$; the
+    Bloch$\to$Wannier sum then spread the \texttt{NaN} to $100\%$ of \texttt{LiF.epmatwp}.
+    Because \texttt{ph.x} \emph{does} support ultrasoft, the phonons, dynamical matrix,
+    $\Zst_{\kappa}$ and $\epsinf$ were all correct --- only the e--ph coupling was wrong,
+    which is why the fault was easy to misattribute.
+    \emph{Fix:} switch Li and F to norm-conserving Pseudo Dojo ONCV (scalar-relativistic
+    PBE). This raises the required plane-wave cutoff
+    ($\texttt{ecutwfc}:50\!\to\!96$~Ry, $\texttt{ecutrho}:400\!\to\!384$~Ry, i.e.\ the
+    norm-conserving $4\times$), which makes \texttt{ph.x} $\sim\!3\text{--}4\times$ slower
+    (the wavefunctions move from the small smooth FFT grid onto the dense grid) --- an
+    unavoidable cost of the correct pseudopotential family. With norm-conserving pseudos the
+    tensor is finite at every $\qv$, and $\epsinf$, $\Zst_{\kappa}$ are essentially unchanged.
+
+  \item[P2 --- ``Right size, wrong values'': a silent failure.]
+    The broken run finished cleanly and wrote \texttt{LiF.epmatwp} at exactly the expected
+    byte size; the only hint was an easily-dismissed \texttt{IEEE\_INVALID} note at exit. The
+    file was $100\%$ uninitialised-memory \texttt{NaN} (a uniform garbage word that even
+    \emph{changed} between reruns). An earlier ``A0 done'' had been declared on file size
+    alone, without ever checking the tensor \emph{values}.
+    \emph{Fix:} the pipeline (\texttt{run\_pipeline.nu}) now runs an explicit finiteness
+    check on \texttt{LiF.epmatwp} and aborts loudly on \texttt{NaN}, so a broken run can no
+    longer masquerade as a good one.
+
+  \item[P3 --- Two dead ends from assuming an upstream bug.]
+    Before the pseudopotential cause was found, two ``\textsc{epw} bug'' hypotheses were
+    pursued and \emph{both failed}: (i)~widening the Wannier outer window
+    \texttt{dis\_win\_max} to enclose every band made the coarse tensor \emph{worse}, not
+    better; (ii)~a bounds-guard patch to \textsc{epw}'s \texttt{gmap\_sym} routine (a genuine
+    latent out-of-bounds read) compiled in cleanly yet left the output byte-identical --- so
+    that read was not the cause. The lesson, recorded explicitly: suspect the \emph{inputs}
+    (here, an unsupported pseudopotential family) before patching upstream code.
+
+  \item[P4 --- The reference \texttt{.epb} reader has the wrong record layout.]
+    The Python reference (\texttt{patt126}) reads the coarse Bloch \texttt{.epb} file
+    assuming a single band count throughout the record. The real record interleaves a
+    \emph{20-band} eigenvalue array with a \emph{15-band} coupling array (of which only a
+    $5\times5$ block is populated); a na\"ive parse silently mis-aligns and yields a
+    \emph{false positive} --- a ``the coarse data looks fine'' reading that briefly sent the
+    debugging down a wrong path.
+    \emph{Fix:} the true record layout was reverse-engineered and byte-verified, and the
+    Rust reader uses it directly.
+
+  \item[P5 --- \textsc{epw} coarse-grid prerequisites (reproducibility).]
+    Several setup constraints are load-bearing and non-obvious: the \texttt{nscf}
+    $k$-points must be an \emph{explicit} $\Gamma$-centred crystal list (an automatic,
+    half-shifted Monkhorst--Pack mesh breaks \textsc{epw}'s $\kv+\qv$ folding); the whole
+    \texttt{scf/ph/nscf/epw} chain must use \emph{one} Quantum \textsc{espresso} version (a
+    mixed-version \texttt{phsave} corrupts the heap); and \textsc{epw} needs a large stack
+    (\texttt{ulimit -s unlimited}). Finally, changing the pseudopotentials shifts the band
+    edges ($\sim\!0.15$~eV here), so the disentanglement windows (\texttt{dis\_froz\_max},
+    \texttt{dis\_win\_max}) must be re-tuned against the new \texttt{nscf} eigenvalues ---
+    otherwise the frozen conduction-band minimum, which must stay exact, can slip out of its
+    window.
+\end{description}
+
+\end{document}

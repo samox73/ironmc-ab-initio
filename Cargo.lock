@@ -2888,6 +2888,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmc-ab-initio"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "num-complex",
+]
+
+[[package]]
 name = "rmc-core"
 version = "0.1.0"
 dependencies = [

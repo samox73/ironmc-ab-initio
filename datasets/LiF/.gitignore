@@ -1,0 +1,18 @@
+# QE/EPW run artifacts (~1.4 GB: out/, save/, Wannier/EPW binaries, logs) are all
+# regenerable with `nu run_pipeline.nu` -- do NOT commit them. Allowlist strategy:
+# ignore everything, then re-include the authored sources + docs + scripts + the three
+# small files A1 parses (epwdata.fmt = dims/H/D/Born/eps; crystal.fmt = cell volume;
+# wigner.fmt = WS vectors + degeneracies). These three let the Rust readers + tests run
+# without regenerating the ~1.4 GB of EPW output.
+*
+!.gitignore
+!*.in
+!*.nu
+!*.md
+!*.patch
+!epwdata.fmt
+!crystal.fmt
+!wigner.fmt
+
+# ...but not the transient QE scratch input
+input_tmp.in

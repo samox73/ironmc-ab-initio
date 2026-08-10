@@ -1,0 +1,56 @@
+--
+&inputepw
+    prefix   = 'LiF'
+    outdir   = './out'
+
+    ! ---- write the coarse Wannier-representation tensors patt126 consumes ----
+    elph     = .true.
+    epwwrite = .true.        ! -> epwdata.fmt, LiF.epmatwp
+    epwread  = .false.
+    epbwrite = .true.        ! -> LiF.epb1 (coarse Bloch, read by LowRank_Analisys)
+    epbread  = .false.
+    etf_mem  = 1
+    use_ws   = .true.        ! Wigner-Seitz (matches patt126 tools.generate_R / wigner.f90)
+
+    ! ---- polar (Fröhlich) long-range: LiF is ionic, needs Born charges from ph.x ----
+    lpolar   = .true.
+
+    ! ---- Wannierization: the low conduction manifold (s + p), CBM frozen ----
+    !  From nscf (per-band min/max over 216 k): band6 9.463-15.278 (isolated CBM),
+    !  band7-9 15.460-24.218 form a p-like triplet (entangled with band10 above 20.5).
+    !  nbndsub=1 was exact in principle but localized badly (18 A^2) and tripped an
+    !  EPW coarse-unfolding bug. Instead take 4 WFs = 1 s (band6) + 3 p (band7-9) and
+    !  FREEZE band6 -> the CBM we actually sample is reproduced EXACTLY regardless of
+    !  how the p disentanglement lands. VALIDATE: LiF_band.dat lowest band vs bands.x.
+    wannierize   = .true.
+    nbndsub      = 4                          ! 1 s (band6) + 3 p (band7-9)
+    bands_skipped = 'exclude_bands = 1:5'     ! skip the 5 occupied valence bands
+    num_iter     = 500
+    dis_froz_min = 9.0      ! eV  in the gap: above VBM (0.715), below CBM min (9.614)
+    dis_froz_max = 15.49    ! eV  freeze band6 ONLY: mid-gap between band6 max (15.397)
+                            !     and band7 min (15.581)
+    dis_win_max  = 24.65    ! eV  spans the p-triplet (band7-9, top 24.380), stays below
+                            !     band11 min (24.875).  Band6 frozen => CBM exact.
+    ! Windows retuned 2026-08-10 for norm-conserving pseudos (bands ~+0.15 eV vs the old
+    ! ultrasoft deck). Ultrasoft was the e-ph-NaN cause; see EPH-NAN-DIAGNOSIS.md.
+    proj(1)      = 'Li:s'   ! band6 s-like CBM (frozen -> exact)
+    proj(2)      = 'Li:p'   ! band7-9 p-like triplet (disentangled)
+
+    wdata(1) = 'bands_plot = .true.'
+    wdata(2) = 'begin kpoint_path'
+    wdata(3) = 'L 0.5 0.5 0.5 G 0.0 0.0 0.0'
+    wdata(4) = 'G 0.0 0.0 0.0 X 0.5 0.0 0.5'
+    wdata(5) = 'end kpoint_path'
+    wdata(6) = 'bands_num_points = 40'
+
+    ! ---- dvscf/dyn gathered from ph.x by EPW's pp.py into ./save ----
+    dvscf_dir = './save'
+
+    ! ---- coarse grids: MUST match ph.x q-grid and nscf k-grid ----
+    nk1 = 6, nk2 = 6, nk3 = 6
+    nq1 = 6, nq2 = 6, nq3 = 6
+
+    ! ---- fine grids: only the coarse tensors are exported, so keep these small ----
+    nkf1 = 6, nkf2 = 6, nkf3 = 6
+    nqf1 = 6, nqf2 = 6, nqf3 = 6
+/
