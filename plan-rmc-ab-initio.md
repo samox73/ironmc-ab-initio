@@ -29,12 +29,16 @@ disentanglement windows retuned to the NC band edges (CBM=9.614 eV, p-triplet to
 The `gmap_sym` patch turned out **irrelevant** to the NaN — kept as a harmless latent-bug
 guard.
 
-Next: **A1 item 8** (model output) + Phase B. Items 1–7 **and A2 DONE + validated**:
-the A2 round-trip closes to **machine precision** — at all 215 nonzero coarse q,
+Next: **Phase B**. **A1 (items 1–8) + A2 all DONE + validated.** Highlights:
+the A2 e-ph round-trip closes to **machine precision** — at all 215 nonzero coarse q,
 `g_full(epb) = g_short(exact bra) + ⟨u_{Γ+q}|u_Γ⟩·g_L` to worst cos=1.000000,
-|ratio−1|=3e−7 (`tests/epb_lif.rs`). New modules `longrange` (item 7) + `epb` (A2 reader);
-`reconstruct` grew an open-bra tensor (`g_cart_exact`) so the round-trip resolves the
-electron-leg k-dependence the reduced Γ-vertex drops. **Not yet committed.**
+|ratio−1|=3e−7 (`tests/epb_lif.rs`). Item 8 uncovered a **second** long-range gap (like
+A2's overlap factor): EPW subtracts the polar dipole-dipole from the **dynamical matrix**
+too, so `interpolate_d` gives short-range phonons (ω_TO(Γ)=11.95 THz vs the physical
+8.12). Fixed by porting `rgd_blk` → `longrange::dyn_long_cart` +
+`reconstruct::interpolate_d_polar`, which reproduces the DFPT `dynq` **exactly** at the
+coarse q (all 6 branches, LO=18.45 THz). Modules now: `epw`/`reconstruct`/`longrange`
+(both `g_L` and `dyn_L`)/`epb`/`model`. **Not yet committed.**
 
 ---
 
@@ -132,20 +136,39 @@ interpolation) / `longrange` (polar term) / `model` (the reduced artifact + B-si
      **Cartesian atom-displacement basis** (`imode=3κ+α`, Ry), band-diagonal in the
      smooth basis (`[U_{k+q}U_k†]` deferred to the consumer — see A2). Returns the
      pure dipole term Phase B consumes.
-  8. **`model` output** (~easy): reduced `|g(Γ,q,ν)|²` on a q-grid + `ω_ν(q)` + `ε(Γ)`
-     + α_LiF constants. Feed the Phase-B `Model` directly, or a small `serde` cache to
-     avoid re-reading the 146 MB `epmatwp` each run.
+  8. **`model` output. DONE.** `src/model.rs::ReducedModel` (serde-cached, exact f64
+     round-trip via serde_json `float_roundtrip`): fractional q-grid + `|g(Γ,q,LO)|²`
+     (eV²) + `ω_LO(Γ)`, `ω_TO(Γ)` (meV) + ε∞ + CBM + cell constants. The vertex is the
+     **full** coupling `g_short(reconstruct) + g_L(longrange)` in the Cartesian basis,
+     projected onto the optical branches with the zero-point factor `1/√(2Mκ ω_LO)`
+     (Einstein ω_LO(Γ)). `build`/`save`/`load`/`regular_grid`/`omega_lo_ry` (per-q LO for
+     the deferred dispersive swap). **Turned up the phonon long-range gap** (see below):
+     needs `interpolate_d_polar` for physical ω, else |g|² is off by the wrong
+     zero-point factor. Not "~easy" after all.
 
-  **Status (2026-08-10): items 1–7 + A2 DONE + validated** against the real (finite,
-  norm-conserving) `datasets/LiF` files — all `rmc-ab-initio` tests green: dims
+  **Status (2026-08-11): items 1–8 + A2 all DONE + validated** against the real (finite,
+  norm-conserving) `datasets/LiF` files — all 14 `rmc-ab-initio` tests green: dims
   `4/279/6/401/340`, Ef=0.0526, ε∞=2.044, Z*=±1.055; H(Γ) CBM=9.614 eV below the 3-fold
-  p-manifold (24.380); D(Γ) acoustic sum rule + TO=11.954 THz; reduced `|g(Γ,q,LO)|²`
-  finite from the real tensor. Item 5 used the nalgebra real-2n×2n embedding +
-  Gram-Schmidt (robust to LiF's degenerate p/TO manifolds). Item 7 + A2 land the
-  `longrange` + `epb` modules and an open-bra tensor in `reconstruct`
-  (`g_cart_exact`); the A2 round-trip is **exact to machine precision** (below).
-  **Item 8 next, then Phase B.** One commit per landed group (`feat:`), per AGENTS.md —
-  the crate is not yet committed.
+  p-manifold (24.380); D(Γ) short-range TO=11.954 THz, **physical TO=8.12 THz**
+  (`interpolate_d_polar`, matches ph.x); reduced `|g(Γ,q,LO)|²` from the real tensor.
+  Item 5 used the nalgebra real-2n×2n embedding + Gram-Schmidt (robust to LiF's
+  degenerate p/TO manifolds). Item 7 + A2 land `longrange` (`g_L`) + `epb` + an open-bra
+  tensor in `reconstruct` (`g_cart_exact`); the A2 round-trip is **exact to machine
+  precision**. Item 8 lands `model` + `longrange::dyn_long_cart` (`rgd_blk`) +
+  `interpolate_d_polar`, the latter reproducing DFPT `dynq` **exactly** at coarse q.
+  **Phase B next.** One commit per landed group (`feat:`), per AGENTS.md — not yet committed.
+
+  **Phonon long-range (item-8 discovery).** EPW subtracts the polar dipole-dipole from
+  the dynamical matrix (`bloch2wannier.f90:588`, `rgd_blk(...,-1)`) exactly as it does the
+  e-ph `g_L`, so the Wannier-interpolated D is short-range: ω_TO(Γ)=11.95 THz, degenerate
+  optical triplet, no LO–TO splitting. Physical phonons need `rgd_blk` added back —
+  ported as `longrange::dyn_long_cart` (Gonze form: q≠0 dipole-dipole over all atom-pair
+  blocks `+`, q=0 self-term on the diagonal `−` for the ASR; no quadrupole/2D). Validated
+  at the **matrix** level (`dyn_long_cart == epb_dynq − short_fc`, ratio 1.000 every
+  element) and the **frequency** level (`interpolate_d_polar` = DFPT `dynq` to 2 dp at
+  coarse q: `[2.76,2.76,5.23,8.12,8.12,18.45]` THz). ω_LO(Γ)=18.67 THz (q→0 limit); the
+  LST ratio ε₀/ε∞=(ω_LO/ω_TO)²≈5.3. `interpolate_d` kept short-range (unchanged, still
+  used by the item-6 test); `interpolate_d_polar` is the physical one the model consumes.
 
 - **A2 — round-trip validation. DONE + exact.** `src/epb.rs` reads one `.epb` pool file:
   a **single Fortran record** (4-byte leading+trailing length markers), layout

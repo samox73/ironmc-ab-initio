@@ -2893,6 +2893,8 @@ version = "0.1.0"
 dependencies = [
  "nalgebra",
  "num-complex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

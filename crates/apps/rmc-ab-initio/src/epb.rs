@@ -27,6 +27,7 @@ pub struct Epb {
     pub xqc: Vec<[f64; 3]>,
     raw: Vec<u8>,
     et_off: usize,
+    dynq_off: usize,
     epmatq_off: usize,
 }
 
@@ -65,7 +66,25 @@ impl Epb {
             })
             .collect();
 
-        Ok(Epb { nqc, nks, nbnd, nbndep, nmodes, xqc, raw, et_off, epmatq_off })
+        Ok(Epb { nqc, nks, nbnd, nbndep, nmodes, xqc, raw, et_off, dynq_off, epmatq_off })
+    }
+
+    /// Coarse dynamical matrix `dynq[a,b]` at q-point `iq`, flat row-major
+    /// `nmodes×nmodes`. This is the **full** Cartesian force-constant matrix (not
+    /// mass-divided, LO–TO splitting included) — divide by `√(M_a M_b)` before
+    /// diagonalizing for frequencies.
+    pub fn dynq_at(&self, iq: usize) -> Vec<Complex64> {
+        let nm = self.nmodes;
+        let mut out = vec![Complex64::new(0.0, 0.0); nm * nm];
+        for b in 0..nm {
+            for a in 0..nm {
+                // dynq(a,b,iq) col-major, first index fastest.
+                let idx = a + nm * (b + nm * iq);
+                let byte = self.dynq_off + 16 * idx;
+                out[a * nm + b] = Complex64::new(f64_at(&self.raw, byte), f64_at(&self.raw, byte + 8));
+            }
+        }
+        out
     }
 
     /// nscf eigenvalue (Ry) of band `ib` at pool-local k-point `ik`.

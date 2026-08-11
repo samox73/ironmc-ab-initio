@@ -123,7 +123,10 @@ pub struct Phonons {
     pub evec: Vec<Vec<Cf>>,
 }
 
-pub fn interpolate_d(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) -> Phonons {
+/// Short-range force-constant matrix at fractional q (Wannier Fourier of D(R)),
+/// row-major `nmodes²`, Ry/bohr². EPW subtracted the polar long-range before
+/// Wannierizing, so this is short-range only — see [`interpolate_d_polar`].
+fn dyn_force_constants(epw: &EpwData, wig: &Wigner, q: [f64; 3]) -> Vec<Cf> {
     let n = epw.nmodes;
     let mut d = vec![C0; n * n];
     for ir in 0..wig.q.nr() {
@@ -137,7 +140,12 @@ pub fn interpolate_d(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) ->
             }
         }
     }
-    // force constants → dynamical matrix: divide by √(Mκ Mκ').
+    d
+}
+
+/// Mass-reduce force constants (÷√(Mκ Mκ')), diagonalize → frequencies (THz;
+/// negative = imaginary) and polarization vectors.
+fn phonons_from_fc(mut d: Vec<Cf>, cry: &Crystal, n: usize) -> Phonons {
     for a in 0..n {
         for b in 0..n {
             d[a * n + b] /= (cry.mass(a / 3) * cry.mass(b / 3)).sqrt();
@@ -147,6 +155,25 @@ pub fn interpolate_d(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) ->
     let (w2, evec) = hermitian_eig(&d, n);
     let omega_thz = w2.iter().map(|w| w.signum() * w.abs().sqrt() * RY_TO_THZ).collect();
     Phonons { omega_thz, evec }
+}
+
+/// **Short-range** phonons: the Wannier-interpolated D(q) alone, with the polar
+/// LO–TO splitting still subtracted (the optical triplet stays degenerate at Γ).
+/// Use [`interpolate_d_polar`] for physical frequencies.
+pub fn interpolate_d(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) -> Phonons {
+    phonons_from_fc(dyn_force_constants(epw, wig, q), cry, epw.nmodes)
+}
+
+/// **Physical** phonons: short-range D(q) plus the polar dipole-dipole long-range
+/// ([`crate::longrange::dyn_long_cart`]), restoring the true TO frequency and the
+/// LO–TO splitting at finite q. Matches the coarse DFPT `dynq`.
+pub fn interpolate_d_polar(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) -> Phonons {
+    let mut d = dyn_force_constants(epw, wig, q);
+    let dl = crate::longrange::dyn_long_cart(cry, epw, q);
+    for (a, b) in d.iter_mut().zip(&dl) {
+        *a += *b;
+    }
+    phonons_from_fc(d, cry, epw.nmodes)
 }
 
 /// The reduced Γ model: everything q-independent is baked in once (needs the

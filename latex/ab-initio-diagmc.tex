@@ -13,6 +13,8 @@
 \newcommand{\epsinf}{\bm{\varepsilon}_{\infty}}
 \newcommand{\gshort}{g^{\mathcal{S}}}
 \newcommand{\glong}{g^{\mathcal{L}}}
+\newcommand{\Dlong}{D^{\mathcal{L}}}
+\newcommand{\Qv}{\mathbf{Q}}
 
 \title{An \emph{ab-initio} Diagrammatic Monte Carlo prototype\\
        for the LiF electron polaron}
@@ -98,11 +100,16 @@ and energies are reported back in meV via $\hbar\omega_{\mathrm{LO}}$.
   \item[G3 --- Correct polar long range.] Restore the long-range Fr\"ohlich
     $1/q$ divergence that dominates the LiF polaron. \textsc{epw} was run with
     \texttt{lpolar=.true.}, which \emph{subtracts} the long-range part before
-    Wannierization, so $\gshort$ from the tensor is short-ranged and $\glong$ must be
-    added back analytically (Eq.~\eqref{eq:longrange}). \emph{Done:} implemented as a
-    from-scratch port of \textsc{epw}'s \texttt{rgd\_blk\_epw} (Ewald parameters
-    $\Lambda_{\mathrm{Ew}}=1$, $g_{\max}=14$, $e^{2}=2$~Ry) and validated to machine
-    precision against the coarse Bloch \texttt{.epb} (Section~\ref{sec:pitfalls}, P6).
+    Wannierization --- from \emph{both} the e-ph vertex and the dynamical matrix --- so
+    $\gshort$ from the tensor is short-ranged and both the vertex term $\glong$
+    (Eq.~\eqref{eq:longrange}) and the dynamical-matrix term $\Dlong$
+    (Eq.~\eqref{eq:dynlong}) must be added back analytically. The latter is what restores
+    the physical TO frequency and the LO--TO splitting; without it the phonon zero-point
+    factor $(2M_{\kappa}\omega)^{-1/2}$ in $\glong$ is mis-scaled (Section~\ref{sec:pitfalls},
+    P7). \emph{Done:} both implemented as from-scratch ports of \textsc{epw}'s
+    \texttt{rgd\_blk\_epw} and \texttt{rgd\_blk} (Ewald parameters $\Lambda_{\mathrm{Ew}}=1$,
+    $g_{\max}=14$, $e^{2}=2$~Ry) and validated to machine precision against the coarse Bloch
+    \texttt{.epb} and dynamical matrix \texttt{dynq} (Section~\ref{sec:pitfalls}, P6--P7).
 
   \item[G4 --- Clean Rust reader.] Implement the \textsc{epw}-file readers and the Wannier
     reconstruction from scratch in Rust, with no Python at runtime. The existing Python
@@ -140,6 +147,27 @@ $\langle u_{\Gamma+\qv}|u_{\Gamma}\rangle$. Restoring it is essential to the exa
 short/long decomposition of Eq.~\eqref{eq:split}; see Section~\ref{sec:pitfalls}, P6. As
 $q\to0$ the term behaves as $1/q$, reproducing the Fr\"ohlich tail
 $|g_{F}(\qv)|^{2}\propto\alpha/q^{2}$.
+
+\noindent
+The \emph{same} dipole physics enters the dynamical matrix: \textsc{epw} likewise removes
+the rigid-ion (dipole--dipole) long-range from $D$ before Wannierization, so the
+interpolated phonons are short-ranged --- the optical triplet stays degenerate at $\Gamma$
+at an unphysical frequency with no LO--TO splitting. The term to add back (Gonze form,
+\textsc{epw} \texttt{rgd\_blk}) is, with $\Qv\equiv\qv+\Gv$,
+\begin{equation}
+  \Dlong_{\kappa\alpha,\kappa'\beta}(\qv) \;=\; \frac{4\pi e^{2}}{\Omega}
+  \sum_{\Gv}
+  \frac{ e^{-\Qv\cdot\epsinf\cdot\Qv/4\Lambda} }{ \Qv\cdot\epsinf\cdot\Qv }\,
+  (\Qv\!\cdot\!\Zst_{\kappa})_{\alpha}\,(\Qv\!\cdot\!\Zst_{\kappa'})_{\beta}\,
+  e^{i\Qv\cdot(\bm{\tau}_{\kappa}-\bm{\tau}_{\kappa'})}
+  \;-\; \delta_{\kappa\kappa'}\,S_{\kappa\alpha\beta},
+  \label{eq:dynlong}
+\end{equation}
+where the self-term $S_{\kappa\alpha\beta}=\sum_{\kappa''}\Dlong_{\kappa\alpha,\kappa''\beta}(\mathbf{0})$
+(the same sum at $\qv=0$, summed over the second atom) is subtracted on the diagonal
+blocks to enforce the acoustic sum rule. Diagonalizing $D^{\mathcal{S}}+\Dlong$
+(mass-reduced) gives the physical branches $\omega_{\qv\nu}$ and eigenvectors
+$\mathbf{e}_{\kappa\nu}(\qv)$ that enter Eq.~\eqref{eq:longrange}.
 
 \section{Non-goals (deliberate scope of the first prototype)}
 \label{sec:nongoals}
@@ -338,6 +366,28 @@ rediscovered; the blow-by-blow diagnosis, with reproducing commands, lives in
     on direction and magnitude, not the raw complex difference). The reduced $\qv$-only
     vertex remains the object the sampler consumes; the exact bra $+$ overlap is used only to
     prove the reconstruction and the polar term against real data.
+
+  \item[P7 --- The dynamical matrix carries the same polar long-range.]
+    The subtraction of P6 is not confined to the e-ph vertex: \textsc{epw} removes the
+    rigid-ion dipole--dipole term from the dynamical matrix as well (\texttt{rgd\_blk}), so
+    the Wannier-interpolated phonons are short-ranged --- the optical triplet stays
+    degenerate at $\Gamma$ at an unphysical $11.95$~THz with no LO--TO splitting, where the
+    physical TO is $8.12$~THz (agreeing with \texttt{ph.x}). This is easy to overlook because
+    the phonon \emph{eigenvectors} are barely affected (the optical modes are symmetry-fixed
+    Li--F relative motion), but the \emph{frequency} enters the vertex through the zero-point
+    factor $(2M_{\kappa}\omega_{\qv\nu})^{-1/2}$, so a short-range $\omega$ mis-scales
+    $|g|^{2}$ by a factor of order two.
+    \emph{Fix:} port \textsc{epw}'s \texttt{rgd\_blk} (Gonze form, Eq.~\eqref{eq:dynlong}) --
+    the $\qv\neq0$ dipole--dipole sum over all atom-pair blocks plus the $\qv{=}0$ self-term
+    on the diagonal blocks -- and add it back before diagonalizing.
+    \emph{Validated} at two levels: the reconstructed long-range term equals coarse-%
+    \texttt{dynq} minus the short-range force constants \emph{element-by-element} (ratio
+    $1.000$), and all six branches then reproduce the DFPT \texttt{dynq} at the coarse $q$
+    ($[2.76,2.76,5.23,8.12,8.12,18.45]$~THz, LO $=18.45$) --- the phonon analog of the P6
+    round-trip. The restored $\omega_{\mathrm{LO}}(\Gamma)=18.67$~THz gives a
+    Lyddane--Sachs--Teller ratio $\varepsilon_{0}/\varepsilon_{\infty}=
+    (\omega_{\mathrm{LO}}/\omega_{\mathrm{TO}})^{2}\approx5.3$, i.e.\ $\varepsilon_{0}\approx11$
+    (experiment $\approx9$).
 \end{description}
 
 \end{document}

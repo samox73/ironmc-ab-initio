@@ -5,4 +5,5 @@
 pub mod epb;
 pub mod epw;
 pub mod longrange;
+pub mod model;
 pub mod reconstruct;

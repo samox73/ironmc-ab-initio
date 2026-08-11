@@ -8,3 +8,5 @@ license.workspace = true
 [dependencies]
 num-complex.workspace = true
 nalgebra.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
