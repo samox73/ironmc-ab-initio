@@ -11,7 +11,9 @@
 //! Ewald G-sum, in Cartesian atomic-displacement units, Ry. Validated against the
 //! coarse `.epb` (full coupling) and `dynq` (full dynamical matrix) in the tests.
 
-use crate::epw::{Crystal, EpwData};
+use crate::epw::{Crystal, EpwData, Wigner};
+use crate::reconstruct::{interpolate_d_polar, Phonons, RY_TO_EV, RY_TO_THZ};
+use nalgebra::Vector3;
 use num_complex::Complex64;
 
 const E2: f64 = 2.0; // e² in Rydberg atomic units
@@ -32,9 +34,9 @@ fn g_box(cry: &Crystal) -> [i64; 3] {
 }
 
 /// Cartesian `(q+G) = (2π/a) Σ_j (m_j + q_j) bg_j`, bohr⁻¹ (q fractional).
-fn gg_cart(cry: &Crystal, m: [i64; 3], q: [f64; 3]) -> [f64; 3] {
+pub fn gg_cart(cry: &Crystal, m: [i64; 3], q: Vector3<f64>) -> Vector3<f64> {
     let tpba = std::f64::consts::TAU / cry.alat;
-    std::array::from_fn(|i| {
+    Vector3::from_fn(|i, _| {
         tpba * ((m[0] as f64 + q[0]) * cry.bg[0][i]
             + (m[1] as f64 + q[1]) * cry.bg[1][i]
             + (m[2] as f64 + q[2]) * cry.bg[2][i])
@@ -42,13 +44,15 @@ fn gg_cart(cry: &Crystal, m: [i64; 3], q: [f64; 3]) -> [f64; 3] {
 }
 
 /// `g·ε·g`.
-fn eps_quad(eps: &[[f64; 3]; 3], g: [f64; 3]) -> f64 {
-    (0..3).map(|a| g[a] * (0..3).map(|b| eps[a][b] * g[b]).sum::<f64>()).sum()
+fn eps_quad(eps: &[[f64; 3]; 3], g: Vector3<f64>) -> f64 {
+    (0..3)
+        .map(|a| g[a] * (0..3).map(|b| eps[a][b] * g[b]).sum::<f64>())
+        .sum()
 }
 
 /// `(g·Z*_κ)` per Cartesian component: `[Σ_p g_p Z*[p][i]]_i`.
-fn zdotg(z: &[[f64; 3]; 3], g: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| (0..3).map(|p| g[p] * z[p][i]).sum())
+fn zdotg(z: &[[f64; 3]; 3], g: Vector3<f64>) -> Vector3<f64> {
+    Vector3::from_fn(|i, _| (0..3).map(|p| g[p] * z[p][i]).sum())
 }
 
 /// `metric = (2π/a)²`, the Ewald cutoff normalization.
@@ -59,7 +63,7 @@ fn metric(cry: &Crystal) -> f64 {
 
 /// Long-range polar vertex `g_L,κα(q)` per Cartesian atomic-displacement mode
 /// (`κα = 3κ+α`), in Ry. `q` is fractional. Port of `rgd_blk_epw` (3D dipole).
-pub fn g_long_cart(cry: &Crystal, epw: &EpwData, q: [f64; 3]) -> Vec<Cf> {
+pub fn g_long_cart(cry: &Crystal, epw: &EpwData, q: Vector3<f64>) -> Vec<Cf> {
     let met = metric(cry);
     let fac = E2 * 4.0 * std::f64::consts::PI / cry.omega; // 4π e²/Ω
     let nrx = g_box(cry);
@@ -88,12 +92,55 @@ pub fn g_long_cart(cry: &Crystal, epw: &EpwData, q: [f64; 3]) -> Vec<Cf> {
     g
 }
 
+/// Quantized polar vertex projected onto physical phonon branches, in eV.
+pub fn g_long_branch(cry: &Crystal, epw: &EpwData, wigner: &Wigner, q: Vector3<f64>) -> Vec<Cf> {
+    let phonons = interpolate_d_polar(epw, cry, wigner, q);
+    project_cartesian_branches(cry, &phonons, &g_long_cart(cry, epw, q), 0.0)
+}
+
+pub(crate) fn quantized_eigenvectors(
+    cry: &Crystal,
+    phonons: &Phonons,
+    phfreq_cutoff_ev: f64,
+) -> Vec<Cf> {
+    let mut out = vec![Cf::new(0.0, 0.0); cry.nmodes * cry.nmodes];
+    for nu in 0..cry.nmodes {
+        let omega_ry = phonons.omega_thz[nu].abs() / RY_TO_THZ;
+        let factor = if omega_ry * RY_TO_EV > phfreq_cutoff_ev {
+            1.0 / (2.0 * omega_ry).sqrt()
+        } else {
+            0.0
+        };
+        for a in 0..cry.nmodes {
+            out[nu * cry.nmodes + a] = phonons.evec[nu][a] * factor / cry.mass(a / 3).sqrt();
+        }
+    }
+    out
+}
+
+pub(crate) fn project_cartesian_branches(
+    cry: &Crystal,
+    phonons: &Phonons,
+    cartesian: &[Cf],
+    phfreq_cutoff_ev: f64,
+) -> Vec<Cf> {
+    let evec = quantized_eigenvectors(cry, phonons, phfreq_cutoff_ev);
+    (0..cry.nmodes)
+        .map(|nu| {
+            (0..cry.nmodes)
+                .map(|a| cartesian[a] * evec[nu * cry.nmodes + a])
+                .sum::<Cf>()
+                * RY_TO_EV
+        })
+        .collect()
+}
+
 /// Long-range dipole-dipole contribution to the dynamical matrix (Gonze form,
 /// EPW `rgd_blk`, `signe=+1`), row-major `nmodes×nmodes`, **force-constant** units
 /// (Ry/bohr² — add to the short-range D(q) *before* dividing by masses). Two
 /// pieces: the q≠0 term over all atom-pair blocks and the q=0 self-term on the
 /// diagonal blocks (which restores the acoustic sum rule).
-pub fn dyn_long_cart(cry: &Crystal, epw: &EpwData, q: [f64; 3]) -> Vec<Cf> {
+pub fn dyn_long_cart(cry: &Crystal, epw: &EpwData, q: Vector3<f64>) -> Vec<Cf> {
     let n = cry.nmodes;
     let met = metric(cry);
     let fac = E2 * 4.0 * std::f64::consts::PI / cry.omega; // e² 4π/Ω, signe=+1
@@ -106,7 +153,7 @@ pub fn dyn_long_cart(cry: &Crystal, epw: &EpwData, q: [f64; 3]) -> Vec<Cf> {
                 let m = [m1, m2, m3];
 
                 // --- q=0 self-term: gg = G, diagonal blocks (na,na), minus ---
-                let gs = gg_cart(cry, m, [0.0; 3]);
+                let gs = gg_cart(cry, m, Vector3::zeros());
                 let geg = eps_quad(&epw.epsi, gs);
                 if geg > 0.0 && geg / (met * ALPH * 4.0) < GMAX {
                     let facgd = fac * (-geg / (met * ALPH * 4.0)).exp() / geg;
@@ -115,7 +162,9 @@ pub fn dyn_long_cart(cry: &Crystal, epw: &EpwData, q: [f64; 3]) -> Vec<Cf> {
                         let mut fnat = [Cf::new(0.0, 0.0); 3];
                         for nb in 0..cry.nat {
                             let arg = cry.alat
-                                * (0..3).map(|k| gs[k] * (cry.tau[na][k] - cry.tau[nb][k])).sum::<f64>();
+                                * (0..3)
+                                    .map(|k| gs[k] * (cry.tau[na][k] - cry.tau[nb][k]))
+                                    .sum::<f64>();
                             let ph = Cf::from_polar(1.0, arg);
                             let zcg = zdotg(&epw.zstar[nb], gs);
                             for j in 0..3 {
@@ -140,7 +189,9 @@ pub fn dyn_long_cart(cry: &Crystal, epw: &EpwData, q: [f64; 3]) -> Vec<Cf> {
                         for na in 0..cry.nat {
                             let zag = zdotg(&epw.zstar[na], gq); // (q+G)·Z*_na
                             let arg = cry.alat
-                                * (0..3).map(|k| gq[k] * (cry.tau[na][k] - cry.tau[nb][k])).sum::<f64>();
+                                * (0..3)
+                                    .map(|k| gq[k] * (cry.tau[na][k] - cry.tau[nb][k]))
+                                    .sum::<f64>();
                             let facg = facgd * Cf::from_polar(1.0, arg);
                             for i in 0..3 {
                                 for j in 0..3 {
@@ -201,12 +252,18 @@ mod tests {
     #[test]
     fn frohlich_diverges_toward_gamma() {
         let (cry, epw) = toy();
-        let near = norm(&g_long_cart(&cry, &epw, [0.02, 0.0, 0.0]));
-        let far = norm(&g_long_cart(&cry, &epw, [0.10, 0.0, 0.0]));
-        assert!(near > far, "‖g_L‖ should grow toward Γ: near={near} far={far}");
-        let mid = norm(&g_long_cart(&cry, &epw, [0.05, 0.0, 0.0]));
+        let near = norm(&g_long_cart(&cry, &epw, Vector3::new(0.02, 0.0, 0.0)));
+        let far = norm(&g_long_cart(&cry, &epw, Vector3::new(0.10, 0.0, 0.0)));
+        assert!(
+            near > far,
+            "‖g_L‖ should grow toward Γ: near={near} far={far}"
+        );
+        let mid = norm(&g_long_cart(&cry, &epw, Vector3::new(0.05, 0.0, 0.0)));
         let ratio = mid / far;
-        assert!(ratio > 1.6 && ratio < 2.4, "expected ~1/q scaling, got ratio {ratio}");
+        assert!(
+            ratio > 1.6 && ratio < 2.4,
+            "expected ~1/q scaling, got ratio {ratio}"
+        );
     }
 
     #[test]
@@ -214,12 +271,34 @@ mod tests {
         // The long-range dynamical matrix must be Hermitian (it is added to a
         // Hermitian force-constant matrix).
         let (cry, epw) = toy();
-        let d = dyn_long_cart(&cry, &epw, [0.07, 0.03, 0.0]);
+        let d = dyn_long_cart(&cry, &epw, Vector3::new(0.07, 0.03, 0.0));
         for i in 0..6 {
             for j in 0..6 {
                 let asym = (d[i * 6 + j] - d[j * 6 + i].conj()).norm();
                 assert!(asym < 1e-9, "non-Hermitian at ({i},{j}): {asym}");
             }
         }
+    }
+
+    #[test]
+    fn quantization_drops_modes_below_the_cutoff() {
+        let (cry, _) = toy();
+        let mut phonons = Phonons {
+            omega_thz: vec![0.5e-3 / RY_TO_EV * RY_TO_THZ; cry.nmodes],
+            evec: (0..cry.nmodes)
+                .map(|nu| {
+                    (0..cry.nmodes)
+                        .map(|a| Cf::new(f64::from(a == nu), 0.0))
+                        .collect()
+                })
+                .collect(),
+        };
+        assert!(quantized_eigenvectors(&cry, &phonons, 1.0e-3)
+            .iter()
+            .all(|value| *value == Cf::new(0.0, 0.0)));
+        phonons.omega_thz.fill(2.0e-3 / RY_TO_EV * RY_TO_THZ);
+        assert!(quantized_eigenvectors(&cry, &phonons, 1.0e-3)
+            .iter()
+            .any(|value| value.norm() > 0.0));
     }
 }

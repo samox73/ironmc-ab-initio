@@ -17,3 +17,17 @@ pub use merge::Merge;
 #[doc(hidden)]
 pub use rand as __rand;
 pub use scalar::{SampleType, Scalar};
+
+#[macro_export]
+macro_rules! time {
+      ($function:path; $($argument:expr),* $(,)?) => {{
+          let start = ::std::time::Instant::now();
+          let result = $function($($argument),*);
+          log::debug!(
+              "{} took {:.2?}",
+              stringify!($function),
+              start.elapsed()
+          );
+          result
+      }};
+  }

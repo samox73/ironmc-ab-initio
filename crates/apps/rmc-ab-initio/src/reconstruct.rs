@@ -10,77 +10,35 @@
 //! with `U(Γ)`, so the vertex is a function of q only — `plan-rmc-ab-initio.md`.
 
 use crate::epw::{Crystal, EpmatWp, EpwData, Wigner};
+use nalgebra::Vector3;
 use num_complex::Complex64;
 
-const RY_TO_EV: f64 = 13.605698066;
-const RY_TO_THZ: f64 = 3289.84498;
+pub const RY_TO_EV: f64 = 13.605698066;
+pub const RY_TO_THZ: f64 = 3289.84498;
 
 type Cf = Complex64;
 const C0: Cf = Complex64::new(0.0, 0.0);
 
 /// exp(i 2π q·R) for fractional q and integer R.
-fn phase(q: [f64; 3], r: [i64; 3]) -> Cf {
+pub(crate) fn phase(q: Vector3<f64>, r: [i64; 3]) -> Cf {
     let d = q[0] * r[0] as f64 + q[1] * r[1] as f64 + q[2] * r[2] as f64;
     Cf::from_polar(1.0, std::f64::consts::TAU * d)
 }
 
-/// Eigen-decomposition of an `n×n` complex-Hermitian matrix `a` (row-major),
-/// via the real `2n×2n` symmetric embedding `[[Re,-Im],[Im,Re]]`. Returns
-/// eigenvalues ascending and orthonormal eigenvectors (`evecs[k][orb]`).
-///
-/// The embedding doubles every eigenvalue; we recover the true `n` vectors by
-/// Gram-Schmidt over the sorted candidates, which stays correct through
-/// degeneracies (LiF's Γ has a 3-fold p-manifold and a 3-fold TO).
+/// Eigen-decomposition of an `n×n` complex-Hermitian matrix `a` (row-major).
+/// Returns eigenvalues ascending and orthonormal eigenvectors (`evecs[k][orb]`).
 pub fn hermitian_eig(a: &[Cf], n: usize) -> (Vec<f64>, Vec<Vec<Cf>>) {
-    let mut m = nalgebra::DMatrix::<f64>::zeros(2 * n, 2 * n);
-    for i in 0..n {
-        for j in 0..n {
-            let aij = a[i * n + j];
-            m[(i, j)] = aij.re;
-            m[(i + n, j + n)] = aij.re;
-            m[(i, j + n)] = -aij.im;
-            m[(i + n, j)] = aij.im;
-        }
-    }
+    assert_eq!(a.len(), n * n);
+    let m = nalgebra::DMatrix::from_fn(n, n, |i, j| a[i * n + j]);
     let se = m.symmetric_eigen();
-
-    // (eigenvalue, complex reduction) candidates, sorted ascending.
-    let mut cand: Vec<(f64, Vec<Cf>)> = (0..2 * n)
-        .map(|c| {
-            let col = se.eigenvectors.column(c);
-            let v = (0..n).map(|k| Cf::new(col[k], col[k + n])).collect();
-            (se.eigenvalues[c], v)
-        })
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| se.eigenvalues[i].partial_cmp(&se.eigenvalues[j]).unwrap());
+    let evals = order.iter().map(|&i| se.eigenvalues[i]).collect();
+    let evecs = order
+        .iter()
+        .map(|&i| se.eigenvectors.column(i).iter().copied().collect())
         .collect();
-    cand.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-
-    let mut evals = Vec::with_capacity(n);
-    let mut evecs: Vec<Vec<Cf>> = Vec::with_capacity(n);
-    for (lambda, mut v) in cand {
-        if evecs.len() == n {
-            break;
-        }
-        for u in &evecs {
-            let proj = zdot(u, &v); // <u|v>
-            for k in 0..n {
-                v[k] -= proj * u[k];
-            }
-        }
-        let norm = zdot(&v, &v).re.sqrt();
-        if norm > 1e-7 {
-            for k in 0..n {
-                v[k] /= norm;
-            }
-            evals.push(lambda);
-            evecs.push(v);
-        }
-    }
     (evals, evecs)
-}
-
-/// Hermitian inner product ⟨u|v⟩ = Σ conj(u)·v.
-fn zdot(u: &[Cf], v: &[Cf]) -> Cf {
-    u.iter().zip(v).map(|(a, b)| a.conj() * b).sum()
 }
 
 /// Force a matrix Hermitian (kills the tiny anti-Hermitian noise the Fourier sum
@@ -97,7 +55,7 @@ fn hermitize(a: &mut [Cf], n: usize) {
 
 /// Interpolated electron eigen-energies (eV, ascending) and eigenvectors at
 /// fractional k. At k=Γ the lowest is the LiF CBM (Li-s), non-degenerate.
-pub fn interpolate_h(epw: &EpwData, wig: &Wigner, k: [f64; 3]) -> (Vec<f64>, Vec<Vec<Cf>>) {
+pub fn interpolate_h(epw: &EpwData, wig: &Wigner, k: Vector3<f64>) -> (Vec<f64>, Vec<Vec<Cf>>) {
     let n = epw.nbnd;
     let mut h = vec![C0; n * n];
     for ir in 0..wig.k.nr() {
@@ -126,7 +84,7 @@ pub struct Phonons {
 /// Short-range force-constant matrix at fractional q (Wannier Fourier of D(R)),
 /// row-major `nmodes²`, Ry/bohr². EPW subtracted the polar long-range before
 /// Wannierizing, so this is short-range only — see [`interpolate_d_polar`].
-fn dyn_force_constants(epw: &EpwData, wig: &Wigner, q: [f64; 3]) -> Vec<Cf> {
+fn dyn_force_constants(epw: &EpwData, wig: &Wigner, q: Vector3<f64>) -> Vec<Cf> {
     let n = epw.nmodes;
     let mut d = vec![C0; n * n];
     for ir in 0..wig.q.nr() {
@@ -153,21 +111,24 @@ fn phonons_from_fc(mut d: Vec<Cf>, cry: &Crystal, n: usize) -> Phonons {
     }
     hermitize(&mut d, n);
     let (w2, evec) = hermitian_eig(&d, n);
-    let omega_thz = w2.iter().map(|w| w.signum() * w.abs().sqrt() * RY_TO_THZ).collect();
+    let omega_thz = w2
+        .iter()
+        .map(|w| w.signum() * w.abs().sqrt() * RY_TO_THZ)
+        .collect();
     Phonons { omega_thz, evec }
 }
 
 /// **Short-range** phonons: the Wannier-interpolated D(q) alone, with the polar
 /// LO–TO splitting still subtracted (the optical triplet stays degenerate at Γ).
 /// Use [`interpolate_d_polar`] for physical frequencies.
-pub fn interpolate_d(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) -> Phonons {
+pub fn interpolate_d(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: Vector3<f64>) -> Phonons {
     phonons_from_fc(dyn_force_constants(epw, wig, q), cry, epw.nmodes)
 }
 
 /// **Physical** phonons: short-range D(q) plus the polar dipole-dipole long-range
 /// ([`crate::longrange::dyn_long_cart`]), restoring the true TO frequency and the
 /// LO–TO splitting at finite q. Matches the coarse DFPT `dynq`.
-pub fn interpolate_d_polar(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) -> Phonons {
+pub fn interpolate_d_polar(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: Vector3<f64>) -> Phonons {
     let mut d = dyn_force_constants(epw, wig, q);
     let dl = crate::longrange::dyn_long_cart(cry, epw, q);
     for (a, b) in d.iter_mut().zip(&dl) {
@@ -199,7 +160,7 @@ impl GammaModel {
     pub fn build(epw: &EpwData, _cry: &Crystal, wig: &Wigner, epmat: &EpmatWp) -> Self {
         let nbnd = epw.nbnd;
         let nmodes = epw.nmodes;
-        let (evals, evecs) = interpolate_h(epw, wig, [0.0; 3]);
+        let (evals, evecs) = interpolate_h(epw, wig, Vector3::zeros());
         let cbm = 0; // ascending → lowest = CBM
         let u = evecs[cbm].clone(); // u[orb]
 
@@ -243,7 +204,7 @@ impl GammaModel {
 
     /// Fourier the open-bra tensor to fractional q: `Σ_{R_p} e^{i2π q·R_p}
     /// gbar_open[R_p][n][a]` → `[bra_orb][cart]`.
-    fn g_open_at(&self, q: [f64; 3]) -> Vec<Vec<Cf>> {
+    fn g_open_at(&self, q: Vector3<f64>) -> Vec<Vec<Cf>> {
         let mut out = vec![vec![C0; self.nmodes]; self.u_cbm.len()];
         for rp in 0..self.irvec_g.len() {
             let f = phase(q, self.irvec_g[rp]);
@@ -267,7 +228,7 @@ impl GammaModel {
     /// basis** (`imode = 3κ+α`), CBM band, in **Ry** — the frame in which EPW
     /// subtracts the long-range part, so [`crate::longrange::g_long_cart`] adds
     /// to this directly. Both electron legs use the Γ CBM (the reduced Γ-model).
-    pub fn g_cart(&self, q: [f64; 3]) -> Vec<Cf> {
+    pub fn g_cart(&self, q: Vector3<f64>) -> Vec<Cf> {
         let u = self.u_cbm.clone();
         self.contract_bra(&self.g_open_at(q), &u)
     }
@@ -276,12 +237,12 @@ impl GammaModel {
     /// (`u_bra` from `interpolate_h(q)`). Resolves the electron-leg
     /// k-dependence the reduced [`Self::g_cart`] drops — used to close the A2
     /// round-trip against the coarse `.epb`. Cartesian basis, Ry.
-    pub fn g_cart_exact(&self, q: [f64; 3], u_bra: &[Cf]) -> Vec<Cf> {
+    pub fn g_cart_exact(&self, q: Vector3<f64>, u_bra: &[Cf]) -> Vec<Cf> {
         self.contract_bra(&self.g_open_at(q), u_bra)
     }
 
     /// Short-range coupling per phonon branch at fractional q (eV), CBM band.
-    pub fn g_branches(&self, q: [f64; 3], ph: &Phonons) -> Vec<Cf> {
+    pub fn g_branches(&self, q: Vector3<f64>, ph: &Phonons) -> Vec<Cf> {
         let g_cart = self.g_cart(q);
         // project onto branches with the polarization vectors.
         (0..self.nmodes)
@@ -293,9 +254,19 @@ impl GammaModel {
     }
 
     /// `(ω_ν THz, |g_ν|² eV²)` per branch at fractional q, short-range only.
-    pub fn reduced(&self, epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) -> (Vec<f64>, Vec<f64>) {
+    pub fn reduced(
+        &self,
+        epw: &EpwData,
+        cry: &Crystal,
+        wig: &Wigner,
+        q: Vector3<f64>,
+    ) -> (Vec<f64>, Vec<f64>) {
         let ph = interpolate_d(epw, cry, wig, q);
-        let g2 = self.g_branches(q, &ph).iter().map(|g| g.norm_sqr()).collect();
+        let g2 = self
+            .g_branches(q, &ph)
+            .iter()
+            .map(|g| g.norm_sqr())
+            .collect();
         (ph.omega_thz.clone(), g2)
     }
 }
@@ -308,9 +279,15 @@ mod tests {
     fn hermitian_eig_reconstructs_with_degeneracy() {
         // 3×3 Hermitian with a deliberate 2-fold degenerate eigenvalue.
         let a = vec![
-            Cf::new(2.0, 0.0), Cf::new(0.0, 1.0), Cf::new(0.0, 0.0),
-            Cf::new(0.0, -1.0), Cf::new(2.0, 0.0), Cf::new(0.0, 0.0),
-            Cf::new(0.0, 0.0), Cf::new(0.0, 0.0), Cf::new(5.0, 0.0),
+            Cf::new(2.0, 0.0),
+            Cf::new(0.0, 1.0),
+            Cf::new(0.0, 0.0),
+            Cf::new(0.0, -1.0),
+            Cf::new(2.0, 0.0),
+            Cf::new(0.0, 0.0),
+            Cf::new(0.0, 0.0),
+            Cf::new(0.0, 0.0),
+            Cf::new(5.0, 0.0),
         ];
         let (evals, evecs) = hermitian_eig(&a, 3);
         assert_eq!(evals.len(), 3);
@@ -324,7 +301,12 @@ mod tests {
             }
         }
         for idx in 0..9 {
-            assert!((r[idx] - a[idx]).norm() < 1e-9, "entry {idx}: {} vs {}", r[idx], a[idx]);
+            assert!(
+                (r[idx] - a[idx]).norm() < 1e-9,
+                "entry {idx}: {} vs {}",
+                r[idx],
+                a[idx]
+            );
         }
     }
 
@@ -342,9 +324,12 @@ mod tests {
             u_cbm: vec![Cf::new(1.0, 0.0)],
             gbar_open: vec![vec![vec![Cf::new(2.0, 0.0)]], vec![vec![Cf::new(0.0, 1.0)]]],
         };
-        let ph = Phonons { omega_thz: vec![5.0], evec: vec![vec![Cf::new(1.0, 0.0)]] };
+        let ph = Phonons {
+            omega_thz: vec![5.0],
+            evec: vec![vec![Cf::new(1.0, 0.0)]],
+        };
         // q=1/4 ⇒ phase at R_p=(1,0,0) is e^{iπ/2}=i, so g_cart = 2 + i·i = 1.
-        let g = model.g_branches([0.25, 0.0, 0.0], &ph);
+        let g = model.g_branches(Vector3::new(0.25, 0.0, 0.0), &ph);
         assert!((g[0] - Cf::new(RY_TO_EV, 0.0)).norm() < 1e-12, "{}", g[0]);
     }
 }

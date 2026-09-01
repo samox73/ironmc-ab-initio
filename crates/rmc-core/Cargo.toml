@@ -17,6 +17,7 @@ serde = [
 
 [dependencies]
 indicatif.workspace = true
+log.workspace = true
 num-complex.workspace = true
 rand.workspace = true
 rand_core.workspace = true

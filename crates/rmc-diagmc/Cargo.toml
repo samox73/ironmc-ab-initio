@@ -1,0 +1,21 @@
+[package]
+name = "rmc-diagmc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Generic imaginary-time diagrammatic Monte Carlo"
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+nalgebra = { workspace = true, features = ["serde-serialize"] }
+num-complex.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+rmc-core = { workspace = true, features = ["serde"] }
+rmc-numeric.workspace = true
+rmc-stats.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+rand_xoshiro.workspace = true

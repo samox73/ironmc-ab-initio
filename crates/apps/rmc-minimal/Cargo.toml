@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+env_logger.workspace = true
+log.workspace = true
 rmc-core = { workspace = true }
 rmc-stats.workspace = true
 rand.workspace = true

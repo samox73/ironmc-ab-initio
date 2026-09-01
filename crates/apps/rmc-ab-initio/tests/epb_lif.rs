@@ -14,6 +14,7 @@
 //! `.fmt` files are git-tracked; `epb1` (98 MB) + `epmatwp` (146 MB) are
 //! regenerated, so the round-trip skips when either is absent.
 
+use nalgebra::Vector3;
 use num_complex::Complex64;
 use rmc_ab_initio::epb::Epb;
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
@@ -24,7 +25,9 @@ use std::path::PathBuf;
 const RY_TO_EV: f64 = 13.605698066;
 
 fn lif(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../datasets/LiF").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../datasets/LiF")
+        .join(rel)
 }
 
 fn norm(g: &[Complex64]) -> f64 {
@@ -38,8 +41,8 @@ fn cos_sim(a: &[Complex64], b: &[Complex64]) -> f64 {
 }
 
 /// Cartesian (2π/alat) → fractional crystal coords: q_frac[l] = a_l · q_cart.
-fn to_frac(cry: &Crystal, qc: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|l| (0..3).map(|i| cry.at[l][i] * qc[i]).sum())
+fn to_frac(cry: &Crystal, qc: [f64; 3]) -> Vector3<f64> {
+    Vector3::from_fn(|l, _| (0..3).map(|i| cry.at[l][i] * qc[i]).sum())
 }
 
 #[test]
@@ -66,10 +69,16 @@ fn epb_full_coupling_equals_short_plus_longrange() {
     // that the H(Γ) reconstruction lands on the same value.
     let ik = epb.argmin_k(5);
     let cbm_ev = epb.et(ik, 5) * RY_TO_EV;
-    assert!((cbm_ev - 9.6143).abs() < 2e-3, "epb1 min-CBM k is not Γ (CBM={cbm_ev} eV)");
+    assert!(
+        (cbm_ev - 9.6143).abs() < 2e-3,
+        "epb1 min-CBM k is not Γ (CBM={cbm_ev} eV)"
+    );
     let model = GammaModel::build(&e, &c, &w, &wp);
     let u_gamma = model.u_cbm.clone();
-    assert!((model.cbm_energy_ev - cbm_ev).abs() < 2e-3, "reconstruct CBM vs epb");
+    assert!(
+        (model.cbm_energy_ev - cbm_ev).abs() < 2e-3,
+        "reconstruct CBM vs epb"
+    );
 
     // shells by |q| (Cartesian, 2π/alat); skip Γ (q=0, g_L undefined there).
     let mut shells: Vec<(f64, usize)> = (0..epb.nqc)
@@ -102,8 +111,14 @@ fn epb_full_coupling_equals_short_plus_longrange() {
         let ratio = norm(&recon) / norm(&full);
         worst_cos = worst_cos.min(cos);
         worst_ratio = worst_ratio.max((ratio - 1.0).abs());
-        assert!(cos > 0.9999, "round-trip direction broke at |q|={qn}: cos={cos}");
-        assert!((ratio - 1.0).abs() < 2e-3, "round-trip magnitude broke at |q|={qn}: ratio={ratio}");
+        assert!(
+            cos > 0.9999,
+            "round-trip direction broke at |q|={qn}: cos={cos}"
+        );
+        assert!(
+            (ratio - 1.0).abs() < 2e-3,
+            "round-trip magnitude broke at |q|={qn}: ratio={ratio}"
+        );
     }
     eprintln!(
         "A2: exact round-trip over {} coarse q — worst cos={worst_cos:.6}, worst |ratio-1|={worst_ratio:.2e}",
@@ -112,10 +127,21 @@ fn epb_full_coupling_equals_short_plus_longrange() {
 
     // ---- Fröhlich 1/q signature: ‖g_L‖ diverges toward Γ ----
     let q_near = shells[0].0;
-    let far = *shells.iter().rev().find(|&&(qn, _)| qn > 2.0 * q_near).unwrap();
+    let far = *shells
+        .iter()
+        .rev()
+        .find(|&&(qn, _)| qn > 2.0 * q_near)
+        .unwrap();
     let gl_near = norm(&g_long_cart(&c, &e, to_frac(&c, epb.xqc[shells[0].1])));
     let gl_far = norm(&g_long_cart(&c, &e, to_frac(&c, epb.xqc[far.1])));
-    assert!(gl_near > gl_far, "‖g_L‖ should grow toward Γ: near={gl_near} far={gl_far}");
+    assert!(
+        gl_near > gl_far,
+        "‖g_L‖ should grow toward Γ: near={gl_near} far={gl_far}"
+    );
     // near/far |q| ratio is ≳2, and 1/q ⇒ ‖g_L‖ ratio should track it (loosely).
-    assert!(gl_near / gl_far > 1.5, "g_L not diverging ~1/q: ratio {}", gl_near / gl_far);
+    assert!(
+        gl_near / gl_far > 1.5,
+        "g_L not diverging ~1/q: ratio {}",
+        gl_near / gl_far
+    );
 }

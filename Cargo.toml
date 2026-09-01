@@ -2,6 +2,7 @@
 members = [
     # framework
     "crates/rmc-core",
+    "crates/rmc-diagmc",
     "crates/rmc-grids",
     "crates/rmc-io",
     "crates/rmc-numeric",
@@ -23,7 +24,9 @@ license = "MIT"
 
 [workspace.dependencies]
 criterion = "0.5"
+env_logger = "0.11"
 indicatif = "0.17"
+log = "0.4"
 nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 num-complex = "0.4"
 proptest = "1"
@@ -33,6 +36,7 @@ rand_core = "0.6"
 rand_xoshiro = "0.6"
 rayon = "1"
 rmc-core = { path = "crates/rmc-core" }
+rmc-diagmc = { path = "crates/rmc-diagmc" }
 rmc-grids = { path = "crates/rmc-grids" }
 rmc-io = { path = "crates/rmc-io" }
 rmc-numeric = { path = "crates/rmc-numeric" }

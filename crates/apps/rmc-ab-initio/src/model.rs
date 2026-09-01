@@ -14,6 +14,7 @@
 use crate::epw::{Crystal, EpwData, Wigner};
 use crate::longrange::g_long_cart;
 use crate::reconstruct::{interpolate_d_polar, GammaModel, Phonons};
+use nalgebra::Vector3;
 use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -27,7 +28,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ReducedModel {
     /// Fractional (crystal) q-points; Γ is excluded (the polar term diverges there).
-    pub q: Vec<[f64; 3]>,
+    pub q: Vec<Vector3<f64>>,
     /// `|g(Γ,q,LO)|²` per q-point, **eV²** — full coupling (short + long), summed
     /// over the optical branches, Einstein-normalized at `ω_LO(Γ)`.
     pub g2_lo: Vec<f64>,
@@ -52,7 +53,7 @@ impl ReducedModel {
         epw: &EpwData,
         cry: &Crystal,
         wig: &Wigner,
-        q_points: &[[f64; 3]],
+        q_points: &[Vector3<f64>],
     ) -> Self {
         let (omega_to_ry, omega_lo_ry) = lo_to_frequencies(epw, cry, wig);
         let g2_lo = q_points
@@ -89,7 +90,7 @@ impl ReducedModel {
 }
 
 /// A regular fractional q-grid over `[0,1)³`, `n` points per axis, Γ excluded.
-pub fn regular_grid(n: usize) -> Vec<[f64; 3]> {
+pub fn regular_grid(n: usize) -> Vec<Vector3<f64>> {
     let mut q = Vec::with_capacity(n * n * n - 1);
     for i in 0..n {
         for j in 0..n {
@@ -97,7 +98,11 @@ pub fn regular_grid(n: usize) -> Vec<[f64; 3]> {
                 if i == 0 && j == 0 && k == 0 {
                     continue;
                 }
-                q.push([i as f64 / n as f64, j as f64 / n as f64, k as f64 / n as f64]);
+                q.push(Vector3::new(
+                    i as f64 / n as f64,
+                    j as f64 / n as f64,
+                    k as f64 / n as f64,
+                ));
             }
         }
     }
@@ -113,7 +118,12 @@ fn optical_g2_ev2(g_cart: &[Complex64], ph: &Phonons, cry: &Crystal, omega_lo_ry
     let n = cry.nmodes;
     // optical = the 3 highest-|ω| branches.
     let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by(|&a, &b| ph.omega_thz[b].abs().partial_cmp(&ph.omega_thz[a].abs()).unwrap());
+    idx.sort_by(|&a, &b| {
+        ph.omega_thz[b]
+            .abs()
+            .partial_cmp(&ph.omega_thz[a].abs())
+            .unwrap()
+    });
     let denom = (2.0 * omega_lo_ry).sqrt();
     idx.iter()
         .take(3)
@@ -130,16 +140,28 @@ fn optical_g2_ev2(g_cart: &[Complex64], ph: &Phonons, cry: &Crystal, omega_lo_ry
 /// [`interpolate_d_polar`] (short-range D + the polar dipole-dipole term), which
 /// restores the LO–TO splitting at finite q. Phase B can call this per-q for the
 /// dispersive-ω_LO swap.
-pub fn omega_lo_ry(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: [f64; 3]) -> f64 {
-    interpolate_d_polar(epw, cry, wig, q).omega_thz.iter().cloned().fold(f64::MIN, f64::max) / RY_TO_THZ
+pub fn omega_lo_ry(epw: &EpwData, cry: &Crystal, wig: &Wigner, q: Vector3<f64>) -> f64 {
+    interpolate_d_polar(epw, cry, wig, q)
+        .omega_thz
+        .iter()
+        .cloned()
+        .fold(f64::MIN, f64::max)
+        / RY_TO_THZ
 }
 
-/// `(ω_TO(Γ), ω_LO(Γ))` in Ry. TO from the physical D at exactly Γ (the non-
-/// analytic G=0 term vanishes there ⇒ no splitting); LO from the q→0 limit along
-/// a reference direction (the splitting is direction-independent for cubic LiF).
-fn lo_to_frequencies(epw: &EpwData, cry: &Crystal, wig: &Wigner) -> (f64, f64) {
-    let omega_to_ry = interpolate_d_polar(epw, cry, wig, [0.0; 3]).omega_thz.iter().cloned().fold(f64::MIN, f64::max) / RY_TO_THZ;
-    (omega_to_ry, omega_lo_ry(epw, cry, wig, [1e-3, 0.0, 0.0]))
+/// `(ω_TO(Γ), ω_LO(Γ))` in Ry. TO from the physical D at exactly Γ; LO from the
+/// q→0 limit along a reference direction.
+pub fn lo_to_frequencies(epw: &EpwData, cry: &Crystal, wig: &Wigner) -> (f64, f64) {
+    let omega_to_ry = interpolate_d_polar(epw, cry, wig, Vector3::zeros())
+        .omega_thz
+        .iter()
+        .cloned()
+        .fold(f64::MIN, f64::max)
+        / RY_TO_THZ;
+    (
+        omega_to_ry,
+        omega_lo_ry(epw, cry, wig, Vector3::new(1e-3, 0.0, 0.0)),
+    )
 }
 
 #[cfg(test)]
@@ -149,7 +171,7 @@ mod tests {
     #[test]
     fn serde_round_trip() {
         let m = ReducedModel {
-            q: vec![[0.1, 0.0, 0.0], [0.2, 0.1, 0.0]],
+            q: vec![Vector3::new(0.1, 0.0, 0.0), Vector3::new(0.2, 0.1, 0.0)],
             g2_lo: vec![1.5, 0.4],
             omega_lo_mev: 85.0,
             omega_to_mev: 49.0,
@@ -166,6 +188,6 @@ mod tests {
     fn grid_excludes_gamma_and_sizes() {
         let g = regular_grid(4);
         assert_eq!(g.len(), 4 * 4 * 4 - 1);
-        assert!(g.iter().all(|q| q != &[0.0, 0.0, 0.0]));
+        assert!(g.iter().all(|q| q != &Vector3::zeros()));
     }
 }

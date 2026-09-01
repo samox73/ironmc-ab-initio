@@ -40,11 +40,15 @@ Section~\ref{sec:deferred} records what is intentionally postponed.
 \section{Overview}
 \label{sec:overview}
 
-\texttt{ironmc} is a Rust DiagMC engine that samples the imaginary-time self-energy
-expansion of a polaron. Its only physics application today is the \emph{analytic}
-Fr\"ohlich model, whose vertex and dispersions are closed-form scalars. This project adds
-a second, \emph{ab-initio} model: the same sampler, but with a material-specific
-electron--phonon (e--ph) vertex read from a real DFT/DFPT + Wannier calculation.
+\texttt{ironmc} is a Rust workspace of DiagMC crates that sample the imaginary-time
+Green's function of a polaron. This project adds \texttt{rmc-diagmc}, a state-generic DiagMC
+engine exposing a \texttt{Model} trait (electron dispersion, phonon dispersion, complex e--ph
+vertex, phonon-momentum proposal), plus a standalone \emph{ab-initio} consumer
+\texttt{rmc-ab-initio}. Two models implement the trait: the closed-form \emph{analytic}
+Fr\"ohlich model, and the \emph{ab-initio} model whose material-specific electron--phonon
+(e--ph) vertex $g(\kv,\qv,\nu)$ is read from a real DFT/DFPT + Wannier calculation. The
+ground-state energy is read off the large-$\tau$ decay of $G(\tau)$; there is no
+self-consistent iteration.
 
 The data pipeline is
 \[
@@ -64,21 +68,24 @@ inverse Fourier transform.
 \paragraph{Why LiF.}
 Rocksalt LiF has a single, non-degenerate conduction-band minimum at $\Gamma$, one
 dominant longitudinal-optical (LO) branch, and an intermediate-to-strong Fr\"ohlich
-coupling $\alpha\approx5$. It is therefore the cleanest first material: nearly the
+coupling $\alpha\approx4.8$. It is therefore the cleanest first material: nearly the
 textbook Fr\"ohlich case, with a genuine analytic limit to validate against.
 
 \paragraph{Units.}
-We work in Fr\"ohlich units $\hbar=m^{*}=\omega_{\mathrm{LO}}=1$. In these units the
-parabolic electron dispersion is exactly $p^{2}/2$ and the Einstein LO phonon is exactly
-$1$, so the \emph{only} material-specific quantity in the parabolic prototype is the
-vertex $|g(\qv)|^{2}$. The Fr\"ohlich coupling is
+The ab-initio model works in \emph{physical} units --- energies in eV, imaginary time in
+eV$^{-1}$. The electron dispersion $\varepsilon(\kv)$ is the real Wannier-interpolated
+conduction band from $H(\Rv)$ (not a parabola), and the phonons are the real branches
+$\omega_{\qv\nu}$ from the polar-restored dynamical matrix, with \emph{all} modes retained.
+The Fr\"ohlich coupling is still computed from the macroscopic constants as a cross-check,
 \begin{equation}
   \alpha \;=\; \frac{e^{2}}{\hbar}\,
   \sqrt{\frac{m^{*}}{2\hbar\omega_{\mathrm{LO}}}}\,
-  \left(\frac{1}{\varepsilon_{\infty}}-\frac{1}{\varepsilon_{0}}\right),
+  \left(\frac{1}{\varepsilon_{\infty}}-\frac{1}{\varepsilon_{0}}\right)
+  \;\approx\; 4.76\quad(\text{LiF}),
   \label{eq:alpha}
 \end{equation}
-and energies are reported back in meV via $\hbar\omega_{\mathrm{LO}}$.
+which fixes the weak-coupling target $E^{(2)}\!\approx\!-\alpha\,\hbar\omega_{\mathrm{LO}}$
+against which the vertex scale is checked (Section~\ref{sec:pitfalls}, P8).
 
 \section{Goals}
 \label{sec:goals}
@@ -92,10 +99,13 @@ and energies are reported back in meV via $\hbar\omega_{\mathrm{LO}}$.
     \end{equation}
     the short-range (Wannier-interpolated) part plus the long-range polar part.
 
-  \item[G2 --- Engine untouched.] Reuse the state-generic \texttt{ironmc} engine
-    (\texttt{Runner}, \texttt{Update}, \texttt{MetropolisKernel}) \emph{bit-for-bit}. In
-    Fr\"ohlich units the mass and phonon-energy constants never change, so the ab-initio
-    model enters through a single vertex-weight seam rather than an engine rewrite.
+  \item[G2 --- Generic engine, native model.] Factor the sampler into a state-generic
+    \texttt{rmc-diagmc} engine (\texttt{Runner}, \texttt{Update}, \texttt{MetropolisKernel},
+    decay estimator) behind a \texttt{Model} trait. The ab-initio model is a \emph{native}
+    implementation of that trait --- real $\varepsilon(\kv)$, $\omega_{\qv\nu}$, complex
+    $g(\kv,\qv,\nu)$, and a $|g|^{2}$-weighted phonon-momentum proposal --- \emph{not} a
+    reweighting of the Fr\"ohlich envelope. The Fr\"ohlich model is a second implementation of
+    the same trait, which validates the engine at rung~0 (Section~\ref{sec:validation}).
 
   \item[G3 --- Correct polar long range.] Restore the long-range Fr\"ohlich
     $1/q$ divergence that dominates the LiF polaron. \textsc{epw} was run with
@@ -172,35 +182,16 @@ $\mathbf{e}_{\kappa\nu}(\qv)$ that enter Eq.~\eqref{eq:longrange}.
 \section{Non-goals (deliberate scope of the first prototype)}
 \label{sec:nongoals}
 
-These are conscious simplifications, chosen so the prototype is small, exact where it
-matters, and cheaply validated. Each is lifted in Section~\ref{sec:deferred}.
+Several early non-goals of the \emph{first} prototype have since been \textbf{lifted}: the
+$\Gamma$-slice vertex, the single Einstein branch, the ``no tensor compression'' rule, the
+reweighted sampler, and the Fr\"ohlich-unit engine constants. The model now uses the full
+electron-momentum vertex $g(\kv,\qv,\nu)$, all phonon branches, an SVD-compressed Wannier
+tensor evaluated on a grid, a native $|g|^{2}$ momentum proposal, and physical units. What
+remains deliberately out of scope:
 
 \begin{description}
   \item[N1 --- Electron polaron only.] The single, non-degenerate conduction-band minimum
     at $\Gamma$. The hole/valence polaron (degenerate top valence band) is out of scope.
-
-  \item[N2 --- $\Gamma$-slice vertex.] We approximate $g(\kv,\qv)\approx g(\Gamma,\qv)$,
-    i.e.\ the vertex depends on the phonon momentum $\qv$ only, evaluated as if the
-    electron sits at the band bottom. True electron-momentum dependence is a non-goal
-    here.
-
-  \item[N3 --- One Einstein LO branch.] Keep only the Fr\"ohlich-active LO branch and
-    treat it as dispersionless at $\omega_{\mathrm{LO}}$. The remaining branches and the
-    dispersion $\omega_{\mathrm{LO}}(\qv)$ are not modeled.
-
-  \item[N4 --- No tensor compression.] The reduced object the sampler needs is the scalar
-    field $|g(\Gamma,\qv,\mathrm{LO})|^{2}$, which is small on any grid. It is precomputed
-    once and interpolated; \emph{no} SVD/Tucker low-rank compression is used. (Fixing
-    $\kv=\Gamma$ is itself an exact, lossless dimensional reduction that supersedes
-    lossy compression in this regime.)
-
-  \item[N5 --- Reweighting, not native sampling.] The ab-initio vertex is introduced by
-    reweighting the existing analytic Fr\"ohlich importance-sampling envelope, not by a
-    native $|g_{\text{ab}}(\qv)|^{2}$ momentum sampler.
-
-  \item[N6 --- No engine parameterization.] The engine's mass/phonon-energy constants stay
-    fixed at unity (Fr\"ohlich units); no \texttt{MASS}/\texttt{OMEGA} genericization is
-    introduced for the parabolic prototype.
 
   \item[N7 --- No GPU path.] The ab-initio model targets the CPU driver only; the GPU
     (\texttt{\#[cube]}) mirror is not extended to it.
@@ -209,65 +200,97 @@ matters, and cheaply validated. Each is lifted in Section~\ref{sec:deferred}.
     general multi-material framework.
 \end{description}
 
+\noindent
+(The retired non-goals keep their original labels N2--N6 where referenced elsewhere; they
+are now realized features, recorded as done in Section~\ref{sec:deferred}.)
+
 \section{Deferred to future work}
 \label{sec:deferred}
 
-Listed roughly in the order they would be relaxed. None of these require reworking the
-Phase-A readers or reconstruction; they extend the same pipeline.
+\paragraph{Done.} The full-$\kv$ vertex with SVD compression and on-grid evaluation (former
+N2/N4), all dispersive branches $\omega_{\nu}(\qv)$ (N3), the non-parabolic Wannier
+dispersion $\varepsilon(\kv)$ via the generic \texttt{Model} trait (N6), and the native
+$|g|^{2}$ momentum sampler (N5) are now \emph{implemented}.
 
+\paragraph{Remaining.}
 \begin{description}
-  \item[D1 --- Full $g(\kv,\qv)$ $\kv$-dependence.] Relaxing the $\Gamma$-slice (N2) turns
-    the vertex into a function on the six-dimensional $(\kv,\qv)$ space, which cannot be
-    precomputed onto a grid. This is exactly the regime where \textbf{SVD/Tucker
-    compression + on-the-fly evaluation} of the Wannier tensor becomes necessary
-    (reversing N4). Relevant at strong coupling, where the electron explores momenta away
-    from $\Gamma$.
+  \item[D1 --- Grid convergence.] The vertex is tabulated on an $8^{3}$ $q$-grid, which is
+    coarse: the discrete BZ sum underweights the near-$\Gamma$ $1/q^{2}$ polar region, so the
+    grid-$8$ formation energy ($\approx-0.26$~eV) is $\sim\!3.5\times$ shallower than the
+    converged value. Reaching the physical $\approx-0.4$~eV needs finer grids, whose dominant
+    cost is the vertex-cache memory (Section~\ref{sec:performance}), not the sampler.
 
-  \item[D2 --- Multi-branch, dispersive phonons.] Include all phonon branches and the
-    momentum dependence $\omega_{\nu}(\qv)$, replacing the single Einstein LO branch (N3).
+  \item[D2 --- Hole polaron.] The degenerate valence-band-maximum polaron (lifting N1),
+    needing a multi-band, degenerate (matrix-product sign-fix) treatment.
 
-  \item[D3 --- Non-parabolic electrons.] A non-parabolic $\varepsilon(\kv)$ requires
-    genericizing the engine's dispersion (the deferred \texttt{MASS}/\texttt{OMEGA}
-    parameterization and \texttt{Model}-trait seam), lifting N6.
-
-  \item[D4 --- Native $\qv$-sampler.] A momentum sampler drawn directly from
-    $|g_{\text{ab}}(\qv)|^{2}$, replacing the reweighting of N5 for sampling efficiency.
-
-  \item[D5 --- Hole polaron.] The degenerate valence-band-maximum polaron (lifting N1),
-    which needs a multi-band, degenerate treatment.
-
-  \item[D6 --- GPU path.] A \texttt{\#[cube]} GPU implementation of the ab-initio model
+  \item[D3 --- GPU path.] A \texttt{\#[cube]} GPU implementation of the ab-initio model
     (lifting N7), guarded by the existing lockstep parity tests.
 
-  \item[D7 --- More materials.] Generalize beyond LiF once the LiF prototype is validated
+  \item[D4 --- More materials.] Generalize beyond LiF once the LiF prototype is validated
     (lifting N8).
 \end{description}
 
 \section{Validation ladder}
 \label{sec:validation}
 
-The goals of Section~\ref{sec:goals} are checked in three rungs of increasing physical
-content:
+The goals of Section~\ref{sec:goals} are checked in rungs of increasing physical content:
 \begin{enumerate}
-  \item \textbf{Refactor parity.} The Fr\"ohlich model, re-expressed through the new
-    ab-initio code path, reproduces the existing engine's $\alpha=1$ benchmark
-    ($E\approx-1.016$, $Z\approx0.59$).
-  \item \textbf{Fr\"ohlich-limit + unit bridge.} Fed the \emph{analytic}
-    $|g(\qv)|^{2}\propto\alpha_{\mathrm{LiF}}/q^{2}$, the ab-initio model must match the
-    pure Fr\"ohlich engine at $\alpha_{\mathrm{LiF}}$ against Mishchenko \emph{et al.}
-    (2000); and the \emph{real} tensor's $|g(\Gamma,\qv\!\to\!0,\mathrm{LO})|^{2}$ must
-    recover the same $1/q^{2}$ asymptote.
-  \item \textbf{Material comparison.} The real LiF vertex yields a polaron formation
-    energy and effective mass compared to Sio \emph{et al.} (2019).
+  \item \textbf{Engine (rung 0).} The analytic Fr\"ohlich model, run through
+    \texttt{rmc-diagmc} and the decay estimator, reproduces Mishchenko \emph{et al.} (2000):
+    $E_{0}(\alpha{=}1)=-1.013$ and $E_{0}(\alpha{=}2)=-2.08$ within $3\sigma$, sign
+    $\equiv1$. This validates the sampler, estimator, and sign tracking independently of the
+    ab-initio vertex.
+  \item \textbf{Vertex scale.} The ab-initio second-order energy $E^{(2)}(\Gamma)$ recovers
+    the Fr\"ohlich weak-coupling target $-\alpha\,\hbar\omega_{\mathrm{LO}}$ (up to the
+    coarse-grid underestimate), confirming the $(2M_{\kappa}\omega)^{-1/2}$ vertex
+    normalization (Section~\ref{sec:pitfalls}, P8).
+  \item \textbf{Compression convergence.} The all-orders $E_{0}$ is stable against the SVD
+    rank $n_{\mathrm{sv}}$: on the $8^{3}$ grid it plateaus at $\approx-0.26$~eV for
+    $n_{\mathrm{sv}}\gtrsim50$.
+  \item \textbf{Material comparison.} The grid-converged formation energy and effective mass,
+    compared to Sio \emph{et al.} (2019) --- pending grid convergence (D1).
 \end{enumerate}
 
-\section{Practical pitfalls and fixes (A0/A1)}
+\section{Performance: the ab-initio vertex cache}
+\label{sec:performance}
+
+The full electron-momentum vertex --- the former $\Gamma$-slice non-goal (N2), now lifted ---
+cannot be reduced to the scalar $|g(\Gamma,\qv,\mathrm{LO})|^{2}$. Instead the Wannier e--ph tensor is
+compressed by a per-band-pair truncated SVD into rank-$r$ factors $u_{g}(\kv)$,
+$v_{g}(\qv,\nu)$, tabulated once on the $q$-grid; a vertex evaluation is then the rank-$r$
+contraction
+\[
+  g(\kv,\qv,\nu)\;=\;\sum_{g=1}^{r} s_{g}\,u_{g}(\kv)\,v_{g}(\qv,\nu)\;+\;\glong(\kv,\qv,\nu),
+\]
+called millions of times per DiagMC chain, so its cost sets the wall-clock. On an $8^{3}$
+grid at $r\!\sim\!150$ the factor tables are $\approx0.18$~GiB --- far larger than cache ---
+so the memory layout of the component axis $g$, not the arithmetic, dominates.
+
+\paragraph{Cache-hostile layout (before).} Storing the factors component-major,
+$u[g][\kv]$ and $v[g][\qv][\nu]$, places successive components of a single vertex sum
+$\sim\!49$~KB apart, so each of the $r$ terms is a separate cache miss and the inner
+contraction is bound entirely by memory latency.
+
+\paragraph{Fix: transpose the component axis inward.} Storing the factors $\kv$-major /
+$(\qv,\nu)$-major --- $u[\kv][g]$, $v[\qv][\nu][g]$ --- makes the $r$ components of one
+vertex evaluation contiguous, so the contraction streams two cache-line runs instead of
+striding $r$ scattered lines. The precompute is reorganized to parallelize over $\kv$
+(rather than over $g$) so it writes this layout directly.
+
+\paragraph{Effect.} For the $n_{\mathrm{sv}}$ convergence sweep ($500$k steps $\times$ $10$
+chains, $8^{3}$ grid), a single rank drops from $258\to23$~s at $r{=}50$ and
+$1033\to54$~s at $r{=}100$ --- an $11$--$19\times$ wall-clock reduction that grows with $r$.
+The evaluation is now memory-bandwidth bound on the factor tables; the $O(\text{order})$
+phase recomputation in the decay estimator is a smaller secondary term, left for later.
+
+\section{Practical pitfalls and fixes}
 \label{sec:pitfalls}
 
-Turning the \textsc{epw} run into a \emph{usable} vertex meant working through several
-failures whose symptoms were misleading. They are recorded here so they are not
-rediscovered; the blow-by-blow diagnosis, with reproducing commands, lives in
-\texttt{datasets/LiF/EPH-NAN-DIAGNOSIS.md}.
+Turning the \textsc{epw} run into a \emph{usable} vertex, and then a trustworthy DiagMC
+number, meant working through several failures whose symptoms were misleading. P1--P7 are
+data-preparation (A0/A1); P8--P9 are the DiagMC consumer (Phase B). They are recorded here so
+they are not rediscovered; the blow-by-blow A0/A1 diagnosis, with reproducing commands, lives
+in \texttt{datasets/LiF/EPH-NAN-DIAGNOSIS.md}.
 
 \begin{description}
   \item[P1 --- Ultrasoft pseudopotentials give an all-\texttt{NaN} e--ph tensor (root
@@ -388,6 +411,143 @@ rediscovered; the blow-by-blow diagnosis, with reproducing commands, lives in
     Lyddane--Sachs--Teller ratio $\varepsilon_{0}/\varepsilon_{\infty}=
     (\omega_{\mathrm{LO}}/\omega_{\mathrm{TO}})^{2}\approx5.3$, i.e.\ $\varepsilon_{0}\approx11$
     (experiment $\approx9$).
+
+  \item[P8 --- The phonon quantization factor was dropped in the branch projection
+    (Phase B).]
+    Distinct from P7 (where the \emph{frequency} was wrong): here $\omega_{\qv\nu}$ was
+    correct, but the consumer projected the Cartesian coupling onto phonon branches with only
+    the eigenvector $\mathbf{e}_{\kappa\nu}$ and the Ry$\to$eV conversion, \emph{omitting} the
+    $(2M_{\kappa}\omega_{\qv\nu})^{-1/2}$ zero-point factor of Eq.~\eqref{eq:longrange}
+    entirely. Every $|g|$ was then $\sim\!7\times$ too large, so the second-order energy came
+    out $\approx-11$~eV ($\sim\!30\times$ too deep) and the DiagMC diagram order ran away (no
+    order-$0$ samples, the estimator's normalization sector). The bug hid because the
+    \emph{oracle} used for the SVD cross-check made the same omission, and the \texttt{.epb}
+    test validates only the \emph{Cartesian} coupling, above the projection.
+    \emph{Fix:} apply $(2M_{\kappa}\omega_{\qv\nu})^{-1/2}$ in the branch projection of
+    \emph{both} the tabulated vertex and the direct oracle, guarding the $\omega\to0$ acoustic
+    modes at $\Gamma$. \emph{Validated:} $E^{(2)}$ fell to $-0.10$~eV on the $8^{3}$ grid ---
+    the expected $\sim\!3.5\times$ coarse-grid underestimate of the continuum
+    $-\alpha\hbar\omega_{\mathrm{LO}}\approx-0.37$~eV --- and the sampler then equilibrates at
+    order $\approx3$.
+
+  \item[P9 --- Reading $E_{0}$ from the decay estimator: $\mu$ and $\tau_{\max}$ (Phase B).]
+    The ground state is the large-$\tau$ slope of $G(\tau)\sim Z\,e^{-(E_{0}-\mu)\tau}$, and
+    two knobs must bracket it. The chemical potential $\mu$ must sit \emph{just below}
+    $E_{0}$: if $\mu>E_{0}$ the weight grows with $\tau$ and the diagram order runs away
+    (symptom: ``no order-$0$ samples''); if $\mu$ is far below $E_{0}$ the phonon cloud is
+    starved and the fit window falls where $G$ is exponentially small, so $E_{0}$ scatters
+    with underestimated error bars. The window must also satisfy
+    $\tau_{\mathrm{fit}}\gg1/(E_{1}{-}E_{0})\sim1/\omega_{\mathrm{LO}}$ to clear
+    excited-state contamination. The acceptance criterion is that the extracted
+    $E_{0}=\mu+\text{slope}$ is \emph{$\mu$-independent}. On the coarse $8^{3}$ grid the
+    polaron is effectively strong-coupling (order $3$--$5$, $E_{0}\approx-0.26$~eV), so
+    $\mu\approx-0.5$~eV with $\tau_{\max}\approx30$~eV$^{-1}$ is the working regime.
 \end{description}
+
+\section{The finite-$\beta$ thermodynamic energy estimator (FEP-DMC)}
+\label{sec:thermo-estimator}
+
+The energy in Section~\ref{sec:pitfalls} (P9) is read from the large-$\tau$ decay
+of $G(\tau)$, which carries a documented sensitivity to the fit window $\tau_{\max}$
+at strong coupling. FEP-DMC (Luo, Park, Bernardi, \emph{Nat.\ Phys.}\ \textbf{21}, 1275
+(2025); code a Perturbo fork) instead measures the polaron energy as a
+\emph{thermodynamic} (operator) expectation value on each worldline, with \emph{no}
+fit. This section records how that estimator works and its single-band form, as the
+target for a port into \texttt{rmc-diagmc::measure}.
+
+\paragraph{Quantity measured.}
+Rather than the asymptotic slope, the polaron energy is the operator average
+\begin{equation}
+  E_{\mathrm{pol}} \;=\; \langle \hat H\rangle
+  \;=\; \frac{\operatorname{Tr}\!\bigl[\hat H\,e^{-\beta\hat H}\bigr]}
+             {\operatorname{Tr}\!\bigl[e^{-\beta\hat H}\bigr]},
+  \label{eq:thermo}
+\end{equation}
+evaluated on each Monte-Carlo worldline of total imaginary-time length $\tau=\beta$, where $\beta=1/k_{B}T$ is the code's \texttt{tauMax}. Here $\operatorname{Tr}$ is the matrix trace $\operatorname{Tr}[M]=\sum_{i}M_{ii}$; the trace over the complete basis is what turns Eq.~\eqref{eq:thermo} into a proper thermal (and, as $\beta\to\infty$, ground-state) expectation value. This is the standard Prokof'ev--Svistunov / Mishchenko thermodynamic estimator.
+
+\paragraph{Worldline weight.}
+A configuration is one electron backbone on $\tau\in[0,\beta]$, cut into segments by
+vertices at $\tau_{1}<\tau_{2}<\cdots$, with phonon arcs joining vertex pairs. In
+single-band form its weight is a product of
+\begin{itemize}
+  \item electron segments $s$ of duration $\Delta\tau_{s}$: $e^{-\varepsilon_{k_{s}}\Delta\tau_{s}}$
+    (the code's \texttt{Gel}$(\varepsilon,\tau)=e^{-\varepsilon\tau}$ and \texttt{propagator}).
+    The electron is kept at $T=0$; only phonons are thermal, as appropriate for a single carrier;
+  \item phonon arcs $a$ of span $\Delta\tau_{a}$ at frequency $\omega_{a}$: the finite-$T$
+    propagator $D(\omega,\tau)$ below;
+  \item a vertex factor $g_{mn\nu}(\kv,\qv)$ at each of the $N_{v}$ vertices.
+\end{itemize}
+Thus $\ln w$ depends on $\beta$ through every segment length, every arc span, and $N_{v}$.
+
+\paragraph{The estimator as a time average.}
+With $\hat H=\hat H_{\mathrm{el}}+\hat H_{\mathrm{ph}}+\hat H_{\mathrm{int}}$, the key
+move is \emph{not} to read the energy only at the endpoint $\tau=\beta$ but to use the
+ground-state-dominated identity
+\begin{equation}
+  \langle\hat H\rangle \;=\; \frac1\beta\int_{0}^{\beta}\langle\hat H(\tau)\rangle\,d\tau,
+  \label{eq:timeavg}
+\end{equation}
+i.e.\ the \emph{local} energy is averaged over the entire worldline. This is the
+variance reduction: $\beta$ times more information per configuration than a single
+asymptotic slope. Each term of $\hat H$ maps to one accumulator, and the three sum to
+\begin{equation}
+  E_{\mathrm{pol}}
+  \;=\; \frac{1}{\beta\,\langle s\rangle}\,
+  \Bigl\langle\;
+    \underbrace{\sum_{\mathrm{seg}}(\varepsilon_{i}+\mu)\,\Delta\tau_{i}}_{\langle H_{\mathrm{el}}\rangle}
+    \;+\;
+    \underbrace{\sum_{\mathrm{arcs}}\tfrac12\,\omega_{a}\lvert\Delta\tau_{a}\rvert}_{\langle H_{\mathrm{ph}}\rangle}
+    \;-\;
+    \underbrace{(N_{v}-1)}_{\langle H_{\mathrm{int}}\rangle}
+  \;\Bigr\rangle,
+  \label{eq:estimator}
+\end{equation}
+with $\langle s\rangle$ the average sign. The three pieces are:
+\begin{description}
+  \item[Band energy $\langle H_{\mathrm{el}}\rangle$.] The code inserts the operator via
+    \texttt{Hpropagator}, whose diagonal is $e^{-\varepsilon\tau}(\varepsilon+\mu)\tau$.
+    The extra factor $\varepsilon\,\Delta\tau$ is exactly
+    $\int_{0}^{\Delta\tau}\!ds\,\varepsilon\,e^{-\varepsilon\Delta\tau}
+     =\varepsilon\,\Delta\tau\,e^{-\varepsilon\Delta\tau}$ --- the ``$\hat H e^{-\hat H\tau}$''
+    insertion integrated over the segment. Summed over segments and divided by the
+    diagram weight it yields $\tfrac1\beta\int_{0}^{\beta}\varepsilon_{k(\tau)}\,d\tau$.
+    Energies are stored band-bottom subtracted ($\varepsilon$) with $\mu=\min\varepsilon$,
+    so $\varepsilon+\mu$ restores the true band energy.
+  \item[Phonon energy $\langle H_{\mathrm{ph}}\rangle$.] Each arc present over
+    $\Delta\tau_{a}$ contributes $\omega_{a}$ to the instantaneous phonon energy;
+    time-averaging gives $\tfrac1\beta\sum_{a}\omega_{a}\Delta\tau_{a}$. The $\tfrac12$
+    corrects double counting of an internal arc seen from both its vertices; external
+    (head/tail-anchored) phonon lines carry no $\tfrac12$.
+  \item[Interaction energy $\langle H_{\mathrm{int}}\rangle$.] In the bare imaginary-time
+    expansion the coupling-energy estimator evaluates to $-\langle N_{v}\rangle/\beta$
+    (each vertex contributes $-1/\beta$); the ``$-1$'' offset is the head-vertex
+    normalization convention.
+\end{description}
+Equation~\eqref{eq:estimator} is thus just
+$\langle H_{\mathrm{el}}\rangle+\langle H_{\mathrm{ph}}\rangle+\langle H_{\mathrm{int}}\rangle
+ =\langle\hat H\rangle$, measured at $\tau=\beta$ with no fitting window.
+
+\paragraph{Finite-$\beta$ phonon propagator.}
+The arcs use the thermal bosonic propagator
+\begin{equation}
+  D(\omega,\tau) \;=\; \frac{e^{-\omega\tau}+e^{-\omega(\beta-\tau)}}{1-e^{-\omega\beta}},
+  \label{eq:dph}
+\end{equation}
+whose first term $e^{-\omega\tau}$ is spontaneous emission (surviving at $T=0$), second
+term $e^{-\omega(\beta-\tau)}$ is thermal absorption / wrap-around, and denominator
+$1/(1-e^{-\omega\beta})=1+n_{B}(\omega)$ is the Bose enhancement. As $\beta\to\infty$ it
+collapses to $e^{-\omega\tau}$, which is what the code's \texttt{zeroTMC} flag
+hard-codes --- and the LiF example uses \texttt{zeroTMC}, so LiF(e) is effectively the
+$T=0$ limit even though the machinery is finite-$T$. Soft modes below a
+$\texttt{phfreq\_cutoff}\approx1$~meV are dropped ($D\to0$) to avoid the
+$1/(1-e^{-\omega\beta})$ and $(2M_{\kappa}\omega)^{-1/2}$ divergences.
+
+\paragraph{Matrix (multiband) form.}
+
+In multiband mode the segment propagators, vertices, and the $\hat H$-insertion are all matrices, so the diagram weight is $\operatorname{Tr}\!\bigl[\prod_{i}g_{i}\,e^{-H\Delta\tau_{i}}\bigr]$ and inserting $\hat H$ at one segment needs the product of everything to its left and right (the \texttt{left\_env}/\texttt{right\_env} environment matrices), with per-step rescaling. The sign is carried as $\operatorname{sign}(\operatorname{Re}\operatorname{Tr})$ and divided out via $\langle s\rangle$. In single band all of this collapses to the scalars of Eq.~\eqref{eq:estimator}; the trace is trivial.
+
+\paragraph{Why port it.}
+
+Relative to the decay fit of P9, Eq.~\eqref{eq:estimator} removes the $\tau_{\max}$ window arbitrariness (the whole $[0,\beta]$ worldline is used), lowers variance (it time-averages rather than reading one slope), and has a systematic error controlled by $\beta$ (excited-state contamination $\sim e^{-\Delta\beta}$). The single-band port accumulates the three sums of Eq.~\eqref{eq:estimator} per sample, dividing by $\beta$ and $\langle s\rangle$ --- no environment matrices are needed until the multiband (hole/degenerate) work of D2. It should be cross-validated against the Fr\"ohlich $\alpha=1,2$ Mishchenko values (rung~0), where it must agree with the existing decay estimator.
 
 \end{document}

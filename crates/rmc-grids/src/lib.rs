@@ -874,11 +874,8 @@ impl Grid1d for SymmetricPowerGrid {
             return Some(self.len / 2);
         }
 
-        let use_lower = if self.first <= self.last {
-            value <= self.midpoint
-        } else {
-            value >= self.midpoint
-        };
+        let use_lower =
+            if self.first <= self.last { value <= self.midpoint } else { value >= self.midpoint };
 
         if use_lower {
             self.lower.bin_index(value)
@@ -899,11 +896,7 @@ pub fn integer_subrange(center: usize, len: usize, width: usize) -> Option<usize
         return None;
     }
 
-    let offset = if width % 2 == 0 {
-        width / 2 - 1
-    } else {
-        width / 2
-    };
+    let offset = if width % 2 == 0 { width / 2 - 1 } else { width / 2 };
     Some(center.saturating_sub(offset).min(len - width))
 }
 

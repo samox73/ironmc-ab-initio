@@ -4,6 +4,7 @@
     feature = "cubecl-cuda"
 ))]
 fn run<R: cubecl::prelude::Runtime>(client: cubecl::prelude::ComputeClient<R>) {
+    env_logger::init();
     let dtau = [0.0, 0.1, 1.0, 12.5];
     let exp = cube_spike::cube::run_exp::<R>(client.clone(), 0.7, &dtau);
     let expected = cube_spike::exp_reference(0.7, &dtau);

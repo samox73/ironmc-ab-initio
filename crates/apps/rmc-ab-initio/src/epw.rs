@@ -91,7 +91,18 @@ impl EpwData {
         let d = cx.split_off(nh);
         let h = cx;
 
-        Ok(EpwData { ef, nbnd, nrr_k, nmodes, nrr_q, nrr_g, zstar, epsi, h, d })
+        Ok(EpwData {
+            ef,
+            nbnd,
+            nrr_k,
+            nmodes,
+            nrr_q,
+            nrr_g,
+            zstar,
+            epsi,
+            h,
+            d,
+        })
     }
 
     /// H(R_e)[i,j] at electron WS vector `r`.
@@ -116,7 +127,9 @@ fn split_epwdata(raw: &str) -> (Vec<String>, Vec<Complex64>) {
         header.extend(rest[..open].split_whitespace().map(str::to_owned));
         rest = &rest[open + 1..];
         let close = rest.find(')').expect("epwdata.fmt: unterminated complex");
-        let (re, im) = rest[..close].split_once(',').expect("epwdata.fmt: malformed complex");
+        let (re, im) = rest[..close]
+            .split_once(',')
+            .expect("epwdata.fmt: malformed complex");
         cx.push(Complex64::new(
             re.trim().parse().expect("epwdata.fmt: bad real part"),
             im.trim().parse().expect("epwdata.fmt: bad imag part"),
@@ -171,8 +184,20 @@ impl Crystal {
         let amass = next()?;
         let ityp: Vec<usize> = next()?.iter().map(|&x| x as usize).collect();
 
-        let tau = (0..nat).map(|k| [tau_flat[3 * k], tau_flat[3 * k + 1], tau_flat[3 * k + 2]]).collect();
-        Ok(Crystal { nat, nmodes, at, bg, omega, alat, tau, ityp, amass })
+        let tau = (0..nat)
+            .map(|k| [tau_flat[3 * k], tau_flat[3 * k + 1], tau_flat[3 * k + 2]])
+            .collect();
+        Ok(Crystal {
+            nat,
+            nmodes,
+            at,
+            bg,
+            omega,
+            alat,
+            tau,
+            ityp,
+            amass,
+        })
     }
 
     /// Mass of atom `iat` (Ry a.u.).
@@ -225,7 +250,13 @@ impl EpmatWp {
             let im = f64::from_le_bytes(chunk[8..].try_into().unwrap());
             data.push(Complex64::new(re, im));
         }
-        Ok(EpmatWp { nbnd, nrr_k, nmodes, nrr_g, data })
+        Ok(EpmatWp {
+            nbnd,
+            nrr_k,
+            nmodes,
+            nrr_g,
+            data,
+        })
     }
 
     /// g_wann(R_e, R_p, mode, n, m). `re ∈ [0,nrr_k)`, `rp ∈ [0,nrr_g)`.
@@ -247,6 +278,17 @@ pub struct WsGrid {
 }
 
 impl WsGrid {
+    #[cfg(test)]
+    pub(crate) fn from_parts(irvec: Vec<[i64; 3]>, d1: usize, d2: usize, ndegen: Vec<i32>) -> Self {
+        assert_eq!(ndegen.len(), irvec.len() * d1 * d2);
+        Self {
+            irvec,
+            d1,
+            d2,
+            ndegen,
+        }
+    }
+
     pub fn nr(&self) -> usize {
         self.irvec.len()
     }
@@ -294,7 +336,11 @@ fn read_ws_block<'a>(
     let mut irvec = Vec::with_capacity(nr);
     let mut ndegen = Vec::with_capacity(nr * d1 * d2);
     for _ in 0..nr {
-        let head: Vec<&str> = lines.next().ok_or("wigner.fmt: truncated")?.split_whitespace().collect();
+        let head: Vec<&str> = lines
+            .next()
+            .ok_or("wigner.fmt: truncated")?
+            .split_whitespace()
+            .collect();
         irvec.push([head[0].parse()?, head[1].parse()?, head[2].parse()?]);
         for _ in 0..d1 {
             let row = lines.next().ok_or("wigner.fmt: truncated ndegen")?;
@@ -304,7 +350,17 @@ fn read_ws_block<'a>(
         }
     }
     if ndegen.len() != nr * d1 * d2 {
-        return Err(format!("wigner.fmt: block expected {} degen ints, got {}", nr * d1 * d2, ndegen.len()).into());
+        return Err(format!(
+            "wigner.fmt: block expected {} degen ints, got {}",
+            nr * d1 * d2,
+            ndegen.len()
+        )
+        .into());
     }
-    Ok(WsGrid { irvec, d1, d2, ndegen })
+    Ok(WsGrid {
+        irvec,
+        d1,
+        d2,
+        ndegen,
+    })
 }

@@ -79,6 +79,8 @@ struct RunResult<O> {
 }
 
 fn main() -> rmc_core::Result<()> {
+    // Silent unless RUST_LOG is set, so benchmark timing stays clean.
+    env_logger::init();
     let mut args = std::env::args().skip(1);
     let mode = match args.next() {
         Some(value) => Mode::parse(&value).ok_or_else(|| {

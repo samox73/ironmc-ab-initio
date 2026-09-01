@@ -1,0 +1,98 @@
+//! Probe B: all-orders DMC ground-state E0 vs SVD rank (n_sv).
+//!
+//! Build the vertex table ONCE at max rank, then sweep `rank_cap` on the model
+//! (cheap — capping the rank loop in `full_indices_capped`) and run the DiagMC
+//! engine at each. Plateau of E0(n_sv) within MC error = the production rank.
+//!
+//! Fixed-τ grid ladder for the LiF electron-polaron binding energy.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use rmc_ab_initio::{
+    eph_svd::EphSvd,
+    epw::{Crystal, EpmatWp, EpwData, Wigner},
+    model_abinitio::AbInitioModel,
+    vertex_table::{VertexTable, DEFAULT_PHFREQ_CUTOFF_EV},
+};
+use rmc_core::time;
+use rmc_diagmc::{run, DiagConfig};
+
+fn lif(rel: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../datasets/LiF")
+        .join(rel)
+}
+
+fn load() -> Option<(EpwData, Crystal, Wigner, EpmatWp)> {
+    let wp_path = lif("out/LiF.epmatwp");
+    if !wp_path.exists() {
+        eprintln!("skipping: epmatwp absent (regenerate via run_pipeline.nu)");
+        return None;
+    }
+    let e = EpwData::read(lif("epwdata.fmt")).unwrap();
+    let c = Crystal::read(lif("crystal.fmt")).unwrap();
+    let w = Wigner::read(lif("wigner.fmt")).unwrap();
+    let wp = EpmatWp::read(&wp_path, e.nbnd, e.nrr_k, e.nmodes, e.nrr_g).unwrap();
+    if !wp.data[0].is_finite() {
+        eprintln!("skipping: epmatwp is all-NaN; regenerate the EPW e-ph tensor");
+        return None;
+    }
+    Some((e, c, w, wp))
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let Some((e, c, w, wp)) = load() else {
+        panic!("could not load data");
+    };
+
+    let grid_ns = [8, 12, 16, 20];
+    let rank = 150;
+
+    println!("grid_n  E0[eV]            sign    mean_order");
+    for grid_n in grid_ns {
+        let svd = time!(EphSvd::compress; &wp, 1e-8, rank);
+        let table = Arc::new(
+            time!(VertexTable::build; &e, &c, &w, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV)?,
+        );
+        let k0 = table.index_of(nalgebra::Vector3::zeros()).unwrap();
+        let (mut max_g, mut arg_g) = (0.0f64, (0, 0));
+        let (mut min_w, mut arg_w) = (f64::MAX, (0, 0));
+        for q in 1..table.len() {
+            for nu in 0..table.nmodes {
+                let w = table.phonon_ev[q * table.nmodes + nu].abs();
+                if w < min_w {
+                    min_w = w;
+                    arg_w = (q, nu);
+                }
+                let g = table.full_indices(k0, q, nu).norm();
+                if g > max_g {
+                    max_g = g;
+                    arg_g = (q, nu);
+                }
+            }
+        }
+        println!("grid {grid_n}: min|w|={min_w:.3e} eV @{arg_w:?}   max|g(G,q,nu)|={max_g:.3e} eV @{arg_g:?}");
+
+        let max_tau = 60.0;
+
+        let model = Arc::new(AbInitioModel::with_rank(table.clone(), rank));
+        let cfg = DiagConfig {
+            max_tau,
+            tau_fit: max_tau / 2.0,
+            fixed_tau: true,
+            max_order: 500,
+            chains: 10,
+            max_steps: 100_000_000,
+            warmup_steps: 100_000,
+            ..DiagConfig::default()
+        };
+        let r = time!(run; model, cfg)?;
+        println!(
+            "{grid_n:>6}  {:+.4} ± {:.4}  {:.3}   {:.2}",
+            r.e0_thermo.mean, r.e0_thermo.stderr, r.sign.mean, r.mean_order.mean
+        );
+    }
+    Ok(())
+}

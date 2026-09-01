@@ -20,6 +20,7 @@ numeric = ["grids", "dep:rmc-numeric"]
 io = ["serde", "dep:rmc-io"]
 
 [dependencies]
+log.workspace = true
 rmc-core.workspace = true
 rmc-grids = { workspace = true, optional = true }
 rmc-io = { workspace = true, optional = true }

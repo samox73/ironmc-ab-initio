@@ -4,6 +4,7 @@ use rmc_frohlich::app::{run_from_config_with_progress, write_results};
 use rmc_frohlich::config::RunConfig;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("def") => {

@@ -5,6 +5,7 @@
 //!
 //! Needs the 146 MB `epmatwp`; skips when absent.
 
+use nalgebra::Vector3;
 use rmc_ab_initio::epb::Epb;
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::model::{regular_grid, ReducedModel};
@@ -15,12 +16,14 @@ const RY_TO_EV: f64 = 13.605698066;
 const RY_TO_THZ: f64 = 3289.84498;
 
 /// Cartesian (2π/alat) → fractional crystal coords: q_frac[l] = a_l · q_cart.
-fn to_frac(cry: &Crystal, qc: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|l| (0..3).map(|i| cry.at[l][i] * qc[i]).sum())
+fn to_frac(cry: &Crystal, qc: [f64; 3]) -> Vector3<f64> {
+    Vector3::from_fn(|l, _| (0..3).map(|i| cry.at[l][i] * qc[i]).sum())
 }
 
 fn lif(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../datasets/LiF").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../datasets/LiF")
+        .join(rel)
 }
 
 fn load() -> Option<(EpwData, Crystal, Wigner, GammaModel)> {
@@ -43,21 +46,52 @@ fn load() -> Option<(EpwData, Crystal, Wigner, GammaModel)> {
 
 #[test]
 fn reduced_model_physics_and_serde() {
-    let Some((e, c, w, gamma)) = load() else { return };
+    let Some((e, c, w, gamma)) = load() else {
+        return;
+    };
 
     // Fröhlich 1/q²: along a fixed direction, |g|² grows sharply toward Γ.
-    let q = vec![[0.02, 0.0, 0.0], [0.1, 0.0, 0.0], [0.25, 0.25, 0.25]];
+    let q = vec![
+        Vector3::new(0.02, 0.0, 0.0),
+        Vector3::new(0.1, 0.0, 0.0),
+        Vector3::new(0.25, 0.25, 0.25),
+    ];
     let m = ReducedModel::build(&gamma, &e, &c, &w, &q);
-    assert!(m.g2_lo.iter().all(|&g| g.is_finite() && g > 0.0), "g² = {:?}", m.g2_lo);
-    assert!(m.g2_lo[0] > m.g2_lo[1], "|g|² should grow toward Γ: {:?}", m.g2_lo);
+    assert!(
+        m.g2_lo.iter().all(|&g| g.is_finite() && g > 0.0),
+        "g² = {:?}",
+        m.g2_lo
+    );
+    assert!(
+        m.g2_lo[0] > m.g2_lo[1],
+        "|g|² should grow toward Γ: {:?}",
+        m.g2_lo
+    );
     // 5× smaller q ⇒ ~25× larger |g|² (1/q²); allow slack for the finite short range.
-    assert!(m.g2_lo[0] / m.g2_lo[1] > 10.0, "weak 1/q² growth: {}", m.g2_lo[0] / m.g2_lo[1]);
+    assert!(
+        m.g2_lo[0] / m.g2_lo[1] > 10.0,
+        "weak 1/q² growth: {}",
+        m.g2_lo[0] / m.g2_lo[1]
+    );
 
     // LO–TO splitting is real and positive; frequencies land in a sane range.
     // Physical ω_TO(Γ) ≈ 8.12 THz (33.6 meV, matches ph.x), ω_LO(Γ) ≈ 18.67 THz.
-    assert!(m.omega_lo_mev > m.omega_to_mev, "no LO–TO splitting: {} vs {}", m.omega_lo_mev, m.omega_to_mev);
-    assert!((25.0..45.0).contains(&m.omega_to_mev), "ω_TO = {} meV", m.omega_to_mev);
-    assert!((60.0..95.0).contains(&m.omega_lo_mev), "ω_LO = {} meV", m.omega_lo_mev);
+    assert!(
+        m.omega_lo_mev > m.omega_to_mev,
+        "no LO–TO splitting: {} vs {}",
+        m.omega_lo_mev,
+        m.omega_to_mev
+    );
+    assert!(
+        (25.0..45.0).contains(&m.omega_to_mev),
+        "ω_TO = {} meV",
+        m.omega_to_mev
+    );
+    assert!(
+        (60.0..95.0).contains(&m.omega_lo_mev),
+        "ω_LO = {} meV",
+        m.omega_lo_mev
+    );
     assert!((m.cbm_ev - 9.6143).abs() < 2e-3);
     assert!((m.eps_inf - 2.0437).abs() < 1e-3);
 
@@ -69,7 +103,12 @@ fn reduced_model_physics_and_serde() {
     assert_eq!(full.q.len(), 6 * 6 * 6 - 1);
     assert!(full.g2_lo.iter().all(|&g| g.is_finite() && g > 0.0));
     std::fs::remove_file(&tmp).ok();
-    eprintln!("A1.8: ω_TO={:.1} meV, ω_LO={:.1} meV, {} q-points", m.omega_to_mev, m.omega_lo_mev, full.q.len());
+    eprintln!(
+        "A1.8: ω_TO={:.1} meV, ω_LO={:.1} meV, {} q-points",
+        m.omega_to_mev,
+        m.omega_lo_mev,
+        full.q.len()
+    );
 
     // ---- validate the polar phonons (interpolate_d_polar = short-range D +
     //      dyn_long_cart) against the coarse DFPT dynq, at the SAME q. Wannier
@@ -99,14 +138,25 @@ fn reduced_model_physics_and_serde() {
     }
     let (w2, _) = hermitian_eig(&d, 6);
     let mut f_epb: Vec<f64> = w2.iter().map(|x| x.signum() * x.abs().sqrt()).collect();
-    let mut f_ours = interpolate_d_polar(&e, &c, &w, qf).omega_thz.iter().map(|x| x / RY_TO_THZ).collect::<Vec<_>>();
+    let mut f_ours = interpolate_d_polar(&e, &c, &w, qf)
+        .omega_thz
+        .iter()
+        .map(|x| x / RY_TO_THZ)
+        .collect::<Vec<_>>();
     f_epb.sort_by(|a, b| a.partial_cmp(b).unwrap());
     f_ours.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let lo_mev = f_ours[5] * RY_TO_EV * 1000.0;
-    eprintln!("A1.8: polar phonons @ coarse |q| — LO ours={lo_mev:.1} meV vs epb LO={:.1} meV", f_epb[5] * RY_TO_EV * 1000.0);
+    eprintln!(
+        "A1.8: polar phonons @ coarse |q| — LO ours={lo_mev:.1} meV vs epb LO={:.1} meV",
+        f_epb[5] * RY_TO_EV * 1000.0
+    );
     // compare the optical/LO branches (the ones the polar term shapes) tightly.
     for b in 3..6 {
         let rel = (f_ours[b] - f_epb[b]).abs() / f_epb[b];
-        assert!(rel < 0.01, "polar phonon branch {b} disagrees with DFPT dynq: {:.2}%", rel * 100.0);
+        assert!(
+            rel < 0.01,
+            "polar phonon branch {b} disagrees with DFPT dynq: {:.2}%",
+            rel * 100.0
+        );
     }
 }
