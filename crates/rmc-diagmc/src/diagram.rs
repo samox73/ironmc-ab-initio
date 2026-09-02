@@ -1,5 +1,8 @@
 use nalgebra::Vector3;
+use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
+
+use crate::weight::LocalRatio;
 
 const NONE: usize = usize::MAX;
 
@@ -52,6 +55,18 @@ pub struct Diagram {
     pub min_order: usize,
     pub max_order: usize,
     next_arc_id: usize,
+    #[serde(default = "invalid_log_modulus")]
+    cached_log_modulus: f64,
+    #[serde(default = "unit_phase")]
+    cached_phase: Complex64,
+}
+
+fn invalid_log_modulus() -> f64 {
+    f64::NAN
+}
+
+fn unit_phase() -> Complex64 {
+    Complex64::new(1.0, 0.0)
 }
 
 impl Diagram {
@@ -78,8 +93,10 @@ impl Diagram {
             min_order,
             max_order,
             next_arc_id: 0,
+            cached_log_modulus: f64::NAN,
+            cached_phase: unit_phase(),
         };
-        diagram.rebuild();
+        diagram.patch_neighbors();
         diagram
     }
 
@@ -103,6 +120,44 @@ impl Diagram {
                 (vertex.link > i && vertex.link != NONE).then_some((i, vertex.link))
             })
             .collect()
+    }
+
+    pub fn arc_count(&self) -> usize {
+        self.order
+    }
+
+    pub fn nth_arc(&self, mut nth: usize) -> Option<(usize, usize)> {
+        for (left, vertex) in self.vertices.iter().enumerate() {
+            if vertex.link > left && vertex.link != NONE {
+                if nth == 0 {
+                    return Some((left, vertex.link));
+                }
+                nth -= 1;
+            }
+        }
+        None
+    }
+
+    pub fn cached_phase(&self) -> Complex64 {
+        self.cached_phase
+    }
+
+    pub fn cached_log_modulus(&self) -> f64 {
+        self.cached_log_modulus
+    }
+
+    pub fn set_cached_weight(&mut self, log_modulus: f64, phase: Complex64) {
+        self.cached_log_modulus = log_modulus;
+        self.cached_phase = phase;
+    }
+
+    pub fn apply_ratio(&mut self, ratio: &LocalRatio) {
+        self.cached_log_modulus += ratio.log_modulus;
+        self.cached_phase *= ratio.phase;
+        let norm = self.cached_phase.norm();
+        if norm > 0.0 {
+            self.cached_phase /= norm;
+        }
     }
 
     pub fn incoming_momentum(&self, key: usize) -> Vector3<f64> {
@@ -135,39 +190,74 @@ impl Diagram {
         assert!(0.0 < tau1 && tau1 < tau2 && tau2 < self.tau());
         let arc_id = self.next_arc_id;
         self.next_arc_id += 1;
-        self.vertices.push(Vertex::arc(tau1, q, branch, arc_id));
-        self.vertices.push(Vertex::arc(tau2, q, branch, arc_id));
+        let left = self.vertices.partition_point(|vertex| vertex.tau < tau1);
+        self.vertices
+            .insert(left, Vertex::arc(tau1, q, branch, arc_id));
+        for (key, vertex) in self.vertices.iter_mut().enumerate() {
+            if key != left && vertex.link != NONE && vertex.link >= left {
+                vertex.link += 1;
+            }
+        }
+
+        let right = self.vertices.partition_point(|vertex| vertex.tau < tau2);
+        self.vertices
+            .insert(right, Vertex::arc(tau2, q, branch, arc_id));
+        for (key, vertex) in self.vertices.iter_mut().enumerate() {
+            if key != right && vertex.link != NONE && vertex.link >= right {
+                vertex.link += 1;
+            }
+        }
+        self.vertices[left].link = right;
+        self.vertices[right].link = left;
+        self.patch_neighbors();
+
+        self.vertices[left].p_out = self.vertices[left - 1].p_out - q;
+        for key in left + 1..right {
+            self.vertices[key].p_out -= q;
+        }
+        self.vertices[right].p_out = self.vertices[right - 1].p_out + q;
         self.order += 1;
-        self.rebuild();
-        self.arc_keys()
-            .into_iter()
-            .find(|&(left, _)| self.vertices[left].arc_id == arc_id)
-            .expect("inserted arc must exist")
+        debug_assert!(self.check_consistency());
+        (left, right)
     }
 
     pub fn remove_arc(&mut self, a: usize, b: usize) {
         assert_eq!(self.vertices[a].link, b);
         assert_eq!(self.vertices[b].link, a);
-        let arc_id = self.vertices[a].arc_id;
-        self.vertices.retain(|vertex| vertex.arc_id != arc_id);
+        assert!(a < b);
+        let q = self.vertices[a].q;
+        self.remove_vertex(b);
+        self.remove_vertex(a);
+        for key in a..b - 1 {
+            self.vertices[key].p_out += q;
+        }
+        self.patch_neighbors();
         self.order -= 1;
-        self.rebuild();
+        debug_assert!(self.check_consistency());
     }
 
     pub fn update_arc_q(&mut self, a: usize, b: usize, q: Vector3<f64>) {
         assert_eq!(self.vertices[a].link, b);
-        let arc_id = self.vertices[a].arc_id;
-        for vertex in &mut self.vertices {
-            if vertex.arc_id == arc_id {
-                vertex.q = q;
-            }
+        assert!(a < b);
+        let delta = self.vertices[a].q - q;
+        self.vertices[a].q = q;
+        self.vertices[b].q = q;
+        for key in a..b {
+            self.vertices[key].p_out += delta;
         }
-        self.rebuild();
+        debug_assert!(self.check_consistency());
     }
 
     pub fn set_vertex_tau(&mut self, key: usize, tau: f64) {
+        assert!(key != self.head);
+        assert!(self.vertices[key - 1].tau < tau);
+        if key != self.tail {
+            assert!(tau < self.vertices[key + 1].tau);
+        } else {
+            assert!(tau <= self.max_tau);
+        }
         self.vertices[key].tau = tau;
-        self.rebuild();
+        debug_assert!(self.check_consistency());
     }
 
     pub fn get_p_mean_range(
@@ -202,35 +292,89 @@ impl Diagram {
         (sum, (key + 1).min(self.tail))
     }
 
-    fn rebuild(&mut self) {
-        self.vertices.sort_by(|a, b| a.tau.total_cmp(&b.tau));
+    fn patch_neighbors(&mut self) {
         self.head = 0;
         self.tail = self.vertices.len() - 1;
-
         for key in 0..self.vertices.len() {
             self.vertices[key].prev = key.checked_sub(1).unwrap_or(NONE);
             self.vertices[key].next = if key + 1 < self.vertices.len() { key + 1 } else { NONE };
-            self.vertices[key].link = NONE;
         }
-        for left in 1..self.tail {
-            if self.vertices[left].link != NONE {
-                continue;
-            }
-            let right = (left + 1..self.tail)
-                .find(|&right| self.vertices[right].arc_id == self.vertices[left].arc_id)
-                .expect("every arc has two endpoints");
-            self.vertices[left].link = right;
-            self.vertices[right].link = left;
-        }
+    }
 
-        let mut p = self.p_ext;
-        self.vertices[self.head].p_out = p;
-        for key in 1..self.tail {
-            let sign = if self.vertices[key].link > key { -1.0 } else { 1.0 };
-            p += self.vertices[key].q * sign;
-            self.vertices[key].p_out = p;
+    fn remove_vertex(&mut self, key: usize) {
+        self.vertices.remove(key);
+        for vertex in &mut self.vertices {
+            if vertex.link == key {
+                vertex.link = NONE;
+            } else if vertex.link != NONE && vertex.link > key {
+                vertex.link -= 1;
+            }
         }
-        self.vertices[self.tail].p_out = p;
-        debug_assert!((p - self.p_ext).norm() < 1.0e-10);
+    }
+
+    /// Full structural audit: index layout, τ ordering, link symmetry, and the
+    /// momenta re-derived from every arc's q. Called via `debug_assert!` after
+    /// each mutation, and periodically from the release-mode drift check in
+    /// `run.rs` — the only guard against silent momentum-bookkeeping
+    /// corruption in production runs.
+    pub fn check_consistency(&self) -> bool {
+        if self.head != 0
+            || self.tail + 1 != self.vertices.len()
+            || self.order * 2 + 2 != self.vertices.len()
+            || self
+                .vertices
+                .windows(2)
+                .any(|pair| pair[0].tau >= pair[1].tau)
+        {
+            return false;
+        }
+        let mut momentum = self.p_ext;
+        for key in 0..self.vertices.len() {
+            let vertex = &self.vertices[key];
+            if vertex.prev != key.checked_sub(1).unwrap_or(NONE)
+                || vertex.next != if key + 1 < self.vertices.len() { key + 1 } else { NONE }
+            {
+                return false;
+            }
+            if key == self.head || key == self.tail {
+                if vertex.link != NONE {
+                    return false;
+                }
+            } else {
+                if vertex.link >= self.vertices.len()
+                    || self.vertices[vertex.link].link != key
+                    || self.vertices[vertex.link].arc_id != vertex.arc_id
+                {
+                    return false;
+                }
+                momentum += vertex.q * if vertex.link > key { -1.0 } else { 1.0 };
+            }
+            if (vertex.p_out - momentum).norm() >= 1.0e-10 {
+                return false;
+            }
+        }
+        (momentum - self.p_ext).norm() < 1.0e-10
+    }
+
+    /// Electron segments in τ order: `(outgoing momentum, Δτ)` for each of the
+    /// `tail` propagator pieces. The single source of the segment-walk
+    /// convention shared by the weight and the thermodynamic estimator.
+    pub fn segments(&self) -> impl Iterator<Item = (Vector3<f64>, f64)> + '_ {
+        (0..self.tail).map(|key| {
+            (
+                self.vertices[key].p_out,
+                self.vertices[key + 1].tau - self.vertices[key].tau,
+            )
+        })
+    }
+
+    /// Phonon arcs as `(left, right)` vertex keys, without allocating.
+    pub fn arcs(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.vertices
+            .iter()
+            .enumerate()
+            .filter_map(|(key, vertex)| {
+                (vertex.link != NONE && vertex.link > key).then_some((key, vertex.link))
+            })
     }
 }

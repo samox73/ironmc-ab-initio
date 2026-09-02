@@ -93,9 +93,18 @@ pub fn g_long_cart(cry: &Crystal, epw: &EpwData, q: Vector3<f64>) -> Vec<Cf> {
 }
 
 /// Quantized polar vertex projected onto physical phonon branches, in eV.
-pub fn g_long_branch(cry: &Crystal, epw: &EpwData, wigner: &Wigner, q: Vector3<f64>) -> Vec<Cf> {
+/// `phfreq_cutoff_ev` must match the vertex-table build (pass
+/// `vertex_table::DEFAULT_PHFREQ_CUTOFF_EV` unless deliberately diverging),
+/// so diagnostics built on this function see the same coupling as the engine.
+pub fn g_long_branch(
+    cry: &Crystal,
+    epw: &EpwData,
+    wigner: &Wigner,
+    q: Vector3<f64>,
+    phfreq_cutoff_ev: f64,
+) -> Vec<Cf> {
     let phonons = interpolate_d_polar(epw, cry, wigner, q);
-    project_cartesian_branches(cry, &phonons, &g_long_cart(cry, epw, q), 0.0)
+    project_cartesian_branches(cry, &phonons, &g_long_cart(cry, epw, q), phfreq_cutoff_ev)
 }
 
 pub(crate) fn quantized_eigenvectors(

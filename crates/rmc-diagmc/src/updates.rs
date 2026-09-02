@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use nalgebra::Vector3;
 use num_complex::Complex64;
-use rand::{Rng, SeedableRng};
+use rand::{Error, Rng, RngCore};
 use rmc_core::dispatch_update;
 use rmc_core::mc::{Update, WeightedUpdate, WeightedUpdateSet};
+use rmc_core::random::{exponential_pdf_bounded, exponential_sample_bounded};
 use rmc_core::Result;
 
 use crate::diagram::Diagram;
@@ -13,8 +15,17 @@ use crate::weight;
 #[derive(Clone)]
 pub struct AddPhonon {
     model: Arc<dyn Model>,
-    proposal: Option<Diagram>,
+    proposal: Option<AddProposal>,
     phase_change: Complex64,
+}
+
+#[derive(Clone, Copy)]
+struct AddProposal {
+    tau1: f64,
+    tau2: f64,
+    q: Vector3<f64>,
+    branch: usize,
+    ratio: weight::LocalRatio,
 }
 
 impl AddPhonon {
@@ -38,44 +49,55 @@ impl Update<Diagram> for AddPhonon {
             return -1.0;
         }
 
-        let mut phonon_rng = rand::rngs::StdRng::seed_from_u64(rng.gen());
-        let (q, branch, reported_pdf) = self.model.propose_phonon(&mut phonon_rng);
-        let pdf = self.model.propose_phonon_pdf(q, branch);
-        if branch >= self.model.n_branches()
-            || !pdf.is_finite()
-            || pdf <= 0.0
-            || (reported_pdf - pdf).abs() > 1.0e-10 * pdf.max(1.0)
-        {
+        let (q, branch, q_pdf) = self.model.propose_phonon(&mut RngAdapter(rng));
+        debug_assert!(branch < self.model.n_branches());
+        debug_assert!(
+            (q_pdf - self.model.propose_phonon_pdf(q, branch)).abs() <= 1.0e-10 * q_pdf.max(1.0)
+        );
+        if !q_pdf.is_finite() || q_pdf <= 0.0 {
             return -1.0;
         }
 
-        let mut tau1 = rng.gen::<f64>() * diagram.tau();
-        let mut tau2 = rng.gen::<f64>() * diagram.tau();
-        if tau1 > tau2 {
-            std::mem::swap(&mut tau1, &mut tau2);
-        }
+        let tau1 = rng.gen::<f64>() * diagram.tau();
+        let p = diagram.v(weight::segment_at(diagram, tau1)).p_out;
+        let lambda = decay_rate(self.model.as_ref(), p, q, branch);
+        let tau2 = exponential_sample_bounded(rng.gen(), lambda, tau1, diagram.tau());
         if tau1 <= 0.0 || tau2 <= tau1 || tau2 >= diagram.tau() {
             return -1.0;
         }
+        let tau_pdf = time_proposal_pdf(diagram.tau(), tau1, tau2, lambda);
 
-        let mut proposal = diagram.clone();
-        proposal.insert_arc(tau1, tau2, q, branch);
-        let ratio = weight::add_phonon_ratio(diagram, &proposal, self.model.as_ref());
+        let ratio = weight::insert_arc_ratio(diagram, self.model.as_ref(), tau1, tau2, q, branch);
         self.phase_change = ratio.phase;
-        self.proposal = Some(proposal);
-        ratio.modulus * diagram.tau().powi(2) / (2.0 * (diagram.order + 1) as f64 * pdf)
+        self.proposal = Some(AddProposal {
+            tau1,
+            tau2,
+            q,
+            branch,
+            ratio,
+        });
+        ratio.modulus() / ((diagram.order + 1) as f64 * q_pdf * tau_pdf)
     }
 
     fn accept(&mut self, diagram: &mut Diagram) {
-        *diagram = self.proposal.take().expect("accepted move has a proposal");
+        let proposal = self.proposal.take().expect("accepted move has a proposal");
+        diagram.insert_arc(proposal.tau1, proposal.tau2, proposal.q, proposal.branch);
+        diagram.apply_ratio(&proposal.ratio);
     }
 }
 
 #[derive(Clone)]
 pub struct RemovePhonon {
     model: Arc<dyn Model>,
-    proposal: Option<Diagram>,
+    proposal: Option<RemoveProposal>,
     phase_change: Complex64,
+}
+
+#[derive(Clone, Copy)]
+struct RemoveProposal {
+    left: usize,
+    right: usize,
+    ratio: weight::LocalRatio,
 }
 
 impl RemovePhonon {
@@ -98,30 +120,38 @@ impl Update<Diagram> for RemovePhonon {
         if diagram.order <= diagram.min_order {
             return -1.0;
         }
-        let arcs = diagram.arc_keys();
-        let (left, right) = arcs[rng.gen_range(0..arcs.len())];
+        let (left, right) = diagram
+            .nth_arc(rng.gen_range(0..diagram.arc_count()))
+            .expect("selected arc must exist");
         let vertex = diagram.v(left);
-        let pdf = self.model.propose_phonon_pdf(vertex.q, vertex.branch);
-        if !pdf.is_finite() || pdf <= 0.0 {
+        let q_pdf = self.model.propose_phonon_pdf(vertex.q, vertex.branch);
+        if !q_pdf.is_finite() || q_pdf <= 0.0 {
             return -1.0;
         }
-        let mut proposal = diagram.clone();
-        proposal.remove_arc(left, right);
-        let ratio = weight::remove_phonon_ratio(diagram, &proposal, self.model.as_ref());
+        let lambda = decay_rate(
+            self.model.as_ref(),
+            diagram.incoming_momentum(left),
+            vertex.q,
+            vertex.branch,
+        );
+        let tau_pdf = time_proposal_pdf(diagram.tau(), vertex.tau, diagram.v(right).tau, lambda);
+        let ratio = weight::remove_arc_ratio(diagram, self.model.as_ref(), left, right);
         self.phase_change = ratio.phase;
-        self.proposal = Some(proposal);
-        ratio.modulus * 2.0 * diagram.order as f64 * pdf / diagram.tau().powi(2)
+        self.proposal = Some(RemoveProposal { left, right, ratio });
+        ratio.modulus() * diagram.order as f64 * q_pdf * tau_pdf
     }
 
     fn accept(&mut self, diagram: &mut Diagram) {
-        *diagram = self.proposal.take().expect("accepted move has a proposal");
+        let proposal = self.proposal.take().expect("accepted move has a proposal");
+        diagram.remove_arc(proposal.left, proposal.right);
+        diagram.apply_ratio(&proposal.ratio);
     }
 }
 
 #[derive(Clone)]
 pub struct ChangeTau {
     model: Arc<dyn Model>,
-    proposal: Option<Diagram>,
+    proposal: Option<(f64, weight::LocalRatio)>,
     phase_change: Complex64,
 }
 
@@ -147,23 +177,23 @@ impl Update<Diagram> for ChangeTau {
         if tau <= lower_tau {
             return -1.0;
         }
-        let mut proposal = diagram.clone();
-        proposal.set_vertex_tau(proposal.tail, tau);
-        let ratio = weight::change_tau_ratio(diagram, &proposal, self.model.as_ref());
+        let ratio = weight::shift_tail_ratio(diagram, self.model.as_ref(), tau);
         self.phase_change = ratio.phase;
-        self.proposal = Some(proposal);
-        ratio.modulus
+        self.proposal = Some((tau, ratio));
+        ratio.modulus()
     }
 
     fn accept(&mut self, diagram: &mut Diagram) {
-        *diagram = self.proposal.take().expect("accepted move has a proposal");
+        let (tau, ratio) = self.proposal.take().expect("accepted move has a proposal");
+        diagram.set_vertex_tau(diagram.tail, tau);
+        diagram.apply_ratio(&ratio);
     }
 }
 
 #[derive(Clone)]
 pub struct ChangeInternalTau {
     model: Arc<dyn Model>,
-    proposal: Option<Diagram>,
+    proposal: Option<(usize, f64, weight::LocalRatio)>,
     phase_change: Complex64,
 }
 
@@ -190,16 +220,48 @@ impl Update<Diagram> for ChangeInternalTau {
         if tau <= lower || tau >= upper {
             return -1.0;
         }
-        let mut proposal = diagram.clone();
-        proposal.set_vertex_tau(key, tau);
-        let ratio = weight::change_internal_tau_ratio(diagram, &proposal, self.model.as_ref());
+        let ratio = weight::shift_vertex_tau_ratio(diagram, self.model.as_ref(), key, tau);
         self.phase_change = ratio.phase;
-        self.proposal = Some(proposal);
-        ratio.modulus
+        self.proposal = Some((key, tau, ratio));
+        ratio.modulus()
     }
 
     fn accept(&mut self, diagram: &mut Diagram) {
-        *diagram = self.proposal.take().expect("accepted move has a proposal");
+        let (key, tau, ratio) = self.proposal.take().expect("accepted move has a proposal");
+        diagram.set_vertex_tau(key, tau);
+        diagram.apply_ratio(&ratio);
+    }
+}
+
+fn decay_rate(model: &dyn Model, p: Vector3<f64>, q: Vector3<f64>, branch: usize) -> f64 {
+    (model.phonon_energy(q, branch) + model.electron_energy(p - q) - model.electron_energy(p))
+        .max(1.0e-6)
+}
+
+/// Joint density of (τ1 uniform on (0, τ_ext), τ2 truncated-exponential on
+/// (τ1, τ_ext)); the exponential part is rmc-core's shared sampler so the draw
+/// in `AddPhonon` and this reverse-move density can never drift apart.
+fn time_proposal_pdf(tau_ext: f64, tau1: f64, tau2: f64, lambda: f64) -> f64 {
+    exponential_pdf_bounded(tau2, lambda, tau1, tau_ext) / tau_ext
+}
+
+struct RngAdapter<'a, R: ?Sized>(&'a mut R);
+
+impl<R: RngCore + ?Sized> RngCore for RngAdapter<'_, R> {
+    fn next_u32(&mut self) -> u32 {
+        self.0.next_u32()
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0.next_u64()
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest);
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), Error> {
+        self.0.try_fill_bytes(dest)
     }
 }
 

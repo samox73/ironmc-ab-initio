@@ -37,13 +37,14 @@ pub fn exponential_pdf(x: f64, lambda: f64, a: f64) -> f64 {
 pub fn exponential_sample_bounded(r: f64, lambda: f64, a: f64, b: f64) -> f64 {
     assert!(lambda != 0.0);
     assert!(b > a);
-    a - (1.0 - r * (1.0 - (-(lambda * (b - a))).exp())).ln() / lambda
+    // exp_m1/ln_1p keep full precision when lambda*(b-a) is small.
+    a - (r * (-(lambda * (b - a))).exp_m1()).ln_1p() / lambda
 }
 
 pub fn exponential_pdf_bounded(x: f64, lambda: f64, a: f64, b: f64) -> f64 {
     assert!(lambda != 0.0);
     assert!(b > a);
-    lambda / (1.0 - (-(lambda * (b - a))).exp()) * (-(lambda * (x - a))).exp()
+    lambda / -(-(lambda * (b - a))).exp_m1() * (-(lambda * (x - a))).exp()
 }
 
 pub fn safe_exponential_sample(r: f64, lambda: f64, a: f64, b: f64) -> f64 {

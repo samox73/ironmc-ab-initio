@@ -11,6 +11,7 @@ use rayon::prelude::*;
 use rmc_ab_initio::epw::{Crystal, EpwData, Wigner};
 use rmc_ab_initio::longrange::g_long_branch;
 use rmc_ab_initio::reconstruct::{interpolate_d_polar, interpolate_h, RY_TO_EV, RY_TO_THZ};
+use rmc_ab_initio::vertex_table::DEFAULT_PHFREQ_CUTOFF_EV;
 
 fn lif(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -40,7 +41,7 @@ fn main() {
                     k as f64 / n as f64,
                 );
                 let eps_neg_q = interpolate_h(&epw, &wig, -q).0[0] - cbm;
-                let g = g_long_branch(&cry, &epw, &wig, q);
+                let g = g_long_branch(&cry, &epw, &wig, q, DEFAULT_PHFREQ_CUTOFF_EV);
                 let ph = interpolate_d_polar(&epw, &cry, &wig, q);
                 (0..cry.nmodes)
                     .map(|nu| {

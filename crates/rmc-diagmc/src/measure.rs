@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::diagram::Diagram;
 use crate::model::Model;
-use crate::weight;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Estimate {
@@ -108,7 +107,7 @@ impl Measurement<Diagram> for DiagMeasurement {
 
     fn measure(&mut self, diagram: &Diagram) {
         let batch = (self.next / self.batch_len).min(self.batches.len() - 1);
-        let phase = weight::phase(diagram, self.model.as_ref());
+        let phase = diagram.cached_phase();
         let bin = ((diagram.tau() / self.max_tau * self.batches[batch].hist.len() as f64) as usize)
             .min(self.batches[batch].hist.len() - 1);
         let data = &mut self.batches[batch];
@@ -159,14 +158,35 @@ pub(crate) fn summarize(
         let norm0 = zeroth_norm(model.electron_energy(p_ext) - mu, max_tau);
         let green_values = normalized_green(&total, norm0, bin_width)?;
         let (e0, z) = decay_fit(&tau, &green_values, mu, tau_fit)?;
+        // A degenerate replicate (e.g. all order-0 samples in the omitted
+        // batch) must not abort the run — the total above already normalized.
+        // Skip it, but say so, and never jackknife from fewer than two.
         let mut e0_leave_one = Vec::with_capacity(nonempty.len());
         let mut z_leave_one = Vec::with_capacity(nonempty.len());
+        let mut skipped = 0_usize;
         for omitted in 0..nonempty.len() {
             let sample = aggregate(&nonempty, Some(omitted));
-            let green = normalized_green(&sample, norm0, bin_width)?;
-            let (sample_e0, sample_z) = decay_fit(&tau, &green, mu, tau_fit)?;
-            e0_leave_one.push(sample_e0);
-            z_leave_one.push(sample_z);
+            match normalized_green(&sample, norm0, bin_width)
+                .and_then(|green| decay_fit(&tau, &green, mu, tau_fit))
+            {
+                Ok((sample_e0, sample_z)) => {
+                    e0_leave_one.push(sample_e0);
+                    z_leave_one.push(sample_z);
+                }
+                Err(_) => skipped += 1,
+            }
+        }
+        if skipped > 0 {
+            log::warn!(
+                "decay-fit jackknife skipped {skipped}/{} degenerate replicates; \
+                 the reported e0/z stderr uses only the survivors",
+                nonempty.len()
+            );
+        }
+        if e0_leave_one.len() < 2 {
+            return Err(RmcError::InvalidState(
+                "decay-fit jackknife has fewer than two valid replicates".to_string(),
+            ));
         }
         (green_values, e0, z, e0_leave_one, z_leave_one)
     };
@@ -174,10 +194,37 @@ pub(crate) fn summarize(
     let green_energy = energy_curve(&total, &nonempty);
     let first_fit_bin = tau.partition_point(|&t| t < tau_fit);
     let e0_thermo_mean = energy_ratio(&total, first_fit_bin);
-    let e0_thermo_leave_one: Vec<_> = (0..nonempty.len())
+    if !e0_thermo_mean.is_finite() {
+        if fixed_tau {
+            // In fixed-τ mode this is the only estimator — fail loudly instead
+            // of reporting NaN.
+            return Err(RmcError::InvalidState(
+                "thermodynamic estimator has no samples in the fit window".to_string(),
+            ));
+        }
+        log::warn!("thermodynamic estimator has no samples past tau_fit; e0_thermo is NaN");
+    }
+    let all_thermo: Vec<_> = (0..nonempty.len())
         .map(|omitted| energy_ratio(&aggregate(&nonempty, Some(omitted)), first_fit_bin))
+        .collect();
+    let e0_thermo_leave_one: Vec<_> = all_thermo
+        .iter()
+        .copied()
         .filter(|value| value.is_finite())
         .collect();
+    if e0_thermo_leave_one.len() < all_thermo.len() {
+        log::warn!(
+            "thermodynamic jackknife dropped {}/{} non-finite replicates; \
+             the reported e0_thermo stderr uses only the survivors",
+            all_thermo.len() - e0_thermo_leave_one.len(),
+            all_thermo.len()
+        );
+    }
+    if fixed_tau && e0_thermo_leave_one.len() < 2 {
+        return Err(RmcError::InvalidState(
+            "thermodynamic jackknife has fewer than two valid replicates".to_string(),
+        ));
+    }
 
     let sign_mean = total.phase_sum.re / total.count as f64;
     let order_mean = total.order_sum / total.count as f64;
@@ -219,23 +266,22 @@ pub(crate) fn summarize(
     })
 }
 
+/// Thermodynamic estimator E_loc = (1/τ)[Σ_s ε·Δτ + Σ_a ω·Δτ − 2·order],
+/// walking the diagram through the same `segments()`/`arcs()` iterators the
+/// weight uses, so both stay on one convention.
 fn local_energy(diagram: &Diagram, model: &dyn Model) -> f64 {
-    let tau = diagram.tau();
-    let electron = (0..diagram.tail)
-        .map(|key| {
-            let dt = diagram.v(key + 1).tau - diagram.v(key).tau;
-            model.electron_energy(diagram.v(key).p_out) * dt
-        })
+    let electron = diagram
+        .segments()
+        .map(|(p_out, dt)| model.electron_energy(p_out) * dt)
         .sum::<f64>();
     let phonon = diagram
-        .arc_keys()
-        .into_iter()
+        .arcs()
         .map(|(left, right)| {
             let vertex = diagram.v(left);
             model.phonon_energy(vertex.q, vertex.branch) * (diagram.v(right).tau - vertex.tau)
         })
         .sum::<f64>();
-    (electron + phonon - 2.0 * diagram.order as f64) / tau
+    (electron + phonon - 2.0 * diagram.order as f64) / diagram.tau()
 }
 
 fn energy_ratio(batch: &Batch, first_bin: usize) -> f64 {

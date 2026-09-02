@@ -24,8 +24,12 @@ pub struct VertexTable {
     pub nmodes: usize,
     pub pair_offsets: Vec<usize>,
     pub s: Vec<f64>,
-    /// `[component][k]`; each component belongs to one band pair.
-    pub utab: Vec<Cf>,
+    /// `[k][component]`, precontracted with the singular value and CBM ket.
+    #[serde(alias = "utab")]
+    pub wtab: Vec<Cf>,
+    /// CBM bra-band index for each compressed component.
+    #[serde(default)]
+    pub bra_band: Vec<u8>,
     /// `[component][q][branch]`.
     pub vtab: Vec<Cf>,
     /// CBM eigenvector `[k][orbital]`.
@@ -72,6 +76,9 @@ impl VertexTable {
         {
             return Err("SVD and EPW dimensions differ".into());
         }
+        if epw.nbnd > u8::MAX as usize + 1 {
+            return Err("precontracted vertex supports at most 256 bands".into());
+        }
         let bytes = Self::estimated_bytes(grid_n, svd.rank(), epw.nbnd, epw.nmodes);
         log::debug!(
             "vertex table estimate: {:.2} GiB",
@@ -115,10 +122,19 @@ impl VertexTable {
                 long_ev[index * nm + nu] = branches[nu];
             }
         }
-        let band_edge = electron_ev[0];
+        // Shift to the global band minimum so ε ≥ 0 holds for any material;
+        // for a Γ-minimum band (LiF) this equals electron_ev[0].
+        let band_edge = electron_ev.iter().copied().fold(f64::INFINITY, f64::min);
+        if band_edge < electron_ev[0] {
+            log::warn!(
+                "conduction minimum is {:.6} eV below Γ — the band edge is off-Γ; \
+                 dispersion is shifted to the true minimum",
+                electron_ev[0] - band_edge
+            );
+        }
         electron_ev.iter_mut().for_each(|e| *e -= band_edge);
 
-        let mut utab = vec![Cf::new(0.0, 0.0); components * nk];
+        let mut wtab = vec![Cf::new(0.0, 0.0); components * nk];
         let mut vtab = vec![Cf::new(0.0, 0.0); components * nk * nm];
 
         let mut g_to_nm = vec![(0usize, 0usize); components];
@@ -130,7 +146,7 @@ impl VertexTable {
             }
         }
 
-        utab.par_chunks_mut(components)
+        wtab.par_chunks_mut(components)
             .zip(vtab.par_chunks_mut(nm * components))
             .enumerate()
             .for_each(|(index, (u_row, v_row))| {
@@ -161,20 +177,23 @@ impl VertexTable {
                 }
             });
 
-        Ok(Self {
+        let mut table = Self {
             grid_n,
             nbnd: nb,
             nmodes: nm,
             pair_offsets: svd.pair_offsets.clone(),
             s: svd.s.clone(),
-            utab,
+            wtab,
             vtab,
             cbm_evec,
             electron_ev,
             phonon_ev,
             long_ev,
             phfreq_cutoff_ev,
-        })
+            bra_band: vec![],
+        };
+        table.precontract();
+        Ok(table)
     }
 
     pub fn len(&self) -> usize {
@@ -221,23 +240,38 @@ impl VertexTable {
         self.short_indices_capped(k, q, nu, &usize::MAX)
     }
 
+    /// `(k + q) mod grid`, purely on flat indices — the hot path must not
+    /// round-trip through fractional coordinates.
+    #[inline]
+    pub fn wrap_add(&self, k: usize, q: usize) -> usize {
+        let n = self.grid_n;
+        let nn = n * n;
+        let i = (k / nn + q / nn) % n;
+        let j = (k / n % n + q / n % n) % n;
+        let l = (k % n + q % n) % n;
+        (i * n + j) * n + l
+    }
+
     pub fn short_indices_capped(&self, k: usize, q: usize, nu: usize, rank_cap: &usize) -> Cf {
-        assert!(k < self.len() && q < self.len() && nu < self.nmodes);
-        let kp = self.index_of(self.point(k) + self.point(q)).unwrap();
+        debug_assert!(k < self.len() && q < self.len() && nu < self.nmodes);
+        let kp = self.wrap_add(k, q);
         let ncomp = self.s.len();
-        let u_row = &self.utab[k * ncomp..(k + 1) * ncomp];
+        let u_row = &self.wtab[k * ncomp..(k + 1) * ncomp];
         let v_row = &self.vtab[(q * self.nmodes + nu) * ncomp..(q * self.nmodes + nu + 1) * ncomp];
+        let bra = self.cbm(kp);
         let mut out = Cf::new(0.0, 0.0);
-        for n in 0..self.nbnd {
-            for m in 0..self.nbnd {
-                let pair = n * self.nbnd + m;
-                let electron = self.cbm(kp)[n].conj() * self.cbm(k)[m];
+        if *rank_cap == usize::MAX {
+            for g in 0..ncomp {
+                out += bra[self.bra_band[g] as usize].conj() * u_row[g] * v_row[g];
+            }
+        } else {
+            for pair in 0..self.nbnd * self.nbnd {
                 let start = self.pair_offsets[pair];
                 let end = start
                     .saturating_add(*rank_cap)
                     .min(self.pair_offsets[pair + 1]);
                 for g in start..end {
-                    out += self.s[g] * electron * u_row[g] * v_row[g];
+                    out += bra[self.bra_band[g] as usize].conj() * u_row[g] * v_row[g];
                 }
             }
         }
@@ -249,7 +283,7 @@ impl VertexTable {
     }
 
     pub fn full_indices_capped(&self, k: usize, q: usize, nu: usize, rank_cap: &usize) -> Cf {
-        let kp = self.index_of(self.point(k) + self.point(q)).unwrap();
+        let kp = self.wrap_add(k, q);
         let overlap: Cf = self
             .cbm(kp)
             .iter()
@@ -291,7 +325,28 @@ impl VertexTable {
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+        let mut table: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        if table.bra_band.is_empty() && !table.s.is_empty() {
+            table.precontract();
+        }
+        Ok(table)
+    }
+
+    fn precontract(&mut self) {
+        let ncomp = self.s.len();
+        self.bra_band = vec![0; ncomp];
+        for n in 0..self.nbnd {
+            for m in 0..self.nbnd {
+                let pair = n * self.nbnd + m;
+                for g in self.pair_offsets[pair]..self.pair_offsets[pair + 1] {
+                    self.bra_band[g] = n as u8;
+                    for k in 0..self.len() {
+                        let ket = self.cbm_evec[k * self.nbnd + m];
+                        self.wtab[k * ncomp + g] *= self.s[g] * ket;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -301,6 +356,31 @@ mod tests {
     use crate::epw::{EpmatWp, WsGrid};
 
     #[test]
+    fn wrap_add_matches_the_fractional_round_trip() {
+        let table = VertexTable {
+            grid_n: 5,
+            nbnd: 1,
+            nmodes: 1,
+            pair_offsets: vec![0, 0],
+            s: vec![],
+            wtab: vec![],
+            bra_band: vec![],
+            vtab: vec![],
+            cbm_evec: vec![Cf::new(1.0, 0.0); 125],
+            electron_ev: vec![0.0; 125],
+            phonon_ev: vec![1.0; 125],
+            long_ev: vec![Cf::new(0.0, 0.0); 125],
+            phfreq_cutoff_ev: DEFAULT_PHFREQ_CUTOFF_EV,
+        };
+        for k in 0..table.len() {
+            for q in 0..table.len() {
+                let expected = table.index_of(table.point(k) + table.point(q)).unwrap();
+                assert_eq!(table.wrap_add(k, q), expected);
+            }
+        }
+    }
+
+    #[test]
     fn exact_periodic_grid_lookup() {
         let table = VertexTable {
             grid_n: 4,
@@ -308,7 +388,8 @@ mod tests {
             nmodes: 1,
             pair_offsets: vec![0, 0],
             s: vec![],
-            utab: vec![],
+            wtab: vec![],
+            bra_band: vec![],
             vtab: vec![],
             cbm_evec: vec![Cf::new(1.0, 0.0); 64],
             electron_ev: vec![0.0; 64],
@@ -381,5 +462,63 @@ mod tests {
             VertexTable::build(&epw, &crystal, &wigner, &svd, 2, DEFAULT_PHFREQ_CUTOFF_EV).unwrap();
         let direct = DirectVertex::new(&epw, &crystal, &wigner, &epmat);
         assert!(table.max_direct_error(&direct, 200, 19) < 1e-9);
+    }
+
+    #[test]
+    fn precontracted_evaluation_matches_band_pair_loop() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(23);
+        let grid_n = 2_usize;
+        let nk = grid_n.pow(3);
+        let nbnd = 2;
+        let ncomp = 8;
+        let mut table = VertexTable {
+            grid_n,
+            nbnd,
+            nmodes: 1,
+            pair_offsets: vec![0, 2, 4, 6, 8],
+            s: (0..ncomp).map(|_| rng.gen_range(0.2..1.2)).collect(),
+            wtab: (0..nk * ncomp)
+                .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                .collect(),
+            bra_band: vec![],
+            vtab: (0..nk * ncomp)
+                .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                .collect(),
+            cbm_evec: (0..nk * nbnd)
+                .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                .collect(),
+            electron_ev: vec![0.0; nk],
+            phonon_ev: vec![1.0; nk],
+            long_ev: vec![Cf::new(0.0, 0.0); nk],
+            phfreq_cutoff_ev: DEFAULT_PHFREQ_CUTOFF_EV,
+        };
+        let raw = table.wtab.clone();
+        let mut cases = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let k = rng.gen_range(0..nk);
+            let q = rng.gen_range(0..nk);
+            let cap = rng.gen_range(1..=3);
+            let kp = table.index_of(table.point(k) + table.point(q)).unwrap();
+            let mut expected = Cf::new(0.0, 0.0);
+            for n in 0..nbnd {
+                for m in 0..nbnd {
+                    let pair = n * nbnd + m;
+                    let end = (table.pair_offsets[pair] + cap).min(table.pair_offsets[pair + 1]);
+                    for g in table.pair_offsets[pair]..end {
+                        expected += table.s[g]
+                            * table.cbm(kp)[n].conj()
+                            * table.cbm(k)[m]
+                            * raw[k * ncomp + g]
+                            * table.vtab[q * ncomp + g];
+                    }
+                }
+            }
+            cases.push((k, q, cap, expected * RY_TO_EV));
+        }
+
+        table.precontract();
+        for (k, q, cap, expected) in cases {
+            assert!((table.short_indices_capped(k, q, 0, &cap) - expected).norm() < 1.0e-12);
+        }
     }
 }

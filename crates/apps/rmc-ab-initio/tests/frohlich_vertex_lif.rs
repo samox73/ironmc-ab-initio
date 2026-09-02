@@ -42,7 +42,7 @@ fn long_range_second_order_baseline() {
                 );
                 let electron = interpolate_h(&epw, &wigner, -q).0[0] - cbm;
                 let phonons = interpolate_d_polar(&epw, &crystal, &wigner, q);
-                let branch = g_long_branch(&crystal, &epw, &wigner, q);
+                let branch = g_long_branch(&crystal, &epw, &wigner, q, DEFAULT_PHFREQ_CUTOFF_EV);
                 for nu in 0..crystal.nmodes {
                     let omega = phonons.omega_thz[nu].abs() / 3289.84498 * RY_TO_EV;
                     let contribution =
@@ -102,7 +102,7 @@ fn polar_lo_vertex_has_the_frohlich_magnitude() {
             * (omega_lo / 2.0)
             * (1.0 / eps_inf - 1.0 / eps_0)
             / q_cart.powi(2);
-        let tabulated = g_long_branch(&crystal, &epw, &wigner, q)
+        let tabulated = g_long_branch(&crystal, &epw, &wigner, q, DEFAULT_PHFREQ_CUTOFF_EV)
             .into_iter()
             .map(|g| g.norm_sqr())
             .fold(0.0, f64::max)

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use nalgebra::Vector3;
-use rmc_core::mc::{MetropolisKernel, Runner, SimulationParams};
+use rand::Rng;
+use rmc_core::mc::{Kernel, MetropolisKernel, Runner, SimulationParams, StepOutcome};
 use rmc_core::random::SeedSource;
 use rmc_core::{Result, RmcError};
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use crate::diagram::Diagram;
 use crate::measure::{summarize, DiagMeasurement, Report};
 use crate::model::Model;
 use crate::updates::{update_set, update_set_fixed_tau};
+use crate::weight;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DiagConfig {
@@ -59,7 +61,6 @@ impl DiagConfig {
             || self.max_tau <= 0.0
             || !self.tau_fit.is_finite()
             || self.tau_fit < 0.0
-            || self.tau_fit >= self.max_tau
             || self.num_bins < 2
             || self.min_order != 0
             || self.max_order == 0
@@ -69,6 +70,18 @@ impl DiagConfig {
             || self.n_batches < 2
         {
             return Err(RmcError::InvalidArgument("invalid DiagConfig".to_string()));
+        }
+        // The estimator windows select histogram bins by their centers (the last
+        // sits at max_tau·(1 − 1/(2·num_bins))), so tau_fit must leave at least
+        // the last bin inside the window or every estimate is built from an
+        // empty slice.
+        if self.tau_fit > self.max_tau * (1.0 - 1.0 / self.num_bins as f64) {
+            return Err(RmcError::InvalidArgument(format!(
+                "tau_fit = {} leaves no histogram bin in the fit window; it must \
+                 be at most max_tau·(1 − 1/num_bins) = {}",
+                self.tau_fit,
+                self.max_tau * (1.0 - 1.0 / self.num_bins as f64)
+            )));
         }
         Ok(())
     }
@@ -97,12 +110,18 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
             let tail = diagram.tail;
             diagram.set_vertex_tau(tail, build_cfg.max_tau);
         }
+        weight::sync_cache(&mut diagram, build_model.as_ref());
         let updates = if build_cfg.fixed_tau {
             update_set_fixed_tau(build_model.clone())
         } else {
             update_set(build_model.clone())
         };
-        let kernel = MetropolisKernel::new(updates.expect("validated update set"));
+        let kernel = DriftCheckedKernel {
+            inner: MetropolisKernel::new(updates.expect("validated update set")),
+            model: build_model.clone(),
+            steps: 0,
+            interval: build_cfg.steps_per_cycle.saturating_mul(4096),
+        };
         let measurement = DiagMeasurement::new(
             build_model.clone(),
             build_cfg.num_bins,
@@ -133,4 +152,51 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
         cfg.tau_fit,
         cfg.fixed_tau,
     )
+}
+
+struct DriftCheckedKernel<S> {
+    inner: MetropolisKernel<S>,
+    model: Arc<dyn Model>,
+    steps: u64,
+    interval: u64,
+}
+
+impl<R: Rng, S> Kernel<Diagram, R> for DriftCheckedKernel<S>
+where
+    MetropolisKernel<S>: Kernel<Diagram, R>,
+{
+    fn prepare(&mut self, diagram: &mut Diagram) -> Result<()> {
+        self.inner.prepare(diagram)
+    }
+
+    fn step(&mut self, diagram: &mut Diagram, rng: &mut R) -> Result<StepOutcome> {
+        let outcome = self.inner.step(diagram, rng)?;
+        self.steps += 1;
+        if self.steps % self.interval == 0 {
+            // Structural audit (link symmetry, τ ordering, momenta re-derived
+            // from the arc q's). This is the only momentum check that survives
+            // release builds, where the per-mutation debug_asserts vanish.
+            assert!(
+                diagram.check_consistency(),
+                "diagram bookkeeping (links/ordering/momenta) is inconsistent"
+            );
+            let cached_log = diagram.cached_log_modulus();
+            let cached_phase = diagram.cached_phase();
+            let (log_modulus, phase) = weight::log_modulus_and_phase(diagram, self.model.as_ref());
+            // Relative tolerance: the cache accumulates one rounding error per
+            // accepted move between resyncs, proportional to |log W|.
+            let tolerance = 1.0e-8 * (1.0 + log_modulus.abs());
+            assert!(
+                (cached_log - log_modulus).abs() < tolerance,
+                "cached log-modulus drifted: {cached_log} vs {log_modulus}"
+            );
+            assert!((cached_phase - phase).norm() < 1.0e-8);
+            diagram.set_cached_weight(log_modulus, phase);
+        }
+        Ok(outcome)
+    }
+
+    fn reset_stats(&mut self) {
+        self.inner.reset_stats();
+    }
 }

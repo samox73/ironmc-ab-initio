@@ -92,7 +92,11 @@ impl Model for AbInitioModel {
         debug_assert_ne!(q, 0);
         let nu = rng.gen_range(0..self.table.nmodes);
         let point = self.table.point(q);
-        (point, nu, self.propose_phonon_pdf(point, nu))
+        // The pdf comes straight from the sampled index — no point↔index
+        // float round-trip in the proposal hot path.
+        let pdf = self.q_weight[q] / (self.q_weight_sum * self.table.nmodes as f64);
+        debug_assert_eq!(pdf, self.propose_phonon_pdf(point, nu));
+        (point, nu, pdf)
     }
 
     fn propose_phonon_pdf(&self, q: Vector3<f64>, nu: usize) -> f64 {
@@ -128,7 +132,8 @@ mod tests {
             nmodes: 2,
             pair_offsets: vec![0, 0],
             s: vec![],
-            utab: vec![],
+            wtab: vec![],
+            bra_band: vec![],
             vtab: vec![],
             cbm_evec: vec![Complex64::new(1.0, 0.0); nk],
             electron_ev: vec![0.0; nk],
