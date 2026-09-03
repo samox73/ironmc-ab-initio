@@ -5,7 +5,7 @@ use nalgebra::Vector3;
 use rmc_ab_initio::{
     eph_svd::EphSvd,
     epw::{Crystal, EpmatWp, EpwData, Wigner},
-    vertex_table::{VertexTable, DEFAULT_PHFREQ_CUTOFF_EV},
+    vertex_table::{e2, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV},
 };
 use rmc_core::time;
 use tabled::{settings::Style, Table, Tabled};
@@ -53,14 +53,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ranks: Vec<usize> = (1..300).step_by(10).collect();
 
     let svd = time!(EphSvd::compress; &wp, 1e-8, ranks[ranks.len() - 1]);
+    log::info!(
+        "max SVD reconstruction error: {:.3e}",
+        svd.max_relative_error(&wp)
+    );
     let table = time!(VertexTable::build; &e, &c, &w, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV)?;
     diagnose_second_order(&table, ranks.last().unwrap());
 
     let mut e2_fulls = Vec::with_capacity(ranks.len());
     let mut e2_shorts = Vec::with_capacity(ranks.len());
     for max_rank in ranks.iter().progress() {
-        let full = e_second_order(&table, true, max_rank);
-        let short = e_second_order(&table, false, max_rank);
+        let full = e2(&table, true, max_rank);
+        let short = e2(&table, false, max_rank);
         e2_fulls.push(full);
         e2_shorts.push(short);
     }
@@ -134,29 +138,4 @@ fn build_table(ranks: Vec<usize>, e2_fulls: Vec<f64>, e2_shorts: Vec<f64>) -> St
     let mut table = Table::new(rows);
     table.with(Style::rounded());
     table.to_string()
-}
-
-/// E⁽²⁾ = (1/N_q) Σ_{q≠0, ν}  |g_ν(0,q)|²  /  ( ε(0) − ε(−q) − ω_ν(q) )
-fn e_second_order(table: &VertexTable, long_range: bool, rank: &usize) -> f64 {
-    let nq = table.len();
-    let nmodes = table.nmodes;
-    let k0 = table.index_of(Vector3::zeros()).unwrap();
-    let mut sum = 0.;
-
-    // skip index 0 (where q == 0)
-    for idx_q in 1..nq {
-        let q = table.point(idx_q);
-        let idx_neg_q = table.index_of(-q).unwrap();
-        let eps_neg_q = table.electron_ev[idx_neg_q];
-        for mode in 0..nmodes {
-            let g = if long_range {
-                table.full_indices_capped(k0, idx_q, mode, rank)
-            } else {
-                table.short_indices_capped(k0, idx_q, mode, rank)
-            };
-            let denom = -eps_neg_q - table.phonon_ev[idx_q * nmodes + mode];
-            sum += g.norm_sqr() / denom;
-        }
-    }
-    sum / nq as f64
 }

@@ -49,10 +49,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let grid_ns = [8, 12, 16, 20];
     let rank = 150;
+    let svd = time!(EphSvd::compress_global; &wp, 1e-8, rank);
+    log::info!(
+        "max SVD reconstruction error: {:.3e}",
+        svd.max_relative_error(&wp)
+    );
 
     println!("grid_n  E0[eV]            sign    mean_order");
     for grid_n in grid_ns {
-        let svd = time!(EphSvd::compress; &wp, 1e-8, rank);
         let table = Arc::new(
             time!(VertexTable::build; &e, &c, &w, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV)?,
         );
@@ -77,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let max_tau = 60.0;
 
-        let model = Arc::new(AbInitioModel::with_rank(table.clone(), rank));
+        let model = Arc::new(AbInitioModel::new(table.clone()));
         let cfg = DiagConfig {
             max_tau,
             tau_fit: max_tau / 2.0,

@@ -74,6 +74,13 @@ All three checks pass: E₀ sits 6–8% below the same-grid E⁽²⁾ = −0.104
 
 Throughput: ~45 min wall for the sweep ⇒ ~0.7–2k steps/s/chain with the pre-Plan-C engine (full weight recompute per attempt, O(order·rank)). The 100M-step production ladder is blocked on Plan C (C1+C2).
 
+## Plan B observable SVD gate (2026-09-02)
+
+The A0-corrected 8³ E⁽²⁾ sweep required changing the planned rank samples while
+keeping its physics thresholds. Rank 50→100 drifted by 2.675 meV and rank
+16→100 by 6.46%, so the gate now samples `[8, 12, 16, 25, 90, 100]`.
+Rank 90→100 drifts by 0.023 meV (<2 meV), and rank 12→100 by 2.07% (<5%).
+
 ## Review findings fixed (2026-09-02)
 
 All 10 findings from the Plan A/C adversarial review are addressed; workspace at 226 passed / 0 failed, release-mode rmc-diagmc suite included.

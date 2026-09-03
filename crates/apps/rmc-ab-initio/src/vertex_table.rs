@@ -1,4 +1,8 @@
 //! Uniform-grid Fourier tables for the SVD-compressed vertex.
+//!
+//! A table may have a global production budget from
+//! [`EphSvd::compress_global`]. The `rank_cap` arguments below are per-pair caps
+//! retained only for cheap sweeps of an already-built table.
 
 use crate::eph_svd::EphSvd;
 use crate::epw::{Crystal, EpwData, Wigner};
@@ -16,6 +20,25 @@ type Cf = Complex64;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub const DEFAULT_PHFREQ_CUTOFF_EV: f64 = 1.0e-3;
+
+/// E⁽²⁾ = (1/N_q) Σ_{q≠0,ν} |g_ν(0,q)|² / (−ε(−q)−ω_ν(q)).
+pub fn e2(table: &VertexTable, long_range: bool, rank_cap: &usize) -> f64 {
+    let k0 = table.index_of(Vector3::zeros()).unwrap();
+    let mut sum = 0.0;
+    for q in 1..table.len() {
+        let neg_q = table.index_of(-table.point(q)).unwrap();
+        for nu in 0..table.nmodes {
+            let g = if long_range {
+                table.full_indices_capped(k0, q, nu, rank_cap)
+            } else {
+                table.short_indices_capped(k0, q, nu, rank_cap)
+            };
+            sum +=
+                g.norm_sqr() / (-table.electron_ev[neg_q] - table.phonon_ev[q * table.nmodes + nu]);
+        }
+    }
+    sum / table.len() as f64
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct VertexTable {

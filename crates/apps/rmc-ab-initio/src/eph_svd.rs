@@ -1,4 +1,8 @@
 //! Per-band-pair truncated SVD of the short-range e-ph tensor.
+//!
+//! `max_rank` is a per-pair cap used for cheap convergence sweeps.
+//! [`EphSvd::compress_global`] applies the production `total_rank` budget across
+//! all band pairs.
 
 use crate::epw::EpmatWp;
 use crate::reconstruct::hermitian_eig;
@@ -10,6 +14,9 @@ use std::{ops::Range, path::Path};
 type Cf = Complex64;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// Numerical-rank floor relative to each pair's largest singular value.
+///
+/// This removes numerical noise; it is not an element-wise accuracy promise.
 pub const DEFAULT_TOL: f64 = 1e-6;
 pub const MAX_RANK: usize = 100;
 
@@ -32,6 +39,10 @@ pub struct EphSvd {
 impl EphSvd {
     pub fn compress_default(epmat: &EpmatWp) -> Self {
         Self::compress(epmat, DEFAULT_TOL, MAX_RANK)
+    }
+
+    pub fn compress_global(epmat: &EpmatWp, tol: f64, total_rank: usize) -> Self {
+        Self::compress(epmat, tol, MAX_RANK).truncate_global(total_rank)
     }
 
     /// Decompose each band pair through its smaller `M M†` Gram matrix.
@@ -110,6 +121,46 @@ impl EphSvd {
             u,
             v,
         }
+    }
+
+    /// Keep the globally largest singular values while preserving pair-local order.
+    pub fn truncate_global(mut self, total_rank: usize) -> Self {
+        let mut components = Vec::with_capacity(self.rank());
+        for (pair, range) in self.pair_offsets.windows(2).enumerate() {
+            for component in range[0]..range[1] {
+                components.push((pair, component, self.s[component]));
+            }
+        }
+        components.sort_by(|a, b| {
+            b.2.total_cmp(&a.2)
+                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.1.cmp(&b.1))
+        });
+
+        let mut pair_ranks = vec![0; self.pair_offsets.len() - 1];
+        for &(pair, _, _) in components.iter().take(total_rank) {
+            pair_ranks[pair] += 1;
+        }
+
+        let ncol = self.nrr_g * self.nmodes;
+        let mut pair_offsets = Vec::with_capacity(self.pair_offsets.len());
+        let mut s = Vec::with_capacity(total_rank.min(self.rank()));
+        let mut u = Vec::with_capacity(s.capacity() * self.nrr_k);
+        let mut v = Vec::with_capacity(s.capacity() * ncol);
+        pair_offsets.push(0);
+        for (pair, rank) in pair_ranks.into_iter().enumerate() {
+            let start = self.pair_offsets[pair];
+            let end = start + rank;
+            s.extend_from_slice(&self.s[start..end]);
+            u.extend_from_slice(&self.u[start * self.nrr_k..end * self.nrr_k]);
+            v.extend_from_slice(&self.v[start * ncol..end * ncol]);
+            pair_offsets.push(s.len());
+        }
+        self.pair_offsets = pair_offsets;
+        self.s = s;
+        self.u = u;
+        self.v = v;
+        self
     }
 
     pub fn rank(&self) -> usize {
@@ -219,9 +270,34 @@ mod tests {
                 Cf::new(1.0, 2.0),
             ],
         };
-        let svd = EphSvd::compress(&epmat, 1e-7, 3);
+        let svd = EphSvd::compress_global(&epmat, 1e-7, 4);
         assert_eq!(svd.pair_ranks(), vec![2]);
         assert!(svd.max_relative_error(&epmat) < 1e-10);
+    }
+
+    #[test]
+    fn global_truncation_keeps_the_largest_singular_values() {
+        let svd = EphSvd {
+            nbnd: 2,
+            nrr_k: 1,
+            nmodes: 1,
+            nrr_g: 1,
+            tol: 1e-6,
+            pair_offsets: vec![0, 2, 4, 6, 8],
+            s: vec![9.0, 2.0, 8.0, 7.0, 6.0, 1.0, 5.0, 3.0],
+            u: vec![Cf::new(1.0, 0.0); 8],
+            v: vec![Cf::new(1.0, 0.0); 8],
+        };
+        let mut expected = svd.s.clone();
+        expected.sort_by(|a, b| b.total_cmp(a));
+        expected.truncate(5);
+
+        let truncated = svd.truncate_global(5);
+        let mut actual = truncated.s.clone();
+        actual.sort_by(|a, b| b.total_cmp(a));
+        assert_eq!(actual, expected);
+        assert_eq!(truncated.rank(), 5);
+        assert_eq!(truncated.pair_ranks(), vec![1, 2, 1, 1]);
     }
 
     #[test]

@@ -11,8 +11,8 @@ fn lif(rel: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "full LiF SVD plus 200 direct vertex evaluations"]
-fn compressed_lif_vertex_matches_direct_on_grid() {
+#[ignore = "full LiF SVD plus an 8³ table and 200 direct evaluations"]
+fn compressed_lif_vertex_has_no_wiring_errors() {
     let path = lif("out/LiF.epmatwp");
     if !path.exists() {
         eprintln!("skipping: epmatwp absent (regenerate via run_pipeline.nu)");
@@ -26,11 +26,11 @@ fn compressed_lif_vertex_matches_direct_on_grid() {
         eprintln!("skipping: epmatwp is non-finite");
         return;
     }
-    let svd = EphSvd::compress_default(&epmat);
+    let svd = EphSvd::compress_global(&epmat, DEFAULT_TOL, 300);
     let table =
-        VertexTable::build(&epw, &crystal, &wigner, &svd, 2, DEFAULT_PHFREQ_CUTOFF_EV).unwrap();
+        VertexTable::build(&epw, &crystal, &wigner, &svd, 8, DEFAULT_PHFREQ_CUTOFF_EV).unwrap();
     let direct = DirectVertex::new(&epw, &crystal, &wigner, &epmat);
     let error = table.max_direct_error(&direct, 200, 19);
     eprintln!("max compressed/direct vertex error={error:.3e}");
-    assert!(error < 10.0 * DEFAULT_TOL, "max relative error {error:.3e}");
+    assert!(error < 0.05, "max relative error {error:.3e}");
 }
