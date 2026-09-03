@@ -21,20 +21,24 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub const DEFAULT_PHFREQ_CUTOFF_EV: f64 = 1.0e-3;
 
-/// E⁽²⁾ = (1/N_q) Σ_{q≠0,ν} |g_ν(0,q)|² / (−ε(−q)−ω_ν(q)).
+/// E⁽²⁾ = (1/N_q) Σ_{q≠0,ν} |g_ν(0,q)|² / (ε(0)−ε(−q)−ω_ν(q)).
+///
+/// `ε(0)` is kept explicitly: the table shifts energies to the global band
+/// minimum, so `ε(Γ) > 0` for a material whose minimum is off Γ.
 pub fn e2(table: &VertexTable, long_range: bool, rank_cap: &usize) -> f64 {
     let k0 = table.index_of(Vector3::zeros()).unwrap();
+    let eps0 = table.electron_ev[k0];
     let mut sum = 0.0;
     for q in 1..table.len() {
-        let neg_q = table.index_of(-table.point(q)).unwrap();
+        let neg_q = table.neg(q);
         for nu in 0..table.nmodes {
             let g = if long_range {
                 table.full_indices_capped(k0, q, nu, rank_cap)
             } else {
                 table.short_indices_capped(k0, q, nu, rank_cap)
             };
-            sum +=
-                g.norm_sqr() / (-table.electron_ev[neg_q] - table.phonon_ev[q * table.nmodes + nu]);
+            sum += g.norm_sqr()
+                / (eps0 - table.electron_ev[neg_q] - table.phonon_ev[q * table.nmodes + nu]);
         }
     }
     sum / table.len() as f64
@@ -263,6 +267,17 @@ impl VertexTable {
         self.short_indices_capped(k, q, nu, &usize::MAX)
     }
 
+    /// `−q mod grid`, purely on flat indices (mirror of [`Self::wrap_add`]).
+    #[inline]
+    pub fn neg(&self, q: usize) -> usize {
+        let n = self.grid_n;
+        let nn = n * n;
+        let i = (n - q / nn % n) % n;
+        let j = (n - q / n % n) % n;
+        let l = (n - q % n) % n;
+        (i * n + j) * n + l
+    }
+
     /// `(k + q) mod grid`, purely on flat indices — the hot path must not
     /// round-trip through fractional coordinates.
     #[inline]
@@ -396,6 +411,8 @@ mod tests {
             phfreq_cutoff_ev: DEFAULT_PHFREQ_CUTOFF_EV,
         };
         for k in 0..table.len() {
+            let negated = table.index_of(-table.point(k)).unwrap();
+            assert_eq!(table.neg(k), negated);
             for q in 0..table.len() {
                 let expected = table.index_of(table.point(k) + table.point(q)).unwrap();
                 assert_eq!(table.wrap_add(k, q), expected);

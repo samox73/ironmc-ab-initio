@@ -29,6 +29,11 @@ pub struct EphSvd {
     pub tol: f64,
     /// Component offsets for each `(bra,ket)` pair, plus the final total.
     pub pair_offsets: Vec<usize>,
+    /// `Some(budget)` when produced by [`Self::truncate_global`]; `None` for a
+    /// plain per-pair-capped decomposition. Distinguishes the two rank
+    /// semantics, which otherwise share the same numeric range.
+    #[serde(default)]
+    pub total_budget: Option<usize>,
     pub s: Vec<f64>,
     /// `[component][R_e]`.
     pub u: Vec<Cf>,
@@ -42,7 +47,16 @@ impl EphSvd {
     }
 
     pub fn compress_global(epmat: &EpmatWp, tol: f64, total_rank: usize) -> Self {
-        Self::compress(epmat, tol, MAX_RANK).truncate_global(total_rank)
+        let svd = Self::compress(epmat, tol, MAX_RANK).truncate_global(total_rank);
+        // Production visibility: element-wise error is a diagnostic, not a gate
+        // (plan-svd-rank-test.md B2), but every production compression logs it.
+        log::info!(
+            "compress_global(total_rank={total_rank}): rank {} of per-pair max, \
+             max relative reconstruction error {:.3e}",
+            svd.rank(),
+            svd.max_relative_error(epmat)
+        );
+        svd
     }
 
     /// Decompose each band pair through its smaller `M M†` Gram matrix.
@@ -117,16 +131,25 @@ impl EphSvd {
             nrr_g: epmat.nrr_g,
             tol,
             pair_offsets,
+            total_budget: None,
             s,
             u,
             v,
         }
     }
 
-    /// Keep the globally largest singular values while preserving pair-local order.
-    pub fn truncate_global(mut self, total_rank: usize) -> Self {
+    /// Keep the globally largest singular values while preserving pair-local
+    /// order. Borrows `self` and copies only the kept components, so sweeping
+    /// several budgets from one decomposition never clones the full tensor.
+    pub fn truncate_global(&self, total_rank: usize) -> Self {
         let mut components = Vec::with_capacity(self.rank());
         for (pair, range) in self.pair_offsets.windows(2).enumerate() {
+            // The per-pair-prefix rebuild below is only correct because
+            // `compress` stores each pair's σ in descending order.
+            debug_assert!(
+                self.s[range[0]..range[1]].windows(2).all(|w| w[0] >= w[1]),
+                "within-pair singular values must be non-increasing"
+            );
             for component in range[0]..range[1] {
                 components.push((pair, component, self.s[component]));
             }
@@ -156,11 +179,18 @@ impl EphSvd {
             v.extend_from_slice(&self.v[start * ncol..end * ncol]);
             pair_offsets.push(s.len());
         }
-        self.pair_offsets = pair_offsets;
-        self.s = s;
-        self.u = u;
-        self.v = v;
-        self
+        Self {
+            nbnd: self.nbnd,
+            nrr_k: self.nrr_k,
+            nmodes: self.nmodes,
+            nrr_g: self.nrr_g,
+            tol: self.tol,
+            pair_offsets,
+            total_budget: Some(total_rank),
+            s,
+            u,
+            v,
+        }
     }
 
     pub fn rank(&self) -> usize {
@@ -284,6 +314,7 @@ mod tests {
             nrr_g: 1,
             tol: 1e-6,
             pair_offsets: vec![0, 2, 4, 6, 8],
+            total_budget: None,
             s: vec![9.0, 2.0, 8.0, 7.0, 6.0, 1.0, 5.0, 3.0],
             u: vec![Cf::new(1.0, 0.0); 8],
             v: vec![Cf::new(1.0, 0.0); 8],
@@ -298,6 +329,8 @@ mod tests {
         assert_eq!(actual, expected);
         assert_eq!(truncated.rank(), 5);
         assert_eq!(truncated.pair_ranks(), vec![1, 2, 1, 1]);
+        assert_eq!(truncated.total_budget, Some(5));
+        assert_eq!(svd.total_budget, None);
     }
 
     #[test]
@@ -309,6 +342,7 @@ mod tests {
             nrr_g: 1,
             tol: 1e-6,
             pair_offsets: vec![0, 1],
+            total_budget: None,
             s: vec![2.0],
             u: vec![Cf::new(0.0, 1.0)],
             v: vec![Cf::new(1.0, 0.0)],

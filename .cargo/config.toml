@@ -1,0 +1,8 @@
+# Convergence-gate aliases (see journal.md "Plan B gate recalibration").
+# Tier-2 decided gates are invoked individually — never via the full suite.
+[alias]
+# E² compression gate: global budgets vs the untruncated reference, 8³ (~40 s).
+gate-e2 = "test --release -p rmc-ab-initio --test svd_rank_convergence_lif -- --nocapture"
+# DMC rank gate [800 vs 1600]: scout-sized by default (~minutes);
+# production run: IRONMC_DMC_STEPS=100000000 cargo gate-dmc
+gate-dmc = "test --release -p rmc-ab-initio --test dmc_svd_rank_convergence_lif -- --ignored --nocapture"

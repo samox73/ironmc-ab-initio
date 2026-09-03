@@ -76,10 +76,9 @@ Throughput: ~45 min wall for the sweep ⇒ ~0.7–2k steps/s/chain with the pre-
 
 ## Plan B observable SVD gate (2026-09-02)
 
-The A0-corrected 8³ E⁽²⁾ sweep required changing the planned rank samples while
-keeping its physics thresholds. Rank 50→100 drifted by 2.675 meV and rank
-16→100 by 6.46%, so the gate now samples `[8, 12, 16, 25, 90, 100]`.
-Rank 90→100 drifts by 0.023 meV (<2 meV), and rank 12→100 by 2.07% (<5%).
+The A0-corrected 8³ E⁽²⁾ sweep required changing the planned rank samples while keeping its physics thresholds. Rank 50→100 drifted by 2.675 meV and rank 16→100 by 6.46%, so the gate now samples `[8, 12, 16, 25, 90, 100]`. Rank 90→100 drifts by 0.023 meV (<2 meV), and rank 12→100 by 2.07% (<5%).
+
+**Superseded 2026-09-03 (review):** the resampling above hid that the planned invariants fail at their calibration points — the honest reading of the same data is that per-pair E² convergence is ~3 meV at half-rank, not <2 meV, and long-range dominance is ~6.5% at rank 16. The gate was rewritten to sweep the production knob instead (global `total_rank` through `truncate_global`) with measured-plus-headroom thresholds; see the recalibration entry below.
 
 ## Review findings fixed (2026-09-02)
 
@@ -94,3 +93,32 @@ All 10 findings from the Plan A/C adversarial review are addressed; workspace at
 - longrange.rs: `g_long_branch` takes `phfreq_cutoff_ev` explicitly; the Fröhlich-oracle test and `e2_ngrid` diagnostic now pass `DEFAULT_PHFREQ_CUTOFF_EV`, so diagnostics and engine share one coupling definition.
 
 Refuted (no change): zero-arc-factor force-accept (unreachable), τ-pdf INF acceptance (precision-bounded + NaN-reject), ln(N_q) measure (proved correct), legacy-cache cutoff and double-precontraction (no such files can exist; revisit with a version field when Plan D's binary cache lands).
+
+## Plan B gate recalibration: global-budget E² convergence measured against the untruncated reference (2026-09-03)
+
+The review-rewritten gate (`tests/svd_rank_convergence_lif.rs`) now sweeps the production knob — `truncate_global(total)` → table → E² on the 8³ grid — against the untruncated per-pair reference (rank 1600 at DEFAULT_TOL=1e-6): E²_full = −0.104028 eV, E²_short = −0.021610 eV (short-range carries 20.8%; the exact long-range term dominates).
+
+| total | E²_full [eV] | error vs reference [meV] |
+|---|---|---|
+| 50 | −0.114174 | −10.1 |
+| 100 | −0.114174 | −10.1 |
+| 150 | −0.103280 | +0.7 |
+| 200 | −0.096993 | +7.0 |
+| 300 | −0.097411 | +6.6 |
+| 400 | −0.093105 | +10.9 |
+| 600 | −0.098005 | +6.0 |
+| 800 | −0.102662 | +1.4 |
+
+Two findings the old (per-pair-swept, resampled) gate could not see: (1) global σ-ordered truncation converges NON-monotonically at k=Γ with ~±10 meV oscillations up to total ~600 — σ ranks global tensor weight, not the Γ-row importance — so the +0.7 meV at total 150 is accidental cancellation, not convergence; (2) the practical budget guidance is: total 300 ≈ 7 meV compression systematic (fine for the ±30 meV rung-2 checkpoint at 20³), total ≥800 for the final ~10 meV extrapolation (memory at 50³/f32 per plan-large-grids.md D0: ~5 GB — feasible). Encoded gates: |E²(800) − ref| < 3 meV, |E²(300) − ref| < 12 meV, short fraction < 35%. The B4 DMC gate (150 vs 300 within 2σ) may legitimately fail once MC errors drop below ~5 meV — that would be the rank non-convergence showing, not a bug.
+
+Review fixes shipped alongside: `truncate_global` borrows (`&self`, no full-tensor clone per swept budget) and records `total_budget: Some(n)` on the result (provenance distinguishing the two rank semantics); a `debug_assert` pins the within-pair descending-σ invariant the prefix rebuild relies on; `compress_global` logs `max_relative_error` at info on every production compression; `e2` restores the +ε(Γ) denominator term (exact for off-Γ-CBM materials) and uses an integer `neg()` helper (unit-tested against the float path); the grid-ladder example header/variable now say `total_rank` with a comparability warning vs pre-Plan-B "rank 150" labels; the heavy DMC gate reads `IRONMC_DMC_STEPS` (default 2M scout; 100M is opt-in).
+
+## DMC rank gate result: budget decision (2026-09-03)
+
+The B4 gate at IRONMC_DMC_STEPS=100000000 (8³, fixed-τ, 10 chains) measured E₀(total 150) = −0.1159 ± 0.0001 eV and E₀(total 300) = −0.1113 ± 0.0001 eV — a genuine 4.6 meV rank systematic, matching the E² scan's ΔE²(150→300) = 5.9 meV in sign and magnitude. Compression error propagates ~1:1 from E² into E₀, so the E² gate is a trustworthy cheap proxy. The failure against the pure-2σ criterion was the gate working as intended; the criterion is now max(2σ, 3 meV) and the compared budgets are [800, 1600] (untruncated), per the E² recalibration. **Production budget: total 800.** Plan D (D0/D7) updated accordingly — 50³ at 800/f32 is ~5.2 GiB.
+
+Also measured: the full gate (2 × 100M steps × 10 chains) completed in 703 s ⇒ ~280k steps/s/chain at 8³/rank ≲ 300 — roughly 150–400× over the pre-Plan-C scout throughput.
+
+## Production budget decision: rank 300 + quoted systematic (2026-09-03)
+
+Decision: production runs use total rank 300 (matching FEP-DMC's nsvd = 20/pair ≈ 320) and every result quotes the measured compression systematic instead of paying for negligibility. Measured at the E₀ level on 8³: Δ_rank(300) = E₀(300) − E₀(1600) = 0.7 ± 0.5 meV (combining the 100M-step rank-300 run with the 2M-step rank-1600 scout: −0.1113 ± 0.0001 vs −0.1106 ± 0.0005). The Γ-row E² proxy (~7 meV at 300) overestimates the DMC systematic because the sampler BZ-averages the compression error; rank 150 remains genuinely too low (4.6 meV, measured 2026-09-03). The [800, 1600] scout gate passed at 1.3 meV, so 800 stays certified as a fallback if a future grid re-measurement of Δ_rank(300) comes out large. Gate updated to [300, 1600] with tolerance max(2σ, 3 meV) (`cargo gate-dmc`); Plan D updated to rank-300/f32 ladders (50³ ≈ 2.0 GiB) with a Δ_rank re-measurement at 20³ as ladder step 4.

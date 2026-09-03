@@ -54,7 +54,12 @@ pub fn convergence(max_steps: u64) -> Result<Option<Vec<RankResult>>, Box<dyn st
     };
 
     let grid_n = 8;
-    let ranks = [150, 300];
+    // Production budget 300 vs the untruncated reference (1600). Measured at
+    // the E₀ level (journal 2026-09-03): Δ_rank(300) = 0.7 ± 0.5 meV at 8³ —
+    // the Γ-row E² proxy (~7 meV) overestimates the DMC systematic, which
+    // averages compression error over the whole BZ. Rank 150 is genuinely too
+    // low (4.6 meV measured); 300 matches FEP-DMC's nsvd=20/pair ≈ 320 total.
+    let ranks = [300, 1600];
     let svd = time!(EphSvd::compress; &wp, 1e-8, MAX_RANK);
     log::info!(
         "max SVD reconstruction error: {:.3e}",

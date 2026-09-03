@@ -1,10 +1,11 @@
-//! Probe B: all-orders DMC ground-state E0 vs SVD rank (n_sv).
+//! Fixed-τ grid ladder for the LiF electron-polaron binding energy: one
+//! globally-truncated SVD (production budget), one table + DMC run per grid
+//! size.
 //!
-//! Build the vertex table ONCE at max rank, then sweep `rank_cap` on the model
-//! (cheap — capping the rank loop in `full_indices_capped`) and run the DiagMC
-//! engine at each. Plateau of E0(n_sv) within MC error = the production rank.
-//!
-//! Fixed-τ grid ladder for the LiF electron-polaron binding energy.
+//! NOTE on rank semantics: since the Plan-B rework, `total_rank = 150` is a
+//! GLOBAL budget across all band pairs (`compress_global`), not the per-pair
+//! `rank_cap` the pre-2026-09-02 journal entries used — E0 at "rank 150" is
+//! not comparable across that change.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,12 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let grid_ns = [8, 12, 16, 20];
-    let rank = 150;
-    let svd = time!(EphSvd::compress_global; &wp, 1e-8, rank);
-    log::info!(
-        "max SVD reconstruction error: {:.3e}",
-        svd.max_relative_error(&wp)
-    );
+    let total_rank = 150;
+    let svd = time!(EphSvd::compress_global; &wp, 1e-8, total_rank);
 
     println!("grid_n  E0[eV]            sign    mean_order");
     for grid_n in grid_ns {
