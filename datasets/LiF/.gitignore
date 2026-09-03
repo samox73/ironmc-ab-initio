@@ -13,6 +13,7 @@
 !epwdata.fmt
 !crystal.fmt
 !wigner.fmt
+!generate-k-mesh.py
 
 # ...but not the transient QE scratch input
 input_tmp.in
