@@ -10,16 +10,96 @@ use crate::longrange::{g_long_cart, project_cartesian_branches, quantized_eigenv
 use crate::reconstruct::{interpolate_d_polar, interpolate_h, phase, RY_TO_EV, RY_TO_THZ};
 use crate::vertex_direct::DirectVertex;
 use nalgebra::Vector3;
-use num_complex::Complex64;
+use num_complex::{Complex, Complex64};
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 type Cf = Complex64;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub const DEFAULT_PHFREQ_CUTOFF_EV: f64 = 1.0e-3;
+pub const DEFAULT_MAX_BYTES: u64 = 8 * 1024_u64.pow(3);
+
+const CACHE_MAGIC: &[u8; 8] = b"RMCVTAB\0";
+const CACHE_VERSION: u32 = 1;
+const FLAG_F32: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TablePrecision {
+    F32,
+    F64,
+}
+
+impl TablePrecision {
+    fn bytes(self) -> u64 {
+        match self {
+            Self::F32 => 8,
+            Self::F64 => 16,
+        }
+    }
+}
+
+impl std::str::FromStr for TablePrecision {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "f32" => Ok(Self::F32),
+            "f64" => Ok(Self::F64),
+            _ => Err("precision must be f32 or f64"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Tab {
+    F32(Vec<Complex<f32>>),
+    F64(Vec<Complex64>),
+}
+
+impl Tab {
+    fn zeros(len: usize, precision: TablePrecision) -> Self {
+        match precision {
+            TablePrecision::F32 => Self::F32(vec![Complex::new(0.0, 0.0); len]),
+            TablePrecision::F64 => Self::F64(vec![Complex64::new(0.0, 0.0); len]),
+        }
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> Complex64 {
+        match self {
+            Self::F32(values) => {
+                let value = values[index];
+                Complex64::new(value.re as f64, value.im as f64)
+            }
+            Self::F64(values) => values[index],
+        }
+    }
+
+    fn precision(&self) -> TablePrecision {
+        match self {
+            Self::F32(_) => TablePrecision::F32,
+            Self::F64(_) => TablePrecision::F64,
+        }
+    }
+
+    fn scale(&mut self, index: usize, factor: Complex64) {
+        match self {
+            Self::F32(values) => {
+                let value = Cf::new(values[index].re as f64, values[index].im as f64) * factor;
+                values[index] = Complex::new(value.re as f32, value.im as f32);
+            }
+            Self::F64(values) => values[index] *= factor,
+        }
+    }
+}
 
 /// E⁽²⁾ = (1/N_q) Σ_{q≠0,ν} |g_ν(0,q)|² / (ε(0)−ε(−q)−ω_ν(q)).
 ///
@@ -53,12 +133,12 @@ pub struct VertexTable {
     pub s: Vec<f64>,
     /// `[k][component]`, precontracted with the singular value and CBM ket.
     #[serde(alias = "utab")]
-    pub wtab: Vec<Cf>,
+    pub wtab: Tab,
     /// CBM bra-band index for each compressed component.
     #[serde(default)]
     pub bra_band: Vec<u8>,
     /// `[component][q][branch]`.
-    pub vtab: Vec<Cf>,
+    pub vtab: Tab,
     /// CBM eigenvector `[k][orbital]`.
     pub cbm_evec: Vec<Cf>,
     /// CBM dispersion in eV, shifted so the Γ band edge is zero.
@@ -75,13 +155,106 @@ fn default_phfreq_cutoff_ev() -> f64 {
     DEFAULT_PHFREQ_CUTOFF_EV
 }
 
+trait StoredComplex: Copy + Send + Sync {
+    fn from_f64(value: Cf) -> Self;
+}
+
+impl StoredComplex for Complex<f32> {
+    fn from_f64(value: Cf) -> Self {
+        Self::new(value.re as f32, value.im as f32)
+    }
+}
+
+impl StoredComplex for Complex64 {
+    fn from_f64(value: Cf) -> Self {
+        value
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_fourier_tables<T: StoredComplex>(
+    epw: &EpwData,
+    wigner: &Wigner,
+    svd: &EphSvd,
+    grid_n: usize,
+    phonon_evec: &[Cf],
+    component_bands: &[(usize, usize)],
+    wtab: &mut [T],
+    vtab: &mut [T],
+    completed: &AtomicUsize,
+    progress_step: usize,
+) {
+    let nk = grid_n.pow(3);
+    let components = svd.rank();
+    let nm = epw.nmodes;
+    if components == 0 {
+        return;
+    }
+    wtab.par_chunks_mut(components)
+        .zip(vtab.par_chunks_mut(nm * components))
+        .enumerate()
+        .for_each(|(index, (u_row, v_row))| {
+            let point = VertexTable::point_for(grid_n, index);
+            let pe: Vec<Cf> = wigner.k.irvec.iter().map(|&r| phase(point, r)).collect();
+            let pp: Vec<Cf> = wigner.g.irvec.iter().map(|&r| phase(point, r)).collect();
+            for g in 0..components {
+                let (n, m) = component_bands[g];
+                let mut u = Cf::new(0.0, 0.0);
+                for (re, &p) in pe.iter().enumerate() {
+                    let d = wigner.k.ndegen(re, n, m);
+                    if d > 0 {
+                        u += p * svd.u_at(g, re) / d as f64;
+                    }
+                }
+                u_row[g] = T::from_f64(u);
+
+                for nu in 0..nm {
+                    let mut v = Cf::new(0.0, 0.0);
+                    for (rp, &p) in pp.iter().enumerate() {
+                        for a in 0..nm {
+                            let d = wigner.g.ndegen(rp, 0, a / 3);
+                            if d > 0 {
+                                let e = phonon_evec[(index * nm + nu) * nm + a];
+                                v += p * svd.v_at(g, rp, a) * e / d as f64;
+                            }
+                        }
+                    }
+                    v_row[nu * components + g] = T::from_f64(v);
+                }
+            }
+            let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if done % progress_step == 0 || done == nk {
+                log::info!(
+                    "vertex Fourier data: {done}/{nk} points ({:.0}%)",
+                    done * 100 / nk
+                );
+            }
+        });
+}
+
 impl VertexTable {
-    pub fn estimated_bytes(grid_n: usize, components: usize, nbnd: usize, nmodes: usize) -> u64 {
-        let nk = grid_n as u64 * grid_n as u64 * grid_n as u64;
-        let complex =
-            nk * (components as u64 * (1 + nmodes) as u64 + nbnd as u64 + nmodes as u64) * 16;
-        let real = nk * (1 + nmodes) as u64 * 8 + components as u64 * 8;
-        complex + real
+    pub fn cache_filename(grid_n: usize, total_rank: usize, precision: TablePrecision) -> String {
+        format!("table-n{grid_n}-r{total_rank}-{:?}.rmcvtab", precision).to_lowercase()
+    }
+
+    pub fn estimated_bytes(
+        grid_n: usize,
+        components: usize,
+        nbnd: usize,
+        nmodes: usize,
+        precision: TablePrecision,
+    ) -> u64 {
+        let nk = (grid_n as u64).saturating_pow(3);
+        let tables = nk
+            .saturating_mul(components as u64)
+            .saturating_mul((1 + nmodes) as u64)
+            .saturating_mul(precision.bytes());
+        let complex = nk.saturating_mul((nbnd + nmodes) as u64).saturating_mul(16);
+        let real = nk
+            .saturating_mul((1 + nmodes) as u64)
+            .saturating_mul(8)
+            .saturating_add((components as u64).saturating_mul(8));
+        tables.saturating_add(complex).saturating_add(real)
     }
 
     pub fn build(
@@ -91,6 +264,8 @@ impl VertexTable {
         svd: &EphSvd,
         grid_n: usize,
         phfreq_cutoff_ev: f64,
+        precision: TablePrecision,
+        max_bytes: u64,
     ) -> Result<Self> {
         if grid_n == 0 {
             return Err("grid_n must be positive".into());
@@ -106,20 +281,23 @@ impl VertexTable {
         if epw.nbnd > u8::MAX as usize + 1 {
             return Err("precontracted vertex supports at most 256 bands".into());
         }
-        let bytes = Self::estimated_bytes(grid_n, svd.rank(), epw.nbnd, epw.nmodes);
-        log::debug!(
+        let bytes = Self::estimated_bytes(grid_n, svd.rank(), epw.nbnd, epw.nmodes, precision);
+        log::info!(
             "vertex table estimate: {:.2} GiB",
             bytes as f64 / 2_f64.powi(30)
         );
-        if bytes > 3 * 1024_u64.pow(3) {
+        if bytes > max_bytes {
             return Err(format!(
-                "USER CHECKPOINT: vertex tables need {:.2} GiB",
-                bytes as f64 / 2_f64.powi(30)
+                "USER CHECKPOINT: vertex tables need {:.2} GiB, above the {:.2} GiB limit",
+                bytes as f64 / 2_f64.powi(30),
+                max_bytes as f64 / 2_f64.powi(30),
             )
             .into());
         }
 
-        let nk = grid_n.pow(3);
+        let nk = grid_n
+            .checked_pow(3)
+            .ok_or("grid_n cubed overflows usize")?;
         let nb = epw.nbnd;
         let nm = epw.nmodes;
         let components = svd.rank();
@@ -129,26 +307,47 @@ impl VertexTable {
         let mut phonon_evec = vec![Cf::new(0.0, 0.0); nk * nm * nm];
         let mut long_ev = vec![Cf::new(0.0, 0.0); nk * nm];
 
-        for index in 0..nk {
-            let point = Self::point_for(grid_n, index);
-            let (energies, evecs) = interpolate_h(epw, wigner, point);
-            electron_ev[index] = energies[0];
-            cbm_evec[index * nb..(index + 1) * nb].copy_from_slice(&evecs[0]);
+        let started = Instant::now();
+        let completed = AtomicUsize::new(0);
+        let progress_step = (nk / 20).max(1);
+        electron_ev
+            .par_iter_mut()
+            .zip(cbm_evec.par_chunks_mut(nb))
+            .zip(phonon_ev.par_chunks_mut(nm))
+            .zip(phonon_evec.par_chunks_mut(nm * nm))
+            .zip(long_ev.par_chunks_mut(nm))
+            .enumerate()
+            .for_each(
+                |(index, ((((electron, cbm), phonon), phonon_vectors), long))| {
+                    let point = Self::point_for(grid_n, index);
+                    let (energies, evecs) = interpolate_h(epw, wigner, point);
+                    *electron = energies[0];
+                    cbm.copy_from_slice(&evecs[0]);
 
-            let phonons = interpolate_d_polar(epw, crystal, wigner, point);
-            let gl = g_long_cart(crystal, epw, point);
-            let branches = project_cartesian_branches(crystal, &phonons, &gl, phfreq_cutoff_ev);
-            let evec = quantized_eigenvectors(crystal, &phonons, phfreq_cutoff_ev);
-            for nu in 0..nm {
-                let omega_ry = phonons.omega_thz[nu].abs() / RY_TO_THZ;
-                phonon_ev[index * nm + nu] = omega_ry * RY_TO_EV;
-                for a in 0..nm {
-                    let e = evec[nu * nm + a];
-                    phonon_evec[(index * nm + nu) * nm + a] = e;
-                }
-                long_ev[index * nm + nu] = branches[nu];
-            }
-        }
+                    let phonons = interpolate_d_polar(epw, crystal, wigner, point);
+                    let gl = g_long_cart(crystal, epw, point);
+                    let branches =
+                        project_cartesian_branches(crystal, &phonons, &gl, phfreq_cutoff_ev);
+                    let evec = quantized_eigenvectors(crystal, &phonons, phfreq_cutoff_ev);
+                    for nu in 0..nm {
+                        phonon[nu] = phonons.omega_thz[nu].abs() / RY_TO_THZ * RY_TO_EV;
+                        phonon_vectors[nu * nm..(nu + 1) * nm]
+                            .copy_from_slice(&evec[nu * nm..(nu + 1) * nm]);
+                        long[nu] = branches[nu];
+                    }
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if done % progress_step == 0 || done == nk {
+                        log::info!(
+                            "vertex base data: {done}/{nk} points ({:.0}%)",
+                            done * 100 / nk
+                        );
+                    }
+                },
+            );
+        log::info!(
+            "vertex base data complete: {:.0} points/sec",
+            nk as f64 / started.elapsed().as_secs_f64()
+        );
         // Shift to the global band minimum so ε ≥ 0 holds for any material;
         // for a Γ-minimum band (LiF) this equals electron_ev[0].
         let band_edge = electron_ev.iter().copied().fold(f64::INFINITY, f64::min);
@@ -161,8 +360,8 @@ impl VertexTable {
         }
         electron_ev.iter_mut().for_each(|e| *e -= band_edge);
 
-        let mut wtab = vec![Cf::new(0.0, 0.0); components * nk];
-        let mut vtab = vec![Cf::new(0.0, 0.0); components * nk * nm];
+        let mut wtab = Tab::zeros(components * nk, precision);
+        let mut vtab = Tab::zeros(components * nk * nm, precision);
 
         let mut g_to_nm = vec![(0usize, 0usize); components];
         for n in 0..nb {
@@ -173,36 +372,39 @@ impl VertexTable {
             }
         }
 
-        wtab.par_chunks_mut(components)
-            .zip(vtab.par_chunks_mut(nm * components))
-            .enumerate()
-            .for_each(|(index, (u_row, v_row))| {
-                let point = Self::point_for(grid_n, index);
-                let pe: Vec<Cf> = wigner.k.irvec.iter().map(|&r| phase(point, r)).collect();
-                let pp: Vec<Cf> = wigner.g.irvec.iter().map(|&r| phase(point, r)).collect();
-                for g in 0..components {
-                    let (n, m) = g_to_nm[g];
-                    for re in 0..epw.nrr_k {
-                        let d = wigner.k.ndegen(re, n, m);
-                        if d > 0 {
-                            u_row[g] += pe[re] * svd.u_at(g, re) / d as f64;
-                        }
-                    }
-                    for rp in 0..epw.nrr_g {
-                        // let f = phase(point, wigner.g.irvec[rp]);
-                        for nu in 0..nm {
-                            for a in 0..nm {
-                                let d = wigner.g.ndegen(rp, 0, a / 3);
-                                if d > 0 {
-                                    let e = phonon_evec[(index * nm + nu) * nm + a];
-                                    v_row[nu * components + g] +=
-                                        pp[rp] * svd.v_at(g, rp, a) * e / d as f64;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+        let started = Instant::now();
+        let completed = AtomicUsize::new(0);
+        match (&mut wtab, &mut vtab) {
+            (Tab::F32(w), Tab::F32(v)) => fill_fourier_tables(
+                epw,
+                wigner,
+                svd,
+                grid_n,
+                &phonon_evec,
+                &g_to_nm,
+                w,
+                v,
+                &completed,
+                progress_step,
+            ),
+            (Tab::F64(w), Tab::F64(v)) => fill_fourier_tables(
+                epw,
+                wigner,
+                svd,
+                grid_n,
+                &phonon_evec,
+                &g_to_nm,
+                w,
+                v,
+                &completed,
+                progress_step,
+            ),
+            _ => unreachable!("table arrays use one precision"),
+        }
+        log::info!(
+            "vertex Fourier data complete: {:.0} points/sec",
+            nk as f64 / started.elapsed().as_secs_f64()
+        );
 
         let mut table = Self {
             grid_n,
@@ -229,6 +431,11 @@ impl VertexTable {
 
     pub fn is_empty(&self) -> bool {
         self.grid_n == 0
+    }
+
+    pub fn precision(&self) -> TablePrecision {
+        debug_assert_eq!(self.wtab.precision(), self.vtab.precision());
+        self.wtab.precision()
     }
 
     pub fn point(&self, index: usize) -> Vector3<f64> {
@@ -294,13 +501,15 @@ impl VertexTable {
         debug_assert!(k < self.len() && q < self.len() && nu < self.nmodes);
         let kp = self.wrap_add(k, q);
         let ncomp = self.s.len();
-        let u_row = &self.wtab[k * ncomp..(k + 1) * ncomp];
-        let v_row = &self.vtab[(q * self.nmodes + nu) * ncomp..(q * self.nmodes + nu + 1) * ncomp];
+        let u_start = k * ncomp;
+        let v_start = (q * self.nmodes + nu) * ncomp;
         let bra = self.cbm(kp);
         let mut out = Cf::new(0.0, 0.0);
         if *rank_cap == usize::MAX {
             for g in 0..ncomp {
-                out += bra[self.bra_band[g] as usize].conj() * u_row[g] * v_row[g];
+                out += bra[self.bra_band[g] as usize].conj()
+                    * self.wtab.get(u_start + g)
+                    * self.vtab.get(v_start + g);
             }
         } else {
             for pair in 0..self.nbnd * self.nbnd {
@@ -309,7 +518,9 @@ impl VertexTable {
                     .saturating_add(*rank_cap)
                     .min(self.pair_offsets[pair + 1]);
                 for g in start..end {
-                    out += bra[self.bra_band[g] as usize].conj() * u_row[g] * v_row[g];
+                    out += bra[self.bra_band[g] as usize].conj()
+                        * self.wtab.get(u_start + g)
+                        * self.vtab.get(v_start + g);
                 }
             }
         }
@@ -358,14 +569,49 @@ impl VertexTable {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        std::fs::write(path, serde_json::to_vec(self)?)?;
+        let mut writer = BufWriter::new(File::create(path)?);
+        writer.write_all(CACHE_MAGIC)?;
+        writer.write_all(&CACHE_VERSION.to_le_bytes())?;
+        let flags = match self.precision() {
+            TablePrecision::F32 => FLAG_F32,
+            TablePrecision::F64 => 0,
+        };
+        writer.write_all(&flags.to_le_bytes())?;
+        bincode::serialize_into(&mut writer, self)?;
+        writer.flush()?;
         Ok(())
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let mut table: Self = serde_json::from_slice(&std::fs::read(path)?)?;
-        if table.bra_band.is_empty() && !table.s.is_empty() {
-            table.precontract();
+        let mut reader = BufReader::new(File::open(path)?);
+        let mut magic = [0; 8];
+        let mut version = [0; 4];
+        let mut flags = [0; 4];
+        reader.read_exact(&mut magic)?;
+        reader.read_exact(&mut version)?;
+        reader.read_exact(&mut flags)?;
+        if &magic != CACHE_MAGIC {
+            return Err("invalid vertex-table cache; rebuild the table".into());
+        }
+        let version = u32::from_le_bytes(version);
+        if version != CACHE_VERSION {
+            return Err(format!(
+                "vertex-table cache version {version} is unsupported (expected {CACHE_VERSION}); rebuild the table"
+            )
+            .into());
+        }
+        let flags = u32::from_le_bytes(flags);
+        if flags & !FLAG_F32 != 0 {
+            return Err("unsupported vertex-table cache flags; rebuild the table".into());
+        }
+        let table: Self = bincode::deserialize_from(&mut reader)?;
+        let expected =
+            if flags & FLAG_F32 != 0 { TablePrecision::F32 } else { TablePrecision::F64 };
+        if table.wtab.precision() != expected || table.vtab.precision() != expected {
+            return Err(
+                "vertex-table cache precision flag does not match its payload; rebuild the table"
+                    .into(),
+            );
         }
         Ok(table)
     }
@@ -380,7 +626,7 @@ impl VertexTable {
                     self.bra_band[g] = n as u8;
                     for k in 0..self.len() {
                         let ket = self.cbm_evec[k * self.nbnd + m];
-                        self.wtab[k * ncomp + g] *= self.s[g] * ket;
+                        self.wtab.scale(k * ncomp + g, self.s[g] * ket);
                     }
                 }
             }
@@ -401,9 +647,9 @@ mod tests {
             nmodes: 1,
             pair_offsets: vec![0, 0],
             s: vec![],
-            wtab: vec![],
+            wtab: Tab::F64(vec![]),
             bra_band: vec![],
-            vtab: vec![],
+            vtab: Tab::F64(vec![]),
             cbm_evec: vec![Cf::new(1.0, 0.0); 125],
             electron_ev: vec![0.0; 125],
             phonon_ev: vec![1.0; 125],
@@ -428,9 +674,9 @@ mod tests {
             nmodes: 1,
             pair_offsets: vec![0, 0],
             s: vec![],
-            wtab: vec![],
+            wtab: Tab::F64(vec![]),
             bra_band: vec![],
-            vtab: vec![],
+            vtab: Tab::F64(vec![]),
             cbm_evec: vec![Cf::new(1.0, 0.0); 64],
             electron_ev: vec![0.0; 64],
             phonon_ev: vec![1.0; 64],
@@ -440,6 +686,56 @@ mod tests {
         assert_eq!(table.index_of(Vector3::new(0.25, -0.25, 1.0)), Some(28));
         assert_eq!(table.point(28), Vector3::new(0.25, 0.75, 0.0));
         assert_eq!(table.index_of(Vector3::new(0.2, 0.0, 0.0)), None);
+    }
+
+    #[test]
+    fn binary_cache_round_trips_both_precisions() {
+        for precision in [TablePrecision::F32, TablePrecision::F64] {
+            let table = VertexTable {
+                grid_n: 1,
+                nbnd: 1,
+                nmodes: 1,
+                pair_offsets: vec![0, 1],
+                s: vec![2.0],
+                wtab: match precision {
+                    TablePrecision::F32 => Tab::F32(vec![Complex::new(1.0, -2.0)]),
+                    TablePrecision::F64 => Tab::F64(vec![Cf::new(1.0, -2.0)]),
+                },
+                bra_band: vec![0],
+                vtab: match precision {
+                    TablePrecision::F32 => Tab::F32(vec![Complex::new(3.0, 4.0)]),
+                    TablePrecision::F64 => Tab::F64(vec![Cf::new(3.0, 4.0)]),
+                },
+                cbm_evec: vec![Cf::new(1.0, 0.0)],
+                electron_ev: vec![0.25],
+                phonon_ev: vec![0.5],
+                long_ev: vec![Cf::new(0.75, -0.25)],
+                phfreq_cutoff_ev: DEFAULT_PHFREQ_CUTOFF_EV,
+            };
+            let path = std::env::temp_dir().join(format!(
+                "rmc-vertex-table-{}-{precision:?}.rmcvtab",
+                std::process::id()
+            ));
+            table.save(&path).unwrap();
+            let loaded = VertexTable::load(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(loaded, table);
+        }
+    }
+
+    #[test]
+    fn binary_cache_rejects_wrong_version() {
+        let path = std::env::temp_dir().join(format!(
+            "rmc-vertex-table-version-{}.rmcvtab",
+            std::process::id()
+        ));
+        let mut header = CACHE_MAGIC.to_vec();
+        header.extend_from_slice(&(CACHE_VERSION + 1).to_le_bytes());
+        header.extend_from_slice(&0_u32.to_le_bytes());
+        std::fs::write(&path, header).unwrap();
+        let error = VertexTable::load(&path).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        assert!(error.to_string().contains("rebuild the table"));
     }
 
     #[test]
@@ -498,8 +794,29 @@ mod tests {
         };
         let svd = EphSvd::compress(&epmat, 1e-10, 3);
         assert!(svd.max_relative_error(&epmat) < 1e-9);
-        let table =
-            VertexTable::build(&epw, &crystal, &wigner, &svd, 2, DEFAULT_PHFREQ_CUTOFF_EV).unwrap();
+        let error = VertexTable::build(
+            &epw,
+            &crystal,
+            &wigner,
+            &svd,
+            2,
+            DEFAULT_PHFREQ_CUTOFF_EV,
+            TablePrecision::F64,
+            0,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("USER CHECKPOINT"));
+        let table = VertexTable::build(
+            &epw,
+            &crystal,
+            &wigner,
+            &svd,
+            2,
+            DEFAULT_PHFREQ_CUTOFF_EV,
+            TablePrecision::F64,
+            DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
         let direct = DirectVertex::new(&epw, &crystal, &wigner, &epmat);
         assert!(table.max_direct_error(&direct, 200, 19) < 1e-9);
     }
@@ -517,13 +834,17 @@ mod tests {
             nmodes: 1,
             pair_offsets: vec![0, 2, 4, 6, 8],
             s: (0..ncomp).map(|_| rng.gen_range(0.2..1.2)).collect(),
-            wtab: (0..nk * ncomp)
-                .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
-                .collect(),
+            wtab: Tab::F64(
+                (0..nk * ncomp)
+                    .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                    .collect(),
+            ),
             bra_band: vec![],
-            vtab: (0..nk * ncomp)
-                .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
-                .collect(),
+            vtab: Tab::F64(
+                (0..nk * ncomp)
+                    .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                    .collect(),
+            ),
             cbm_evec: (0..nk * nbnd)
                 .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
                 .collect(),
@@ -532,7 +853,10 @@ mod tests {
             long_ev: vec![Cf::new(0.0, 0.0); nk],
             phfreq_cutoff_ev: DEFAULT_PHFREQ_CUTOFF_EV,
         };
-        let raw = table.wtab.clone();
+        let raw = match table.wtab.clone() {
+            Tab::F64(values) => values,
+            Tab::F32(_) => unreachable!(),
+        };
         let mut cases = Vec::with_capacity(100);
         for _ in 0..100 {
             let k = rng.gen_range(0..nk);
@@ -549,7 +873,7 @@ mod tests {
                             * table.cbm(kp)[n].conj()
                             * table.cbm(k)[m]
                             * raw[k * ncomp + g]
-                            * table.vtab[q * ncomp + g];
+                            * table.vtab.get(q * ncomp + g);
                     }
                 }
             }

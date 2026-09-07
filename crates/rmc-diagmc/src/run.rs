@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
+use indicatif::{MultiProgress, ProgressBar};
 use nalgebra::Vector3;
 use rand::Rng;
-use rmc_core::mc::{Kernel, MetropolisKernel, Runner, SimulationParams, StepOutcome};
-use rmc_core::random::SeedSource;
+use rmc_core::mc::{
+    default_progress_style, IndicatifProgress, Kernel, MetropolisKernel, Runner, SimulationParams,
+    StepOutcome,
+};
+use rmc_core::random::{ChainId, SeedSource};
 use rmc_core::{Result, RmcError};
 use serde::{Deserialize, Serialize};
 
@@ -137,6 +141,30 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
         steps_per_cycle: cfg.steps_per_cycle,
         cycles_per_check: 0,
     });
+
+    // Per-chain progress bars (hidden automatically when stderr is not a tty).
+    let multi = MultiProgress::new();
+    let progress = |total_steps: u64, label: String, finish: String| {
+        let bar = multi.add(ProgressBar::new(total_steps));
+        bar.set_style(default_progress_style());
+        bar.set_prefix(label);
+        IndicatifProgress::new(bar).with_finish_message(finish)
+    };
+    let runner = runner
+        .warmup_callbacks(|chain: ChainId| {
+            progress(
+                cfg.warmup_steps,
+                format!("warmup {}", chain.0),
+                format!("warmup {} done", chain.0),
+            )
+        })
+        .callbacks(|chain: ChainId| {
+            progress(
+                cfg.max_steps,
+                format!("chain {}", chain.0),
+                format!("chain {} done", chain.0),
+            )
+        });
 
     let output = runner.run(SimulationParams {
         max_steps: cfg.max_steps,

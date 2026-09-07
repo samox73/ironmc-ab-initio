@@ -27,8 +27,11 @@
     bands_skipped = 'exclude_bands = 1:5'     ! skip the 5 occupied valence bands
     num_iter     = 500
     dis_froz_min = 9.0      ! eV  in the gap: above VBM (0.715), below CBM min (9.614)
-    dis_froz_max = 15.49    ! eV  freeze band6 ONLY: mid-gap between band6 max (15.397)
-                            !     and band7 min (15.581)
+    dis_froz_max = 16.5    ! eV  freeze band6 EVERYWHERE: above band6 max (15.596),
+                           !     below band8 min (17.904). On the 8x8x8 grid bands
+                           !     6/7 overlap in energy (b6 max 15.596 > b7 min 15.422),
+                           !     so band7 is partially frozen too - harmless, it is
+                           !     in the target manifold.
     dis_win_max  = 24.65    ! eV  spans the p-triplet (band7-9, top 24.380), stays below
                             !     band11 min (24.875).  Band6 frozen => CBM exact.
     ! Windows retuned 2026-08-10 for norm-conserving pseudos (bands ~+0.15 eV vs the old

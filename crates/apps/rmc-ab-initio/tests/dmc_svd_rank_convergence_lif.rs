@@ -15,17 +15,16 @@ fn production_budget_agrees_with_untruncated_within_tolerance() {
         return;
     };
     assert_eq!(results.len(), 2);
-    assert_eq!((results[0].total_rank, results[1].total_rank), (300, 1600));
+    assert_eq!((results[0].total_rank, results[1].total_rank), (800, 1600));
     let difference = (results[0].mean - results[1].mean).abs();
-    // Pure 2σ can never pass at production statistics (σ ≈ 0.1 meV) for any
-    // finite budget; the physical criterion is the quoted compression
-    // systematic of the rank-300 production budget: measured Δ_rank(300) =
-    // 0.7 ± 0.5 meV at 8³ (journal 2026-09-03), gated at 3 meV with headroom.
-    // The 2026-09-03 run at [150, 300] measured a genuine 4.6 meV systematic —
-    // that failure was the gate working.
+    // Pure 2σ can never pass at production statistics for any finite budget;
+    // the physical criterion is the ≤3 meV compression bar. History of this
+    // gate doing its job (journal): [150,300] failed at 4.6 meV (6³-provenance
+    // tensor); [300,1600] failed at 4.6 ± 0.8 meV (8×8×8 tensor, 2026-09-04),
+    // which promoted the production budget from 300 to 800.
     let tolerance = (2.0 * results[0].stderr.hypot(results[1].stderr)).max(0.003);
     assert!(
         difference < tolerance,
-        "rank-300/1600 difference {difference:.6} eV exceeds {tolerance:.6} eV"
+        "rank-800/1600 difference {difference:.6} eV exceeds {tolerance:.6} eV"
     );
 }

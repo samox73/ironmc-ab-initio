@@ -10,7 +10,12 @@
 
 ## Build & Test
 
-- `rtk cargo test --workspace` runs the workspace test suite.
+- Never run the full workspace test suite yourself. When full-suite verification is needed, give the
+  user the exact `rtk cargo test --release --workspace` command and wait for their results.
+- The debug profile is off limits by default. Run Cargo builds, checks, tests, and applications with
+  `--release` (or `--profile release-tuned` for tuned runs). Use debug only after a concrete problem
+  requires it, and state that reason first.
+- Run only the smallest relevant release-mode test/check target yourself.
 - `make run` does the default Frohlich-polaron run.
 - The `release-tuned` profile exists for tuned performance builds; see `README.md`.
 

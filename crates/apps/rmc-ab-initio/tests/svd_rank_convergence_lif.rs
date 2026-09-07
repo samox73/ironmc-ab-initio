@@ -12,7 +12,9 @@
 
 use rmc_ab_initio::eph_svd::{EphSvd, DEFAULT_TOL, MAX_RANK};
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
-use rmc_ab_initio::vertex_table::{e2, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
+use rmc_ab_initio::vertex_table::{
+    e2, TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+};
 use std::path::PathBuf;
 
 fn lif(rel: &str) -> PathBuf {
@@ -41,8 +43,17 @@ fn second_order_energy_converges_with_total_rank() {
     // builds a small 8³ table — the exact objects production runs use. The
     // untruncated table is the reference the budgets must converge to.
     let full = EphSvd::compress(&epmat, DEFAULT_TOL, MAX_RANK);
-    let reference_table =
-        VertexTable::build(&epw, &crystal, &wigner, &full, 8, DEFAULT_PHFREQ_CUTOFF_EV).unwrap();
+    let reference_table = VertexTable::build(
+        &epw,
+        &crystal,
+        &wigner,
+        &full,
+        8,
+        DEFAULT_PHFREQ_CUTOFF_EV,
+        TablePrecision::F64,
+        DEFAULT_MAX_BYTES,
+    )
+    .unwrap();
     let reference = e2(&reference_table, true, &usize::MAX);
     let reference_short = e2(&reference_table, false, &usize::MAX);
     eprintln!(
@@ -53,8 +64,17 @@ fn second_order_energy_converges_with_total_rank() {
     let totals = [50, 100, 150, 200, 300, 400, 600, 800];
     let values = totals.map(|total| {
         let svd = full.truncate_global(total);
-        let table =
-            VertexTable::build(&epw, &crystal, &wigner, &svd, 8, DEFAULT_PHFREQ_CUTOFF_EV).unwrap();
+        let table = VertexTable::build(
+            &epw,
+            &crystal,
+            &wigner,
+            &svd,
+            8,
+            DEFAULT_PHFREQ_CUTOFF_EV,
+            TablePrecision::F64,
+            DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
         eprintln!("total {total}: pair_ranks {:?}", svd.pair_ranks());
         (
             e2(&table, true, &usize::MAX),
@@ -73,16 +93,18 @@ fn second_order_energy_converges_with_total_rank() {
         );
     }
 
-    // Fine budget (production extrapolation quality): measured 1.37 meV.
+    // Thresholds are ~2× the values measured on the 8×8×8-provenance tensor
+    // (2026-09-04, journal): err(800) = 2.5 meV, err(300) = 15.5 meV. These are
+    // Γ-row E² proxies — the authoritative rank-300 systematic is the DMC
+    // Δ_rank measurement (cargo gate-dmc).
     let err_800 = (values[7].0 - reference).abs();
     assert!(
-        err_800 < 0.003,
+        err_800 < 0.005,
         "total rank 800 is {err_800:.6} eV from the untruncated reference"
     );
-    // Coarse budget (20³-checkpoint quality): measured 6.6 meV.
     let err_300 = (values[4].0 - reference).abs();
     assert!(
-        err_300 < 0.012,
+        err_300 < 0.030,
         "total rank 300 is {err_300:.6} eV from the untruncated reference"
     );
     // Long-range dominance: the exact polar term carries ~80% of E², which is

@@ -92,10 +92,20 @@ fn epb_full_coupling_equals_short_plus_longrange() {
     // gauge-invariantly: direction (cosine) and magnitude (norm ratio).
     let mut worst_cos = 1.0f64;
     let mut worst_ratio = 0.0f64;
+    let mut degenerate_skips = 0usize;
     for &(qn, iq) in &shells {
         let qf = to_frac(&c, epb.xqc[iq]);
         let full = epb.g_cbm_cart(ik, iq);
-        let u_q = interpolate_h(&e, &w, qf).1[0].clone(); // CBM eigenvector at Γ+q
+        let (energies, evecs) = interpolate_h(&e, &w, qf);
+        // Where the CBM is (near-)degenerate with band 2 at Γ+q (the W star on
+        // the 8×8×8 grid: bands 6/7 cross exactly), "the CBM eigenvector" is
+        // gauge-ambiguous and the CBM-row comparison is undefined — skip, like
+        // the symmetry-killed points below.
+        if energies[1] - energies[0] < 0.01 {
+            degenerate_skips += 1;
+            continue;
+        }
+        let u_q = evecs[0].clone(); // CBM eigenvector at Γ+q
         let short = model.g_cart_exact(qf, &u_q);
         let gl = g_long_cart(&c, &e, qf);
         // ⟨u_{Γ+q}|u_Γ⟩: rotate the smooth-basis g_L into epb's raw KS gauge.
@@ -121,8 +131,14 @@ fn epb_full_coupling_equals_short_plus_longrange() {
         );
     }
     eprintln!(
-        "A2: exact round-trip over {} coarse q — worst cos={worst_cos:.6}, worst |ratio-1|={worst_ratio:.2e}",
+        "A2: exact round-trip over {} coarse q ({degenerate_skips} degenerate-CBM skips) — \
+         worst cos={worst_cos:.6}, worst |ratio-1|={worst_ratio:.2e}",
         shells.len()
+    );
+    // The skip must stay the exception (the W star), never swallow the test.
+    assert!(
+        degenerate_skips <= 12,
+        "{degenerate_skips} degenerate-CBM skips — the round-trip barely tests anything"
     );
 
     // ---- Fröhlich 1/q signature: ‖g_L‖ diverges toward Γ ----

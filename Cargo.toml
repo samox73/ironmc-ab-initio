@@ -23,6 +23,7 @@ rust-version = "1.75"
 license = "MIT"
 
 [workspace.dependencies]
+bincode = "1"
 criterion = "0.5"
 env_logger = "0.11"
 indicatif = "0.17"

@@ -5,7 +5,7 @@ use nalgebra::Vector3;
 use rmc_ab_initio::{
     eph_svd::EphSvd,
     epw::{Crystal, EpmatWp, EpwData, Wigner},
-    vertex_table::{e2, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV},
+    vertex_table::{e2, TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV},
 };
 use rmc_core::time;
 use tabled::{settings::Style, Table, Tabled};
@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "max SVD reconstruction error: {:.3e}",
         svd.max_relative_error(&wp)
     );
-    let table = time!(VertexTable::build; &e, &c, &w, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV)?;
+    let table = time!(VertexTable::build; &e, &c, &w, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision::F64, DEFAULT_MAX_BYTES)?;
     diagnose_second_order(&table, ranks.last().unwrap());
 
     let mut e2_fulls = Vec::with_capacity(ranks.len());

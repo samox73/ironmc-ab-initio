@@ -121,6 +121,7 @@ impl Model for AbInitioModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vertex_table::Tab;
     use rand::SeedableRng;
 
     fn model() -> AbInitioModel {
@@ -132,9 +133,9 @@ mod tests {
             nmodes: 2,
             pair_offsets: vec![0, 0],
             s: vec![],
-            wtab: vec![],
+            wtab: Tab::F64(vec![]),
             bra_band: vec![],
-            vtab: vec![],
+            vtab: Tab::F64(vec![]),
             cbm_evec: vec![Complex64::new(1.0, 0.0); nk],
             electron_ev: vec![0.0; nk],
             phonon_ev: vec![1.0; nk * 2],

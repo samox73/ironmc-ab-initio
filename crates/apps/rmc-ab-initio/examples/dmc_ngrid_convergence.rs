@@ -14,7 +14,7 @@ use rmc_ab_initio::{
     eph_svd::EphSvd,
     epw::{Crystal, EpmatWp, EpwData, Wigner},
     model_abinitio::AbInitioModel,
-    vertex_table::{VertexTable, DEFAULT_PHFREQ_CUTOFF_EV},
+    vertex_table::{TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV},
 };
 use rmc_core::time;
 use rmc_diagmc::{run, DiagConfig};
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("grid_n  E0[eV]            sign    mean_order");
     for grid_n in grid_ns {
         let table = Arc::new(
-            time!(VertexTable::build; &e, &c, &w, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV)?,
+            time!(VertexTable::build; &e, &c, &w, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision::F32, DEFAULT_MAX_BYTES)?,
         );
         let k0 = table.index_of(nalgebra::Vector3::zeros()).unwrap();
         let (mut max_g, mut arg_g) = (0.0f64, (0, 0));

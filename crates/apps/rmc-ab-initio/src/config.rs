@@ -30,6 +30,12 @@ pub struct AbInitioConfig {
     pub run: RunConfig,
     pub material: Material,
     pub vertex: VertexSpec,
+    #[serde(default = "default_table_max_bytes")]
+    pub table_max_bytes: u64,
+}
+
+fn default_table_max_bytes() -> u64 {
+    crate::vertex_table::DEFAULT_MAX_BYTES
 }
 
 impl Default for AbInitioConfig {
@@ -44,6 +50,7 @@ impl Default for AbInitioConfig {
                 mass_eff: 0.9,
             },
             vertex: VertexSpec::Frohlich { alpha: 1.0 },
+            table_max_bytes: default_table_max_bytes(),
         }
     }
 }

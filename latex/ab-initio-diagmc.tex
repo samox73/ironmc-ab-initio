@@ -214,11 +214,13 @@ $|g|^{2}$ momentum sampler (N5) are now \emph{implemented}.
 
 \paragraph{Remaining.}
 \begin{description}
-  \item[D1 --- Grid convergence.] The vertex is tabulated on an $8^{3}$ $q$-grid, which is
-    coarse: the discrete BZ sum underweights the near-$\Gamma$ $1/q^{2}$ polar region, so the
-    grid-$8$ formation energy ($\approx-0.26$~eV) is $\sim\!3.5\times$ shallower than the
-    converged value. Reaching the physical $\approx-0.4$~eV needs finer grids, whose dominant
-    cost is the vertex-cache memory (Section~\ref{sec:performance}), not the sampler.
+  \item[D1 --- Grid convergence.] The vertex is tabulated on a uniform $n^{3}$ grid; the
+    discrete BZ sum underweights the near-$\Gamma$ $1/q^{2}$ polar region, so the polaron
+    energy converges from above with a leading $1/n$ error (at $n{=}8$ the formation energy
+    is $E_{0}\approx-0.122$~eV against a converged target near $-0.4$~eV). The ladder
+    $n=20,32,40,50$ with a linear $1/n\to0$ extrapolation
+    (Section~\ref{sec:discretization}) is in progress; its dominant cost is the vertex-cache
+    memory (Section~\ref{sec:performance}), not the sampler.
 
   \item[D2 --- Hole polaron.] The degenerate valence-band-maximum polaron (lifting N1),
     needing a multi-band, degenerate (matrix-product sign-fix) treatment.
@@ -244,12 +246,64 @@ The goals of Section~\ref{sec:goals} are checked in rungs of increasing physical
     the Fr\"ohlich weak-coupling target $-\alpha\,\hbar\omega_{\mathrm{LO}}$ (up to the
     coarse-grid underestimate), confirming the $(2M_{\kappa}\omega)^{-1/2}$ vertex
     normalization (Section~\ref{sec:pitfalls}, P8).
-  \item \textbf{Compression convergence.} The all-orders $E_{0}$ is stable against the SVD
-    rank $n_{\mathrm{sv}}$: on the $8^{3}$ grid it plateaus at $\approx-0.26$~eV for
-    $n_{\mathrm{sv}}\gtrsim50$.
-  \item \textbf{Material comparison.} The grid-converged formation energy and effective mass,
-    compared to Sio \emph{et al.} (2019) --- pending grid convergence (D1).
+  \item \textbf{Compression convergence.} The all-orders $E_{0}$ is certified against the
+    compression \emph{in the sampler itself}: the production rank budget must agree with the
+    uncompressed vertex to within a stated tolerance,
+    $\Delta_{\mathrm{rank}}=E_{0}(\text{budget})-E_{0}(\text{uncompressed})$, and the measured
+    $\Delta_{\mathrm{rank}}$ is quoted as a systematic on every production number
+    (Section~\ref{sec:discretization}).
+  \item \textbf{Material comparison.} The grid-ladder formation energy against FEP-DMC
+    (Luo, Park, Bernardi, 2025): $E_{0}(20^{3})=-0.248$~eV before extrapolation and
+    $-0.408$~eV in the $1/n\to0$ limit, with Sio \emph{et al.} (2019) as a secondary
+    reference --- pending the ladder runs (D1).
 \end{enumerate}
+
+\section{Discretization, compression, and the thermodynamic limit}
+\label{sec:discretization}
+
+The object the sampler actually solves is not the continuum polaron Hamiltonian but its
+restriction $\hat H_{n}$ to a uniform $n^{3}$ Brillouin-zone grid shared by electrons and
+phonons. The grid is closed under momentum addition, so every diagram's momentum
+bookkeeping stays on it; the per-arc momentum measure is the lattice normalization
+$\frac{1}{N_{q}}\sum_{\qv\neq\Gamma}$ with $N_{q}=n^{3}$ (matching the standard
+first-principles self-energy convention), and the DiagMC solves each $\hat H_{n}$
+\emph{numerically exactly}. All physical statements are then statements about the sequence
+$E_{0}(n)$: because the discrete sum underweights the $1/q^{2}$ polar region within a
+$1/n$-neighbourhood of $\Gamma$, $E_{0}(n)$ converges from above with a leading error
+linear in $1/n$, and the thermodynamic limit is read off a linear $1/n\to0$ extrapolation
+over a ladder of grids ($n=20\ldots50$ for LiF) --- the same methodology as FEP-DMC, whose
+LiF benchmarks are $E_{0}(20^{3})=-0.248$~eV and $-0.408$~eV extrapolated.
+
+\paragraph{Compression as a controlled, quoted approximation.}
+The short-range vertex is compressed to a global rank budget (the largest singular values
+across all band pairs); the long-range polar term is always exact. The acceptance
+criterion is \emph{never} element-wise reconstruction error --- it is convergence of the
+physical observable, certified in the sampler itself:
+\[
+  \Delta_{\mathrm{rank}} \;=\; E_{0}(\text{budget}) - E_{0}(\text{uncompressed}),
+\]
+measured by two otherwise-identical DMC runs and quoted as a systematic error alongside
+the statistical one on every production result. Two empirical lessons fixed this
+protocol. First, the cheap proxy --- the second-order energy $E^{(2)}$ at $\kv=\Gamma$ ---
+systematically \emph{overestimates} the true sampler systematic by a factor of $3$--$10$,
+because the sampler averages the compression error over the whole zone while the proxy
+probes a single $\kv$-row; the proxy is useful for scanning, but only the in-sampler
+measurement decides. Second, convergence with the global budget is \emph{non-monotonic}
+(singular values rank global tensor weight, not importance for a given observable), so
+``two nearby budgets agree'' is not evidence of convergence --- only the comparison
+against the uncompressed vertex is. For the current LiF dataset the certified production
+budget is $800$ of $1600$ components with $\Delta_{\mathrm{rank}}=1.0\pm0.8$~meV; the
+FEP-DMC-sized budget ($\approx300$) measured a genuine $4.6\pm0.8$~meV and was rejected.
+
+\paragraph{Dataset provenance.}
+The DFPT/Wannier inputs use $8\times8\times8$ coarse $k$- and $q$-grids, matching FEP-DMC's
+LiF setup. Upgrading from the initial $6\times6\times6$ deepened $E_{0}(8^{3})$ by
+$\sim11$~meV --- a pure interpolation-quality correction, worth recording because it is the
+same order as the compression and statistical errors being controlled above. One physical
+subtlety appeared with the finer grid: it contains the $W$ star, where the two lowest
+conduction bands are exactly degenerate, making per-band comparisons gauge-ambiguous
+there (the round-trip validation skips those points; the sampler itself is unaffected,
+since it consumes gauge-invariant $|g|^{2}$ combinations).
 
 \section{Performance: the ab-initio vertex cache}
 \label{sec:performance}
@@ -452,8 +506,15 @@ of $G(\tau)$, which carries a documented sensitivity to the fit window $\tau_{\m
 at strong coupling. FEP-DMC (Luo, Park, Bernardi, \emph{Nat.\ Phys.}\ \textbf{21}, 1275
 (2025); code a Perturbo fork) instead measures the polaron energy as a
 \emph{thermodynamic} (operator) expectation value on each worldline, with \emph{no}
-fit. This section records how that estimator works and its single-band form, as the
-target for a port into \texttt{rmc-diagmc::measure}.
+fit. This section records how that estimator works and its single-band form. It is
+\textbf{implemented} as the production estimator: the sampler runs in a fixed-$\tau$
+ensemble (external time pinned at $\tau_{\max}$), where the chemical potential $\mu$
+drops out of the ensemble entirely --- eliminating the $\mu$-bracketing of P9 --- and the
+local energy $E_{\mathrm{loc}}=\tau^{-1}\bigl[\sum_{\mathrm{seg}}\varepsilon\,\Delta\tau
++\sum_{\mathrm{arcs}}\omega\,\Delta\tau-2N_{\mathrm{arcs}}\bigr]$ is averaged with the
+sign. It is validated against an exactly solvable dispersionless (Lang--Firsov) lattice
+model, $E_{0}=-\bar{g}^{2}/\omega$ at all couplings, and against the Fr\"ohlich
+$\alpha=1,2$ benchmarks, where it agrees with the decay fit at lower variance.
 
 \paragraph{Quantity measured.}
 Rather than the asymptotic slope, the polaron energy is the operator average
@@ -546,8 +607,8 @@ $1/(1-e^{-\omega\beta})$ and $(2M_{\kappa}\omega)^{-1/2}$ divergences.
 
 In multiband mode the segment propagators, vertices, and the $\hat H$-insertion are all matrices, so the diagram weight is $\operatorname{Tr}\!\bigl[\prod_{i}g_{i}\,e^{-H\Delta\tau_{i}}\bigr]$ and inserting $\hat H$ at one segment needs the product of everything to its left and right (the \texttt{left\_env}/\texttt{right\_env} environment matrices), with per-step rescaling. The sign is carried as $\operatorname{sign}(\operatorname{Re}\operatorname{Tr})$ and divided out via $\langle s\rangle$. In single band all of this collapses to the scalars of Eq.~\eqref{eq:estimator}; the trace is trivial.
 
-\paragraph{Why port it.}
+\paragraph{Why it replaced the decay fit.}
 
-Relative to the decay fit of P9, Eq.~\eqref{eq:estimator} removes the $\tau_{\max}$ window arbitrariness (the whole $[0,\beta]$ worldline is used), lowers variance (it time-averages rather than reading one slope), and has a systematic error controlled by $\beta$ (excited-state contamination $\sim e^{-\Delta\beta}$). The single-band port accumulates the three sums of Eq.~\eqref{eq:estimator} per sample, dividing by $\beta$ and $\langle s\rangle$ --- no environment matrices are needed until the multiband (hole/degenerate) work of D2. It should be cross-validated against the Fr\"ohlich $\alpha=1,2$ Mishchenko values (rung~0), where it must agree with the existing decay estimator.
+Relative to the decay fit of P9, Eq.~\eqref{eq:estimator} removes the $\tau_{\max}$ window arbitrariness (the whole $[0,\beta]$ worldline is used), lowers variance (it time-averages rather than reading one slope), and has a systematic error controlled by $\beta$ (excited-state contamination $\sim e^{-\Delta\beta}$). The single-band form accumulates the three sums of Eq.~\eqref{eq:estimator} per sample, dividing by $\beta$ and $\langle s\rangle$ --- no environment matrices are needed until the multiband (hole/degenerate) work of D2. It has been cross-validated against the Fr\"ohlich $\alpha=1,2$ Mishchenko values (rung~0), where it agrees with the decay estimator, and against the exactly solvable dispersionless lattice model noted above; all production numbers (Section~\ref{sec:discretization}) use it.
 
 \end{document}

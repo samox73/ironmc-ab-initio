@@ -2,7 +2,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use num_complex::Complex64;
-use rmc_ab_initio::vertex_table::{VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
+use rmc_ab_initio::vertex_table::{Tab, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let calls = std::env::args()
@@ -37,23 +37,23 @@ fn synthetic_table() -> Result<VertexTable, Box<dyn std::error::Error>> {
             ((i * 29 % 103) as f64 + 1.0) / 103.0,
         )
     };
-    let path = std::env::temp_dir().join(format!("rmc-vertex-bench-{}.json", std::process::id()));
-    let json = serde_json::json!({
-        "grid_n": grid_n,
-        "nbnd": nbnd,
-        "nmodes": nmodes,
-        "pair_offsets": (0..=nbnd.pow(2)).map(|pair| pair * rank_per_pair).collect::<Vec<_>>(),
-        "s": (0..components).map(|i| (i % 13 + 1) as f64 / 13.0).collect::<Vec<_>>(),
-        "utab": (0..nk * components).map(complex).collect::<Vec<_>>(),
-        "vtab": (0..nk * nmodes * components).map(complex).collect::<Vec<_>>(),
-        "cbm_evec": (0..nk * nbnd).map(complex).collect::<Vec<_>>(),
-        "electron_ev": vec![0.0; nk],
-        "phonon_ev": vec![1.0; nk * nmodes],
-        "long_ev": vec![Complex64::new(0.0, 0.0); nk * nmodes],
-        "phfreq_cutoff_ev": DEFAULT_PHFREQ_CUTOFF_EV,
-    });
-    std::fs::write(&path, serde_json::to_vec(&json)?)?;
-    let table = VertexTable::load(&path);
-    std::fs::remove_file(path)?;
-    table
+    Ok(VertexTable {
+        grid_n,
+        nbnd,
+        nmodes,
+        pair_offsets: (0..=nbnd.pow(2)).map(|pair| pair * rank_per_pair).collect(),
+        s: (0..components)
+            .map(|i| (i % 13 + 1) as f64 / 13.0)
+            .collect(),
+        wtab: Tab::F64((0..nk * components).map(complex).collect()),
+        bra_band: (0..components)
+            .map(|g| (g / rank_per_pair / nbnd) as u8)
+            .collect(),
+        vtab: Tab::F64((0..nk * nmodes * components).map(complex).collect()),
+        cbm_evec: (0..nk * nbnd).map(complex).collect(),
+        electron_ev: vec![0.0; nk],
+        phonon_ev: vec![1.0; nk * nmodes],
+        long_ev: vec![Complex64::new(0.0, 0.0); nk * nmodes],
+        phfreq_cutoff_ev: DEFAULT_PHFREQ_CUTOFF_EV,
+    })
 }

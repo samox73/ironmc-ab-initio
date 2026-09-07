@@ -14,7 +14,7 @@ use rmc_ab_initio::{
     eph_svd::{EphSvd, MAX_RANK},
     epw::{Crystal, EpmatWp, EpwData, Wigner},
     model_abinitio::AbInitioModel,
-    vertex_table::{VertexTable, DEFAULT_PHFREQ_CUTOFF_EV},
+    vertex_table::{TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV},
 };
 use rmc_core::time;
 use rmc_diagmc::{run, DiagConfig};
@@ -54,12 +54,11 @@ pub fn convergence(max_steps: u64) -> Result<Option<Vec<RankResult>>, Box<dyn st
     };
 
     let grid_n = 8;
-    // Production budget 300 vs the untruncated reference (1600). Measured at
-    // the E₀ level (journal 2026-09-03): Δ_rank(300) = 0.7 ± 0.5 meV at 8³ —
-    // the Γ-row E² proxy (~7 meV) overestimates the DMC systematic, which
-    // averages compression error over the whole BZ. Rank 150 is genuinely too
-    // low (4.6 meV measured); 300 matches FEP-DMC's nsvd=20/pair ≈ 320 total.
-    let ranks = [300, 1600];
+    // Production budget 800 vs the untruncated reference (1600). On the
+    // 8×8×8-provenance tensor (journal 2026-09-04) rank 300 measured a real
+    // Δ_rank = 4.6 ± 0.8 meV in E₀ — over the 3 meV bar — so the budget was
+    // promoted; E² predicts ~1 meV at 800 (certified by this gate).
+    let ranks = [800, 1600];
     let svd = time!(EphSvd::compress; &wp, 1e-8, MAX_RANK);
     log::info!(
         "max SVD reconstruction error: {:.3e}",
@@ -72,7 +71,7 @@ pub fn convergence(max_steps: u64) -> Result<Option<Vec<RankResult>>, Box<dyn st
     for total_rank in ranks {
         let truncated = svd.clone().truncate_global(total_rank);
         let table = Arc::new(
-            time!(VertexTable::build; &e, &c, &w, &truncated, grid_n, DEFAULT_PHFREQ_CUTOFF_EV)?,
+            time!(VertexTable::build; &e, &c, &w, &truncated, grid_n, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision::F32, DEFAULT_MAX_BYTES)?,
         );
         let model = Arc::new(AbInitioModel::new(table));
         let cfg = DiagConfig {

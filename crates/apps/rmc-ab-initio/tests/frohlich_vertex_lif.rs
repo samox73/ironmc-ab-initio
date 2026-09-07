@@ -6,7 +6,9 @@ use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::longrange::{g_long_branch, gg_cart};
 use rmc_ab_initio::model::lo_to_frequencies;
 use rmc_ab_initio::reconstruct::{interpolate_d, interpolate_d_polar, interpolate_h};
-use rmc_ab_initio::vertex_table::{VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
+use rmc_ab_initio::vertex_table::{
+    TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+};
 use std::path::PathBuf;
 
 const E2: f64 = 2.0;
@@ -131,8 +133,17 @@ fn full_second_order_energy_is_physical() {
         return;
     }
     let svd = EphSvd::compress(&epmat, 1.0e-8, 200);
-    let table =
-        VertexTable::build(&epw, &crystal, &wigner, &svd, 8, DEFAULT_PHFREQ_CUTOFF_EV).unwrap();
+    let table = VertexTable::build(
+        &epw,
+        &crystal,
+        &wigner,
+        &svd,
+        8,
+        DEFAULT_PHFREQ_CUTOFF_EV,
+        TablePrecision::F64,
+        DEFAULT_MAX_BYTES,
+    )
+    .unwrap();
     let k0 = table.index_of(Vector3::zeros()).unwrap();
     let mut contributions = Vec::new();
     for qi in 1..table.len() {

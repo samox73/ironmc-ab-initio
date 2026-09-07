@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+bincode.workspace = true
 env_logger.workspace = true
 indicatif.workspace = true
 log.workspace = true

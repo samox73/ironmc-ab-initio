@@ -31,6 +31,7 @@ fn abinitio_identity_matches_frohlich_bit_for_bit() {
             mass_eff: 0.9,
         },
         vertex: VertexSpec::Frohlich { alpha: run.alpha }, // α_target = α_engine ⇒ R ≡ 1
+        table_max_bytes: rmc_ab_initio::vertex_table::DEFAULT_MAX_BYTES,
     };
     let (report, _out) = rmc_ab_initio::run::run(&ab).unwrap();
 

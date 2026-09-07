@@ -1,5 +1,6 @@
-//! Reader parity against the real LiF dataset in `datasets/LiF/`.
-//! `epwdata.fmt` and `crystal.fmt` are git-tracked; `out/LiF.epmatwp` (146 MB)
+//! Reader parity against the real LiF dataset in `datasets/LiF/`
+//! (8×8×8 coarse-grid provenance since 2026-09-04, aligned with FEP-DMC).
+//! `epwdata.fmt` and `crystal.fmt` are git-tracked; `out/LiF.epmatwp` (687 MB)
 //! is regenerated, so that check skips when the file is absent.
 
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData};
@@ -17,17 +18,17 @@ fn close(a: f64, b: f64) {
 fn epwdata_header_dims_ef_polar() {
     let e = EpwData::read(lif("epwdata.fmt")).unwrap();
 
-    // dims
-    assert_eq!((e.nbnd, e.nrr_k, e.nmodes, e.nrr_q, e.nrr_g), (4, 279, 6, 401, 340));
+    // dims (Wigner–Seitz grids of the 8×8×8 coarse mesh)
+    assert_eq!((e.nbnd, e.nrr_k, e.nmodes, e.nrr_q, e.nrr_g), (4, 617, 6, 833, 725));
     // Fermi energy (Ry)
-    close(e.ef, 5.257_179_972_896_802e-2);
+    close(e.ef, 5.257_179_972_899_102_3e-2);
 
     // Born charges: Li +1.05, F -1.05 (diagonal, isotropic)
     assert_eq!(e.zstar.len(), 2);
-    close(e.zstar[0][0][0], 1.054_549_921_866_5);
-    close(e.zstar[1][0][0], -1.054_549_921_866_5);
+    close(e.zstar[0][0][0], 1.054_549_906_134_500_1);
+    close(e.zstar[1][0][0], -1.054_549_906_134_500_1);
     // ε∞ = 2.04
-    close(e.epsi[0][0], 2.043_717_745_836_0);
+    close(e.epsi[0][0], 2.043_717_745_405);
 
     // complex streams sized to the dims
     assert_eq!(e.h.len(), e.nrr_k * e.nbnd * e.nbnd);
@@ -60,8 +61,8 @@ fn epmatwp_loads_with_expected_extent() {
         eprintln!("skipping: {} not present (regenerate via run_pipeline.nu)", path.display());
         return;
     }
-    let g = EpmatWp::read(&path, 4, 279, 6, 340).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(g.data.len(), EpmatWp::expected_len(4, 279, 6, 340));
+    let g = EpmatWp::read(&path, 4, 617, 6, 725).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(g.data.len(), EpmatWp::expected_len(4, 617, 6, 725));
     // last valid index must be addressable
-    let _ = g.g(278, 339, 5, 3, 3);
+    let _ = g.g(616, 724, 5, 3, 3);
 }

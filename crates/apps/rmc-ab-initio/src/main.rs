@@ -1,10 +1,21 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
 
 use rmc_ab_initio::config::AbInitioConfig;
+use rmc_ab_initio::eph_svd::{EphSvd, DEFAULT_TOL};
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::model::{regular_grid, ReducedModel};
+use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_ab_initio::reconstruct::GammaModel;
 use rmc_ab_initio::run::run_and_write;
+use rmc_ab_initio::vertex_table::{
+    TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+};
+use rmc_diagmc::DiagConfig;
+
+type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Build the reduced `|g(Γ,q,LO)|²` artifact from an EPW dataset dir (holding
 /// `epwdata.fmt`, `crystal.fmt`, `wigner.fmt`, `out/LiF.epmatwp`) on a regular
@@ -27,11 +38,195 @@ fn build_reduced(dataset: &Path, n: usize) -> Result<ReducedModel, Box<dyn std::
     Ok(ReducedModel::build(&gamma, &e, &c, &w, &regular_grid(n)))
 }
 
+fn epmatwp_path(dataset: &Path) -> BoxResult<PathBuf> {
+    let lif = dataset.join("out/LiF.epmatwp");
+    if lif.exists() {
+        return Ok(lif);
+    }
+    let mut matches = std::fs::read_dir(dataset.join("out"))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "epmatwp")
+        });
+    let path = matches
+        .next()
+        .ok_or("no .epmatwp file found in dataset/out")?;
+    if matches.next().is_some() {
+        return Err("multiple .epmatwp files found in dataset/out".into());
+    }
+    Ok(path)
+}
+
+fn load_vertex_inputs(dataset: &Path) -> BoxResult<(EpwData, Crystal, Wigner, EpmatWp)> {
+    let epw = EpwData::read(dataset.join("epwdata.fmt"))?;
+    let crystal = Crystal::read(dataset.join("crystal.fmt"))?;
+    let wigner = Wigner::read(dataset.join("wigner.fmt"))?;
+    let epmat = EpmatWp::read(
+        epmatwp_path(dataset)?,
+        epw.nbnd,
+        epw.nrr_k,
+        epw.nmodes,
+        epw.nrr_g,
+    )?;
+    if !epmat.data.first().is_some_and(|value| value.is_finite()) {
+        return Err("epmatwp is empty or non-finite; regenerate the EPW e-ph tensor".into());
+    }
+    Ok((epw, crystal, wigner, epmat))
+}
+
+fn options(args: impl Iterator<Item = String>) -> BoxResult<BTreeMap<String, String>> {
+    let mut args = args;
+    let mut options = BTreeMap::new();
+    while let Some(name) = args.next() {
+        if !name.starts_with("--") {
+            return Err(format!("expected an option, got '{name}'").into());
+        }
+        let value = args
+            .next()
+            .ok_or_else(|| format!("missing value for '{name}'"))?;
+        options.insert(name, value);
+    }
+    Ok(options)
+}
+
+fn take<T: std::str::FromStr>(
+    options: &mut BTreeMap<String, String>,
+    name: &str,
+    default: Option<T>,
+) -> BoxResult<T>
+where
+    T::Err: std::fmt::Display,
+{
+    match options.remove(name) {
+        Some(value) => value
+            .parse()
+            .map_err(|error| format!("invalid {name} value '{value}': {error}").into()),
+        None => default.ok_or_else(|| format!("missing required option {name}").into()),
+    }
+}
+
+fn gib_to_bytes(gib: f64) -> BoxResult<u64> {
+    if !gib.is_finite() || gib <= 0.0 || gib > u64::MAX as f64 / 2_f64.powi(30) {
+        return Err("max GiB must be finite, positive, and representable".into());
+    }
+    Ok((gib * 2_f64.powi(30)) as u64)
+}
+
+fn env_table_max_bytes() -> BoxResult<Option<u64>> {
+    std::env::var("RMC_TABLE_MAX_GIB")
+        .ok()
+        .map(|value| {
+            let gib = value
+                .parse()
+                .map_err(|error| format!("invalid RMC_TABLE_MAX_GIB '{value}': {error}"))?;
+            gib_to_bytes(gib)
+        })
+        .transpose()
+}
+
+fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
+    let mut options = options(args)?;
+    let dataset = PathBuf::from(
+        options
+            .remove("--dataset")
+            .unwrap_or_else(|| "datasets/LiF".to_string()),
+    );
+    let grid_n: usize = take(&mut options, "--grid", None)?;
+    let total_rank: usize = take(&mut options, "--total-rank", None)?;
+    let precision: TablePrecision = take(&mut options, "--precision", Some(TablePrecision::F32))?;
+    if grid_n == 0 || total_rank == 0 {
+        return Err("grid and total rank must be positive".into());
+    }
+    let max_bytes = match options.remove("--max-gib") {
+        Some(value) => gib_to_bytes(value.parse()?)?,
+        None => env_table_max_bytes()?.unwrap_or(DEFAULT_MAX_BYTES),
+    };
+    let out = options.remove("--out").map_or_else(
+        || dataset.join(VertexTable::cache_filename(grid_n, total_rank, precision)),
+        PathBuf::from,
+    );
+    if let Some(unknown) = options.keys().next() {
+        return Err(format!("unknown option {unknown}").into());
+    }
+
+    let (epw, crystal, wigner, epmat) = load_vertex_inputs(&dataset)?;
+    let started = Instant::now();
+    let svd = EphSvd::compress_global(&epmat, DEFAULT_TOL, total_rank);
+    println!("compression time: {:.3} s", started.elapsed().as_secs_f64());
+    let bytes = VertexTable::estimated_bytes(grid_n, svd.rank(), epw.nbnd, epw.nmodes, precision);
+    println!(
+        "table estimate: {:.2} GiB (grid={grid_n}, components={}, precision={precision:?})",
+        bytes as f64 / 2_f64.powi(30),
+        svd.rank()
+    );
+    println!("output: {}", out.display());
+    let started = Instant::now();
+    let table = VertexTable::build(
+        &epw,
+        &crystal,
+        &wigner,
+        &svd,
+        grid_n,
+        DEFAULT_PHFREQ_CUTOFF_EV,
+        precision,
+        max_bytes,
+    )?;
+    println!("build time: {:.3} s", started.elapsed().as_secs_f64());
+    let started = Instant::now();
+    table.save(&out)?;
+    println!(
+        "wrote {} in {:.3} s",
+        out.display(),
+        started.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn table_run_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
+    let mut options = options(args)?;
+    let table_path: PathBuf = take(&mut options, "--table", None)?;
+    let config = match options.remove("--config") {
+        Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+        None => DiagConfig::default(),
+    };
+    if let Some(unknown) = options.keys().next() {
+        return Err(format!("unknown option {unknown}").into());
+    }
+    let table = Arc::new(VertexTable::load(table_path)?);
+    let max_steps = config.max_steps;
+    let started = Instant::now();
+    let report = rmc_diagmc::run(Arc::new(AbInitioModel::new(table)), config)?;
+    let wall_secs = started.elapsed().as_secs_f64();
+    log::info!(
+        "DMC complete: {wall_secs:.3} s, {:.0} steps/sec/chain",
+        max_steps as f64 / wall_secs
+    );
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn load_config(path: impl AsRef<Path>) -> BoxResult<AbInitioConfig> {
+    let mut config = AbInitioConfig::load_json(path)?;
+    if let Some(max_bytes) = env_table_max_bytes()? {
+        config.table_max_bytes = max_bytes;
+    }
+    Ok(config)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("def") => println!("{}", AbInitioConfig::default().to_json_string()?),
+        Some("def") => {
+            let mut config = AbInitioConfig::default();
+            if let Some(max_bytes) = env_table_max_bytes()? {
+                config.table_max_bytes = max_bytes;
+            }
+            println!("{}", config.to_json_string()?);
+        }
+        Some("table") => table_command(args)?,
+        Some("run") => table_run_command(args)?,
         Some("model") => {
             let dataset = args
                 .next()
@@ -50,13 +245,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("alpha") => {
             let cfg = match args.next() {
-                Some(path) => AbInitioConfig::load_json(path)?,
+                Some(path) => load_config(path)?,
                 None => AbInitioConfig::default(),
             };
             println!("alpha_LiF: {:.4}", cfg.material.frohlich_alpha());
         }
         Some(path) => {
-            let cfg = AbInitioConfig::load_json(path)?;
+            let cfg = load_config(path)?;
             let dir = args
                 .next()
                 .map_or_else(|| PathBuf::from("results-abinitio"), PathBuf::from);
@@ -71,4 +266,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_cli_parses_values_and_rejects_bad_memory_limits() {
+        let mut parsed = options(
+            ["--grid", "50", "--precision", "f32"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        assert_eq!(take::<usize>(&mut parsed, "--grid", None).unwrap(), 50);
+        assert_eq!(
+            take::<TablePrecision>(&mut parsed, "--precision", None).unwrap(),
+            TablePrecision::F32
+        );
+        assert_eq!(gib_to_bytes(1.5).unwrap(), 3 * 1024_u64.pow(3) / 2);
+        assert!(gib_to_bytes(0.0).is_err());
+        assert!(gib_to_bytes(f64::NAN).is_err());
+    }
 }
