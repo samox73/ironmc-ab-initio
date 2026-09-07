@@ -29,6 +29,11 @@ pub struct Report {
     pub sign: Estimate,
     pub green: GreenFunction,
     pub green_energy: Vec<Estimate>,
+    /// Total MC steps completed across all chains. Below `chains · max_steps` the
+    /// run was truncated by a wall-clock deadline and the sample count is no
+    /// longer reproducible from the seed alone.
+    #[serde(default)]
+    pub steps_done: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -120,7 +125,18 @@ impl Measurement<Diagram> for DiagMeasurement {
         self.next += 1;
     }
 
-    fn finish(self) -> Self::Output {
+    fn finish(mut self) -> Self::Output {
+        // A deadline-truncated run leaves a partial trailing batch; below half
+        // a batch its noisy mean would distort the equal-weight jackknives, so
+        // fold it into its predecessor (still contiguous in MC time). A
+        // complete run's last batch is short by at most n_batches − 1 samples
+        // (batch_len rounds up) and never triggers this.
+        if let Some(last) = self.batches.iter().rposition(|batch| batch.count > 0) {
+            if last > 0 && self.batches[last].count.saturating_mul(2) < self.batch_len as u64 {
+                let tail = std::mem::take(&mut self.batches[last]);
+                self.batches[last - 1].add_assign(&tail);
+            }
+        }
         MeasurementData {
             batches: self.batches,
         }
@@ -263,6 +279,7 @@ pub(crate) fn summarize(
             value: green_values,
         },
         green_energy,
+        steps_done: 0,
     })
 }
 
@@ -427,5 +444,34 @@ mod tests {
         diagram.insert_arc(1.0, 3.0, q, 0);
         // Electron: 0·1 + (q²/2)·2 + 0·1 = 1; phonon: 1·2; vertices: -2.
         assert!((local_energy(&diagram, &model) - 0.25).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn finish_folds_small_trailing_batch_into_predecessor() {
+        use crate::model::FrohlichModel;
+
+        let model = std::sync::Arc::new(FrohlichModel::new(1.0));
+        let mut diagram = Diagram::new(0.0, Vector3::zeros(), 4.0, 0, 4);
+        diagram.set_vertex_tau(diagram.tail, 1.0);
+        let counts = |samples: usize| {
+            let mut measurement = DiagMeasurement::new(model.clone(), 4, 10, 100, 4.0);
+            for _ in 0..samples {
+                measurement.measure(&diagram);
+            }
+            measurement
+                .finish()
+                .batches
+                .iter()
+                .map(|batch| batch.count)
+                .filter(|&count| count > 0)
+                .collect::<Vec<_>>()
+        };
+        // Truncated: batch_len = 10, the 2-sample tail (< half a batch) folds
+        // into its predecessor.
+        assert_eq!(counts(32), vec![10, 10, 12]);
+        // A tail of at least half a batch stays its own block.
+        assert_eq!(counts(35), vec![10, 10, 10, 5]);
+        // Complete run: untouched.
+        assert_eq!(counts(100), vec![10; 10]);
     }
 }
