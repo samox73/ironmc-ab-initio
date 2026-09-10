@@ -109,8 +109,9 @@ impl DiagConfig {
 
 /// Deadline derived from `SLURM_JOB_END_TIME` (epoch seconds, exported by
 /// slurm ≥ 22.05), minus the safety margin. Read once at startup; a mid-run
-/// `scontrol update TimeLimit` is not tracked. No env var → `None`, feature off.
-fn slurm_deadline(margin_secs: f64) -> Result<Option<Instant>> {
+/// `scontrol update TimeLimit` is not tracked. No env var → `None`, feature
+/// off. Public: the flat/GPU batched drivers arm the same deadline.
+pub fn slurm_deadline(margin_secs: f64) -> Result<Option<Instant>> {
     let Ok(raw) = std::env::var("SLURM_JOB_END_TIME") else {
         return Ok(None);
     };
