@@ -22,3 +22,11 @@ rmc-core = { workspace = true, features = ["serde"] }
 rmc-diagmc.workspace = true
 rmc-frohlich = { path = "../rmc-frohlich" }
 tabled = "0.21.0"
+cubecl = { version = "=0.10.0", default-features = false, features = ["std", "stdlib"], optional = true }
+
+[features]
+default = []
+gpu = ["dep:cubecl"]
+gpu-cpu = ["gpu", "cubecl/cpu"]
+gpu-hip = ["gpu", "cubecl/hip"]
+gpu-cuda = ["gpu", "cubecl/cuda"]

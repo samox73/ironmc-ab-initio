@@ -8,6 +8,8 @@
 
 pub mod config;
 pub mod epb;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod eph_svd;
 pub mod epw;
 pub mod longrange;

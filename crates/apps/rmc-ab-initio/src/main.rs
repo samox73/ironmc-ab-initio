@@ -214,6 +214,25 @@ fn load_config(path: impl AsRef<Path>) -> BoxResult<AbInitioConfig> {
     Ok(config)
 }
 
+/// Phase A1 vertex-dot microbenchmark (plan `gpu-abinitio`).
+#[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
+fn vbench_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
+    let mut options = options(args)?;
+    let table_path: PathBuf = take(&mut options, "--table", None)?;
+    let n_evals: usize = take(&mut options, "--evals", Some(1 << 22))?;
+    let seed: u64 = take(&mut options, "--seed", Some(7))?;
+    if let Some(unknown) = options.keys().next() {
+        return Err(format!("unknown option {unknown}").into());
+    }
+    let table = VertexTable::load(table_path)?;
+    rmc_ab_initio::gpu::vertex_bench::run_vertex_bench(&table, n_evals, seed)
+}
+
+#[cfg(not(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda")))]
+fn vbench_command(_args: impl Iterator<Item = String>) -> BoxResult<()> {
+    Err("vbench needs a GPU runtime; rebuild with --features gpu-cuda (or gpu-cpu)".into())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let mut args = std::env::args().skip(1);
@@ -227,6 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("table") => table_command(args)?,
         Some("run") => table_run_command(args)?,
+        Some("vbench") => vbench_command(args)?,
         Some("model") => {
             let dataset = args
                 .next()

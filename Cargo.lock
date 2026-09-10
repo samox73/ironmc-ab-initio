@@ -3098,6 +3098,7 @@ name = "rmc-ab-initio"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "cubecl",
  "env_logger",
  "indicatif",
  "log",
