@@ -9,7 +9,7 @@ use std::sync::Arc;
 use common::synthetic_model;
 use nalgebra::Vector3;
 use rmc_ab_initio::dump::{merge_dumps, RankDump};
-use rmc_ab_initio::flat::batched::run_batched;
+use rmc_ab_initio::flat::batched::{run_batched, run_batched_with_deadline};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_diagmc::{DiagConfig, Model};
 
@@ -162,4 +162,28 @@ fn batched_driver_agrees_with_slotmap_runner() {
         batched.report.mean_order.mean,
         slotmap.mean_order.mean
     );
+}
+
+/// The slurm deadline truncates the cycle loop but keeps every sample and
+/// reports the actual (wall-clock-dependent) step count.
+#[test]
+fn deadline_truncates_but_reports_honestly() {
+    let model = synthetic_model(7);
+    let mut cfg = test_config(4);
+    // Far more work than the deadline allows.
+    cfg.max_steps = 50_000_000;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    let out = run_batched_with_deadline(&model, &cfg, 0, 2, 24, Some(deadline)).unwrap();
+    assert!(out.steps_done > 0, "nothing measured before the deadline");
+    assert!(
+        out.steps_done < cfg.max_steps * cfg.chains,
+        "run was not truncated"
+    );
+    assert_eq!(out.report.steps_done, out.steps_done);
+    assert!(out.report.mean_order.mean.is_finite());
+
+    // An already-expired deadline measures nothing and fails loudly instead
+    // of writing an empty report.
+    let expired = std::time::Instant::now();
+    assert!(run_batched_with_deadline(&model, &cfg, 0, 2, 24, Some(expired)).is_err());
 }

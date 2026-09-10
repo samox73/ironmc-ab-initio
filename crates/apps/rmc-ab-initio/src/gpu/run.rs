@@ -286,7 +286,10 @@ pub fn launch_segment<R: Runtime>(
     }
 }
 
-/// Run the full MC on device `R`, mirroring `run_batched(group_size = 1)`.
+/// Run the full MC on device `R`, mirroring `run_batched(group_size = 1)`,
+/// with the `SLURM_JOB_END_TIME` deadline armed: the segment loop stops
+/// early (a segment is seconds of work against the 60 s default margin),
+/// keeps every replayed sample, and reports the truncated `steps_done`.
 pub fn run_device<R: Runtime>(
     client: ComputeClient<R>,
     model: &Arc<AbInitioModel>,
@@ -294,6 +297,20 @@ pub fn run_device<R: Runtime>(
     chain_offset: u64,
     max_order_gpu: usize,
     lanes: u32,
+) -> Result<BatchedRunOutput> {
+    let deadline = rmc_diagmc::run::slurm_deadline(cfg.end_time_margin_secs)?;
+    run_device_with_deadline(client, model, cfg, chain_offset, max_order_gpu, lanes, deadline)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_device_with_deadline<R: Runtime>(
+    client: ComputeClient<R>,
+    model: &Arc<AbInitioModel>,
+    cfg: &DiagConfig,
+    chain_offset: u64,
+    max_order_gpu: usize,
+    lanes: u32,
+    deadline: Option<std::time::Instant>,
 ) -> Result<BatchedRunOutput> {
     if cfg.chains == 0 {
         return Err(RmcError::InvalidArgument(
@@ -352,8 +369,14 @@ pub fn run_device<R: Runtime>(
 
     let mut step_secs = 0.0;
     let mut replay_secs = 0.0;
+    let mut measured_steps_per_chain = 0u64;
     let mut cycle_start = 0u64;
     while cycle_start < total_cycles {
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
         let n_cycles = CYCLES_PER_LAUNCH.min(total_cycles - cycle_start);
         let contains_final = cycle_start + n_cycles == total_cycles;
         let t = std::time::Instant::now();
@@ -383,6 +406,12 @@ pub fn run_device<R: Runtime>(
             if cycle_start + (cycle as u64) < warmup_cycles {
                 continue;
             }
+            measured_steps_per_chain +=
+                if contains_final && cycle as u64 + 1 == n_cycles {
+                    final_cycle_steps
+                } else {
+                    steps_per_cycle
+                };
             for (chain, measurement) in measurements.iter_mut().enumerate() {
                 let i = cycle * n_chains + chain;
                 measurement.measure_sample(
@@ -406,6 +435,15 @@ pub fn run_device<R: Runtime>(
         replay_secs += t.elapsed().as_secs_f64();
         cycle_start += n_cycles;
     }
+    if measured_steps_per_chain < cfg.max_steps {
+        log::warn!(
+            "deadline stop: {}/{} measurement steps per chain ({:.1}%); error bars are \
+             honest but larger, and the sample count is wall-clock-dependent",
+            measured_steps_per_chain,
+            cfg.max_steps,
+            100.0 * measured_steps_per_chain as f64 / cfg.max_steps as f64
+        );
+    }
 
     let data = measurements
         .into_iter()
@@ -420,7 +458,7 @@ pub fn run_device<R: Runtime>(
         cfg.tau_fit,
         cfg.fixed_tau,
     )?;
-    let steps_done = cfg.max_steps * n_chains as u64;
+    let steps_done = measured_steps_per_chain * n_chains as u64;
     report.steps_done = steps_done;
     let chains = state.download();
     Ok(BatchedRunOutput {

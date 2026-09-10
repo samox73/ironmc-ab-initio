@@ -38,12 +38,28 @@ pub struct BatchedRunOutput {
     pub replay_secs: f64,
 }
 
+/// Run with the `SLURM_JOB_END_TIME` deadline armed (minus
+/// `cfg.end_time_margin_secs`), like the slotmap runner: the cycle loop stops
+/// early, keeps every sample measured so far, and reports an honest
+/// (truncated) `steps_done`.
 pub fn run_batched(
     model: &Arc<AbInitioModel>,
     cfg: &DiagConfig,
     chain_offset: u64,
     group_size: usize,
     max_order_gpu: usize,
+) -> Result<BatchedRunOutput> {
+    let deadline = rmc_diagmc::run::slurm_deadline(cfg.end_time_margin_secs)?;
+    run_batched_with_deadline(model, cfg, chain_offset, group_size, max_order_gpu, deadline)
+}
+
+pub fn run_batched_with_deadline(
+    model: &Arc<AbInitioModel>,
+    cfg: &DiagConfig,
+    chain_offset: u64,
+    group_size: usize,
+    max_order_gpu: usize,
+    deadline: Option<std::time::Instant>,
 ) -> Result<BatchedRunOutput> {
     if cfg.chains == 0 {
         return Err(RmcError::InvalidArgument(
@@ -117,7 +133,13 @@ pub fn run_batched(
 
     let mut step_secs = 0.0;
     let mut replay_secs = 0.0;
+    let mut measured_steps_per_chain = 0u64;
     for cycle in 0..total_cycles {
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
         let measured = cycle >= warmup_cycles;
         let steps = if measured && cycle + 1 == total_cycles {
             final_cycle_steps
@@ -152,6 +174,7 @@ pub fn run_batched(
         step_secs += t0.elapsed().as_secs_f64();
 
         if measured {
+            measured_steps_per_chain += steps;
             let t0 = std::time::Instant::now();
             for (chain, measurement) in chains.iter().zip(&mut measurements) {
                 measurement.measure_sample(
@@ -163,6 +186,15 @@ pub fn run_batched(
             }
             replay_secs += t0.elapsed().as_secs_f64();
         }
+    }
+    if measured_steps_per_chain < cfg.max_steps {
+        log::warn!(
+            "deadline stop: {}/{} measurement steps per chain ({:.1}%); error bars are \
+             honest but larger, and the sample count is wall-clock-dependent",
+            measured_steps_per_chain,
+            cfg.max_steps,
+            100.0 * measured_steps_per_chain as f64 / cfg.max_steps as f64
+        );
     }
     for counter in &mut update_stats {
         counter.acc_ratio = if counter.proposed == 0 {
@@ -187,7 +219,7 @@ pub fn run_batched(
         cfg.tau_fit,
         cfg.fixed_tau,
     )?;
-    let steps_done = cfg.max_steps * n_chains as u64;
+    let steps_done = measured_steps_per_chain * n_chains as u64;
     report.steps_done = steps_done;
     Ok(BatchedRunOutput {
         report,

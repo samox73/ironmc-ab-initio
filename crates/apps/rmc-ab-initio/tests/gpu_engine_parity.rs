@@ -12,7 +12,7 @@ mod common;
 use common::synthetic_model;
 use nalgebra::Vector3;
 use rmc_ab_initio::flat::batched::{run_batched, BatchedRunOutput};
-use rmc_ab_initio::gpu::run::run_device;
+use rmc_ab_initio::gpu::run::{run_device, run_device_with_deadline};
 use rmc_ab_initio::gpu::SelectedRuntime;
 use rmc_diagmc::DiagConfig;
 
@@ -154,4 +154,38 @@ fn device_chain_offset_matches_full_run() {
     for (a, b) in full.chains.iter().zip(split) {
         assert_eq!(a, b);
     }
+}
+
+/// The slurm deadline stops the segment loop between launches, keeping every
+/// replayed sample (devel-QoS jobs shut down cleanly instead of being killed).
+#[test]
+fn device_deadline_truncates_between_segments() {
+    let model = synthetic_model(7);
+    let mut cfg = config(true);
+    cfg.max_steps = 2_000_000;
+    let client =
+        <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let out = run_device_with_deadline(
+        client.clone(),
+        &model,
+        &cfg,
+        0,
+        MAX_ORDER_GPU,
+        1,
+        Some(deadline),
+    )
+    .unwrap();
+    assert!(out.steps_done > 0, "nothing measured before the deadline");
+    assert!(
+        out.steps_done < cfg.max_steps * cfg.chains,
+        "run was not truncated"
+    );
+    assert_eq!(out.report.steps_done, out.steps_done);
+
+    let expired = std::time::Instant::now();
+    assert!(
+        run_device_with_deadline(client, &model, &cfg, 0, MAX_ORDER_GPU, 1, Some(expired))
+            .is_err()
+    );
 }
