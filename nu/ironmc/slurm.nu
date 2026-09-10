@@ -71,6 +71,76 @@ export def partitions [] { $PARTITIONS }
 # Your queued/running jobs.
 export def queue [] { squeue --me --format "%.18i %.30j %.18P %.24q %.10T %.19S %.10M %R" }
 
+def slurm-logdir [] { $env.DATA | path join ironmc slurm }
+
+# Newest job id in your queue (by submission time), or null when nothing is queued.
+def newest-job-id [] {
+    if (which squeue | is-empty) { return null }
+    let ids = (squeue --me --noheader --sort=-V --format "%i" | lines | str trim | where {|l| $l != "" })
+    if ($ids | is-empty) { null } else { $ids | first }
+}
+
+# A job's stdout path: from scontrol while slurm still knows the job, else from
+# the submit log dir (`<name>-<jobid>.out`).
+def stdout-path [job_id: string] {
+    let info = (try { do { scontrol show job $job_id } | complete } catch { {exit_code: 127, stdout: ""} })
+    if $info.exit_code == 0 {
+        let parsed = ($info.stdout | parse -r 'StdOut=(?<path>\S+)')
+        if ($parsed | is-not-empty) { return ($parsed | first | get path) }
+    }
+    let hits = (try { ls (slurm-logdir | path join $"*-($job_id).out" | into glob) } catch { [] })
+    if ($hits | is-empty) {
+        error make {msg: $"cannot resolve stdout of job ($job_id): not in scontrol, no match in (slurm-logdir)"}
+    }
+    $hits | first | get name
+}
+
+# Completion menu for job ids: `<id>   <name> [<state>]`, newest first; the
+# name/state column is a visual guide — selecting inserts only the id.
+def job-id-completions [] {
+    if (which squeue | is-empty) { return [] }
+    squeue --me --noheader --sort=-V --format "%i\t%j\t%T"
+        | lines
+        | str trim
+        | where {|line| $line != "" }
+        | each {|line|
+            let cols = ($line | split row "\t")
+            {
+                value: ($cols | get 0)
+                description: $"($cols | get -o 1 | default '')  [($cols | get -o 2 | default '?')]"
+            }
+        }
+}
+
+# Print a job's stdout log. Defaults to your newest queued/running job (or, with
+# an empty queue, the newest log file). --tail keeps watching (Ctrl-C to stop);
+# it also waits for the file when the job is still pending.
+export def logs [
+    job_id?: string@job-id-completions  # slurm job id; any job, not only `submit`-made ones
+    --tail (-t)             # follow live via tail -F instead of a one-shot cat
+    --lines (-n): int = 50  # trailing lines to show when following
+] {
+    let id = ($job_id | default (newest-job-id))
+    let path = if $id != null {
+        stdout-path $id
+    } else {
+        let logs = (try { ls (slurm-logdir | path join "*.out" | into glob) | sort-by modified } catch { [] })
+        if ($logs | is-empty) {
+            error make {msg: $"no job id given, queue is empty, and no logs in (slurm-logdir)"}
+        }
+        $logs | last | get name
+    }
+
+    if $tail {
+        print $"following ($path) — Ctrl-C to stop"
+        tail -n $lines -F $path
+    } else if ($path | path exists) {
+        open --raw $path
+    } else {
+        print $"($path) does not exist yet — job still pending? try --tail to wait for it"
+    }
+}
+
 # Submit an ironmc target as a slurm job.
 export def submit [
     ...target: string@target-completions  # e.g.: ladder run 50 — or quoted if it contains flags: "ladder guard-tau --baseline -0.25"
@@ -170,6 +240,8 @@ export def submit [
         cuda load
         cargo build --release -p rmc-ab-initio --features gpu-cuda
         cargo build --release -p rmc-frohlich --features gpu-cuda
+        # `gpu parity` runs cargo test in-job; precompile the test binaries.
+        cargo test --release -p rmc-ab-initio --features gpu-cuda --no-run
     }
     let out = (sbatch $script | str trim)
     print $out
