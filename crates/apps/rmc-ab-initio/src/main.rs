@@ -309,7 +309,7 @@ fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     use rmc_ab_initio::dump::RankDump;
     use rmc_ab_initio::flat::batched::DEFAULT_MAX_ORDER_GPU;
-    use rmc_ab_initio::gpu::run::{run_device, DEFAULT_LANES};
+    use rmc_ab_initio::gpu::run::{run_device_with_deadline, CYCLES_PER_LAUNCH, DEFAULT_LANES};
     use rmc_ab_initio::gpu::SelectedRuntime;
 
     let mut options = options(args)?;
@@ -322,6 +322,8 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let lanes: u32 = take(&mut options, "--lanes", Some(DEFAULT_LANES))?;
     let max_order_gpu: usize =
         take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
+    let cycles_per_launch: u64 =
+        take(&mut options, "--cycles-per-launch", Some(CYCLES_PER_LAUNCH))?;
     let out_dir: PathBuf = take(&mut options, "--out-dir", Some(PathBuf::from(".")))?;
     if let Some(unknown) = options.keys().next() {
         return Err(format!("unknown option {unknown}").into());
@@ -330,9 +332,19 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let table = Arc::new(VertexTable::load(table_path)?);
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
+    let deadline = rmc_diagmc::run::slurm_deadline(config.end_time_margin_secs)?;
     let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
     let started = Instant::now();
-    let output = run_device(client, &model, &config, chain_offset, max_order_gpu, lanes)?;
+    let output = run_device_with_deadline(
+        client,
+        &model,
+        &config,
+        chain_offset,
+        max_order_gpu,
+        lanes,
+        cycles_per_launch,
+        deadline,
+    )?;
     let wall_secs = started.elapsed().as_secs_f64();
 
     std::fs::create_dir_all(&out_dir)?;

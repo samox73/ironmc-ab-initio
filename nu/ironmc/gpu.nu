@@ -43,6 +43,7 @@ export def run [
     --rank-table: int = 800       # table rank in the artifact filename
     --lanes: int = 32
     --max-order-gpu: int = 256
+    --cycles-per-launch: int = 256
     --out-dir: string = "results-gpu"
 ] {
     cuda load
@@ -55,7 +56,8 @@ export def run [
     }
     (cargo run --release -p rmc-ab-initio --features gpu-cuda --
         run-gpu --table $table --config $config_path --rank $rank
-        --lanes $lanes --max-order-gpu $max_order_gpu --out-dir $out_dir)
+        --lanes $lanes --max-order-gpu $max_order_gpu
+        --cycles-per-launch $cycles_per_launch --out-dir $out_dir)
 }
 
 # A5 CUDA parity checkpoint: the engine parity suite on this node's GPU.

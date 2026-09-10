@@ -299,7 +299,16 @@ pub fn run_device<R: Runtime>(
     lanes: u32,
 ) -> Result<BatchedRunOutput> {
     let deadline = rmc_diagmc::run::slurm_deadline(cfg.end_time_margin_secs)?;
-    run_device_with_deadline(client, model, cfg, chain_offset, max_order_gpu, lanes, deadline)
+    run_device_with_deadline(
+        client,
+        model,
+        cfg,
+        chain_offset,
+        max_order_gpu,
+        lanes,
+        CYCLES_PER_LAUNCH,
+        deadline,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -310,8 +319,10 @@ pub fn run_device_with_deadline<R: Runtime>(
     chain_offset: u64,
     max_order_gpu: usize,
     lanes: u32,
+    cycles_per_launch: u64,
     deadline: Option<std::time::Instant>,
 ) -> Result<BatchedRunOutput> {
+    assert!(cycles_per_launch > 0);
     if cfg.chains == 0 {
         return Err(RmcError::InvalidArgument(
             "device runs must pin `chains` explicitly".to_string(),
@@ -367,17 +378,23 @@ pub fn run_device_with_deadline<R: Runtime>(
         })
         .collect();
 
+    let n_segments = total_cycles.div_ceil(cycles_per_launch);
+    log::info!(
+        "gpu: {n_segments} segments of ≤ {cycles_per_launch} cycles; \
+         the first launch includes the NVRTC JIT"
+    );
     let mut step_secs = 0.0;
     let mut replay_secs = 0.0;
     let mut measured_steps_per_chain = 0u64;
     let mut cycle_start = 0u64;
+    let mut segment_index = 0u64;
     while cycle_start < total_cycles {
         if let Some(deadline) = deadline {
             if std::time::Instant::now() >= deadline {
                 break;
             }
         }
-        let n_cycles = CYCLES_PER_LAUNCH.min(total_cycles - cycle_start);
+        let n_cycles = cycles_per_launch.min(total_cycles - cycle_start);
         let contains_final = cycle_start + n_cycles == total_cycles;
         let t = std::time::Instant::now();
         let segment = launch_segment(
@@ -399,7 +416,14 @@ pub fn run_device_with_deadline<R: Runtime>(
                 },
             },
         );
-        step_secs += t.elapsed().as_secs_f64();
+        let segment_secs = t.elapsed().as_secs_f64();
+        step_secs += segment_secs;
+        segment_index += 1;
+        log::info!(
+            "gpu: segment {segment_index}/{n_segments} ({n_cycles} cycles) in \
+             {segment_secs:.2} s — {:.3e} steps/s",
+            (n_cycles * steps_per_cycle * n_chains as u64) as f64 / segment_secs
+        );
 
         let t = std::time::Instant::now();
         for cycle in 0..n_cycles as usize {

@@ -163,9 +163,12 @@ fn device_deadline_truncates_between_segments() {
     let model = synthetic_model(7);
     let mut cfg = config(true);
     cfg.max_steps = 2_000_000;
+    // No warmup and a generous budget: the first launch pays the JIT, and the
+    // deadline must land after at least one measured segment.
+    cfg.warmup_steps = 0;
     let client =
         <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let out = run_device_with_deadline(
         client.clone(),
         &model,
@@ -173,6 +176,7 @@ fn device_deadline_truncates_between_segments() {
         0,
         MAX_ORDER_GPU,
         1,
+        8,
         Some(deadline),
     )
     .unwrap();
@@ -185,7 +189,7 @@ fn device_deadline_truncates_between_segments() {
 
     let expired = std::time::Instant::now();
     assert!(
-        run_device_with_deadline(client, &model, &cfg, 0, MAX_ORDER_GPU, 1, Some(expired))
+        run_device_with_deadline(client, &model, &cfg, 0, MAX_ORDER_GPU, 1, 8, Some(expired))
             .is_err()
     );
 }
