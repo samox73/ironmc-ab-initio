@@ -409,6 +409,29 @@ impl<R: Runtime> DeviceTables<R> {
         }
     }
 
+    /// The raw table handles `(w_re, w_im, v_re, v_im, cbm, bra_band)` for
+    /// the A4 engine kernel, which shares this upload.
+    #[allow(clippy::type_complexity)]
+    pub fn raw_handles(
+        &self,
+    ) -> (
+        &cubecl::server::Handle,
+        &cubecl::server::Handle,
+        &cubecl::server::Handle,
+        &cubecl::server::Handle,
+        &cubecl::server::Handle,
+        &cubecl::server::Handle,
+    ) {
+        (
+            &self.w_re,
+            &self.w_im,
+            &self.v_re,
+            &self.v_im,
+            &self.cbm,
+            &self.bra_band,
+        )
+    }
+
     /// Launch one variant over the given eval set and return per-eval results.
     /// The second element is the kernel wall time of the *second* (JIT-warm)
     /// launch when `timed` is set, else of the single launch.

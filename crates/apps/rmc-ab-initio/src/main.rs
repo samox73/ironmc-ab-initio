@@ -303,6 +303,70 @@ fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     Ok(())
 }
 
+/// Phase A4/A5 device run: run-flat semantics on the selected GPU runtime,
+/// same RankDump output (GPU ranks merge with the same `merge`).
+#[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
+fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
+    use rmc_ab_initio::dump::RankDump;
+    use rmc_ab_initio::flat::batched::DEFAULT_MAX_ORDER_GPU;
+    use rmc_ab_initio::gpu::run::{run_device, DEFAULT_LANES};
+    use rmc_ab_initio::gpu::SelectedRuntime;
+
+    let mut options = options(args)?;
+    let table_path: PathBuf = take(&mut options, "--table", None)?;
+    let config: DiagConfig = match options.remove("--config") {
+        Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+        None => DiagConfig::default(),
+    };
+    let rank: u64 = take(&mut options, "--rank", Some(0))?;
+    let lanes: u32 = take(&mut options, "--lanes", Some(DEFAULT_LANES))?;
+    let max_order_gpu: usize =
+        take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
+    let out_dir: PathBuf = take(&mut options, "--out-dir", Some(PathBuf::from(".")))?;
+    if let Some(unknown) = options.keys().next() {
+        return Err(format!("unknown option {unknown}").into());
+    }
+
+    let table = Arc::new(VertexTable::load(table_path)?);
+    let model = Arc::new(AbInitioModel::new(table));
+    let chain_offset = rank * config.chains;
+    let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
+    let started = Instant::now();
+    let output = run_device(client, &model, &config, chain_offset, max_order_gpu, lanes)?;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    std::fs::create_dir_all(&out_dir)?;
+    let dump_path = out_dir.join(RankDump::filename(rank));
+    RankDump {
+        electron_energy_pext: model.electron_energy(config.p_ext),
+        chains: config.chains,
+        steps_done: output.steps_done,
+        data: output.data,
+        config,
+        rank,
+    }
+    .save(&dump_path)?;
+    log::info!("wrote {}", dump_path.display());
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "report": output.report,
+            "update_stats": output.update_stats,
+            "step_secs": output.step_secs,
+            "replay_secs": output.replay_secs,
+            "wall_secs": wall_secs,
+            "steps_per_sec_kernel_only": output.steps_done as f64 / output.step_secs,
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(not(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda")))]
+fn run_gpu_command(_args: impl Iterator<Item = String>) -> BoxResult<()> {
+    Err("run-gpu needs a GPU runtime; rebuild with --features gpu-cuda (or gpu-cpu)".into())
+}
+
 /// Phase A1 vertex-dot microbenchmark (plan `gpu-abinitio`).
 #[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
 fn vbench_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
@@ -341,6 +405,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("table") => table_command(args)?,
         Some("run") => table_run_command(args)?,
         Some("run-flat") => run_flat_command(args)?,
+        Some("run-gpu") => run_gpu_command(args)?,
         Some("merge") => merge_command(args)?,
         Some("vbench") => vbench_command(args)?,
         Some("model") => {

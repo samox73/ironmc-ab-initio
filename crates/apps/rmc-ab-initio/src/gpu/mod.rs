@@ -5,6 +5,8 @@
 //! `VertexTable::short_indices_capped`. Runtime selection mirrors
 //! `rmc_frohlich::gpu::run`: CUDA > HIP > CPU by feature precedence.
 
+pub mod kernel;
+pub mod run;
 pub mod vertex_bench;
 
 #[cfg(feature = "gpu-cuda")]

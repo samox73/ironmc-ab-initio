@@ -61,12 +61,6 @@ pub fn run_batched(
     if cfg.max_steps == 0 || cfg.steps_per_cycle == 0 || cfg.n_batches < 2 {
         return Err(RmcError::InvalidArgument("invalid DiagConfig".to_string()));
     }
-    let table = &model.table;
-    let p_ext = table
-        .index_of(cfg.p_ext)
-        .ok_or_else(|| RmcError::InvalidArgument("p_ext is not on the table grid".to_string()))?
-        as u32;
-
     let n_chains = cfg.chains as usize;
     let n_updates = if cfg.fixed_tau { 3 } else { 4 };
     let steps_per_cycle = cfg.steps_per_cycle;
@@ -86,23 +80,8 @@ pub fn run_batched(
         );
     }
 
-    let start_tau = if cfg.fixed_tau { cfg.max_tau } else { cfg.max_tau / 2.0 };
-    let mut chains: Vec<FlatDiagram> = (0..n_chains)
-        .map(|_| {
-            let mut chain = FlatDiagram::new(
-                table.grid_n as u32,
-                cfg.mu,
-                p_ext,
-                cfg.max_tau,
-                start_tau,
-                cfg.min_order,
-                cfg.max_order,
-                max_order_gpu,
-            );
-            weight::sync_cache(&mut chain, model);
-            chain
-        })
-        .collect();
+    let template = build_chain(model, cfg, max_order_gpu)?;
+    let mut chains: Vec<FlatDiagram> = vec![template; n_chains];
     let mut updates = (0..n_chains)
         .map(|_| {
             if cfg.fixed_tau {
@@ -219,6 +198,34 @@ pub fn run_batched(
         step_secs,
         replay_secs,
     })
+}
+
+/// The initial per-chain state (identical for every chain): tail at
+/// `max_tau` in fixed-τ mode, `max_tau / 2` otherwise (mirroring
+/// `Diagram::new` + the runner's fixed-τ pin), cache synced.
+pub fn build_chain(
+    model: &AbInitioModel,
+    cfg: &DiagConfig,
+    max_order_gpu: usize,
+) -> Result<FlatDiagram> {
+    let table = &model.table;
+    let p_ext = table
+        .index_of(cfg.p_ext)
+        .ok_or_else(|| RmcError::InvalidArgument("p_ext is not on the table grid".to_string()))?
+        as u32;
+    let start_tau = if cfg.fixed_tau { cfg.max_tau } else { cfg.max_tau / 2.0 };
+    let mut chain = FlatDiagram::new(
+        table.grid_n as u32,
+        cfg.mu,
+        p_ext,
+        cfg.max_tau,
+        start_tau,
+        cfg.min_order,
+        cfg.max_order,
+        max_order_gpu,
+    );
+    weight::sync_cache(&mut chain, model);
+    Ok(chain)
 }
 
 fn step_selected<R: rand::Rng + ?Sized>(

@@ -101,6 +101,13 @@ impl AbInitioModel {
     pub fn ln_nq(&self) -> f64 {
         (self.table.len() as f64).ln()
     }
+
+    /// The proposal-sampling arrays `(q_weight, q_cdf, q_weight_sum)` — the
+    /// GPU driver uploads them verbatim so device decisions replay the host's
+    /// floats exactly.
+    pub fn q_sampling(&self) -> (&[f64], &[f64], f64) {
+        (&self.q_weight, &self.q_cdf, self.q_weight_sum)
+    }
 }
 
 impl Model for AbInitioModel {
