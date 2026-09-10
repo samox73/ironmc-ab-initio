@@ -150,6 +150,7 @@ export def submit [
     --devel                    # devel QoS: fixed 10-minute walltime
     --cpus: int = 128          # zen3 nodes have 128 cores
     --gpus: int = 2            # gres GPU count on GPU partitions (both a40x2/a100x2 nodes carry 2)
+    --gpu-ranks: int = 1       # >1: srun that many tasks, one GPU each; the target reads $SLURM_PROCID (gpu run does)
     --job-name: string         # defaults to the target with dashes
     --dry-run                  # print the batch script instead of submitting
 ] {
@@ -196,6 +197,18 @@ export def submit [
     }
 
     let gpu_partition = ($partition =~ 'a100|a40')
+    if $gpu_ranks > 1 and not $gpu_partition {
+        error make {msg: "--gpu-ranks needs a GPU partition"}
+    }
+    let ntasks = if $gpu_ranks > 1 { $gpu_ranks } else { 1 }
+    let cpus_per_task = if $gpu_ranks > 1 { $cpus // $gpu_ranks } else { $cpus }
+    let gpu_directives = if $gpu_ranks > 1 {
+        ["#SBATCH --gpus-per-task=1"]
+    } else if $gpu_partition {
+        [$"#SBATCH --gres=gpu:($gpus)"]
+    } else {
+        []
+    }
     let lines = ([
         "#!/bin/bash"
         $"#SBATCH --job-name=($name)"
@@ -203,9 +216,9 @@ export def submit [
         $"#SBATCH --qos=($qos)"
         $"#SBATCH --time=($time)"
         "#SBATCH --nodes=1"
-        "#SBATCH --ntasks=1"
-        $"#SBATCH --cpus-per-task=($cpus)"
-    ] | append (if $gpu_partition { [$"#SBATCH --gres=gpu:($gpus)"] } else { [] })
+        $"#SBATCH --ntasks=($ntasks)"
+        $"#SBATCH --cpus-per-task=($cpus_per_task)"
+    ] | append $gpu_directives
       | append [
         $"#SBATCH --output=($logdir)/%x-%j.out"
         ""
@@ -223,6 +236,20 @@ export def submit [
         $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
         "echo; echo '=== result ==='; cat \"$RESULT\""
     ])
+    # Multi-rank GPU jobs: each srun task runs the target with its own GPU and
+    # result file; rank-aware targets (gpu run) read $SLURM_PROCID themselves.
+    let lines = if $gpu_ranks > 1 {
+        let task_script = ($logdir | path join $"($name)-($stamp)-task.sh")
+        [
+            "#!/bin/bash"
+            $"RESULT=\"($logdir)/($name)-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
+            $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
+            "echo; echo \"=== result rank ${SLURM_PROCID} ===\"; cat \"$RESULT\""
+        ] | str join "\n" | save -f $task_script
+        ($lines | drop 3 | append [$"srun bash '($task_script)'"])
+    } else {
+        $lines
+    }
     $lines | str join "\n" | save -f $script
 
     if $dry_run {

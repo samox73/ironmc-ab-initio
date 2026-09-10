@@ -39,7 +39,7 @@ export def vbench [
 export def run [
     grid: int = 20
     --config: string = "ladder-lif-node"
-    --rank: int = 0               # slurm-style rank (chain offset = rank · chains)
+    --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID (multi-rank srun)
     --rank-table: int = 800       # table rank in the artifact filename
     --lanes: int = 32
     --max-order-gpu: int = 256
@@ -48,6 +48,7 @@ export def run [
 ] {
     cuda load
     cd $ROOT
+    let rank = ($rank | default ($env.SLURM_PROCID? | default 0 | into int))
     let table = (table-path $grid $rank_table)
     let config_path = if ($config | path exists) {
         $config
