@@ -1,4 +1,3 @@
-use nalgebra::Vector3;
 use num_complex::Complex64;
 use rmc_core::mc::Measurement;
 use rmc_core::{Merge, Result, RmcError};
@@ -36,7 +35,7 @@ pub struct Report {
     pub steps_done: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Batch {
     hist: Vec<Complex64>,
     eloc_hist: Vec<Complex64>,
@@ -69,7 +68,7 @@ impl Batch {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MeasurementData {
     batches: Vec<Batch>,
 }
@@ -81,7 +80,7 @@ impl Merge for MeasurementData {
     }
 }
 
-pub(crate) struct DiagMeasurement {
+pub struct DiagMeasurement {
     model: std::sync::Arc<dyn Model>,
     batches: Vec<Batch>,
     batch_len: usize,
@@ -90,7 +89,7 @@ pub(crate) struct DiagMeasurement {
 }
 
 impl DiagMeasurement {
-    pub(crate) fn new(
+    pub fn new(
         model: std::sync::Arc<dyn Model>,
         num_bins: usize,
         n_batches: usize,
@@ -107,22 +106,42 @@ impl DiagMeasurement {
     }
 }
 
+impl DiagMeasurement {
+    /// Record one per-cycle sample from its raw scalars — the entry point of
+    /// the flat/GPU drivers' host-side measurement replay (their per-cycle
+    /// sample log carries exactly these fields).
+    pub fn measure_sample(&mut self, tau: f64, order: usize, phase: Complex64, local_energy: f64) {
+        let batch = (self.next / self.batch_len).min(self.batches.len() - 1);
+        let bin = ((tau / self.max_tau * self.batches[batch].hist.len() as f64) as usize)
+            .min(self.batches[batch].hist.len() - 1);
+        let data = &mut self.batches[batch];
+        data.hist[bin] += phase;
+        data.eloc_hist[bin] += phase * local_energy;
+        data.zeroth += u64::from(order == 0);
+        data.phase_sum += phase;
+        data.order_sum += order as f64;
+        data.count += 1;
+        self.next += 1;
+    }
+
+    /// `finish` as a plain method (the trait consumes `self`; drivers that do
+    /// not run through the `Runner` call this directly).
+    pub fn into_output(self) -> MeasurementData {
+        Measurement::<Diagram>::finish(self)
+    }
+}
+
 impl Measurement<Diagram> for DiagMeasurement {
     type Output = MeasurementData;
 
     fn measure(&mut self, diagram: &Diagram) {
-        let batch = (self.next / self.batch_len).min(self.batches.len() - 1);
-        let phase = diagram.cached_phase();
-        let bin = ((diagram.tau() / self.max_tau * self.batches[batch].hist.len() as f64) as usize)
-            .min(self.batches[batch].hist.len() - 1);
-        let data = &mut self.batches[batch];
-        data.hist[bin] += phase;
-        data.eloc_hist[bin] += phase * local_energy(diagram, self.model.as_ref());
-        data.zeroth += u64::from(diagram.order == 0);
-        data.phase_sum += phase;
-        data.order_sum += diagram.order as f64;
-        data.count += 1;
-        self.next += 1;
+        let local_energy = local_energy(diagram, self.model.as_ref());
+        self.measure_sample(
+            diagram.tau(),
+            diagram.order,
+            diagram.cached_phase(),
+            local_energy,
+        );
     }
 
     fn finish(mut self) -> Self::Output {
@@ -143,11 +162,13 @@ impl Measurement<Diagram> for DiagMeasurement {
     }
 }
 
-pub(crate) fn summarize(
+/// Reduce merged batch data to the final report. Takes only the one model
+/// scalar it needs (`ε(p_ext)`, the Green-function normalization energy) so
+/// offline merges never reload a vertex table.
+pub fn summarize(
     data: MeasurementData,
-    model: &dyn Model,
+    electron_energy_pext: f64,
     mu: f64,
-    p_ext: Vector3<f64>,
     max_tau: f64,
     tau_fit: f64,
     fixed_tau: bool,
@@ -171,7 +192,7 @@ pub(crate) fn summarize(
     let (green_values, e0, z, e0_leave_one, z_leave_one) = if fixed_tau {
         (vec![], f64::NAN, f64::NAN, vec![], vec![])
     } else {
-        let norm0 = zeroth_norm(model.electron_energy(p_ext) - mu, max_tau);
+        let norm0 = zeroth_norm(electron_energy_pext - mu, max_tau);
         let green_values = normalized_green(&total, norm0, bin_width)?;
         let (e0, z) = decay_fit(&tau, &green_values, mu, tau_fit)?;
         // A degenerate replicate (e.g. all order-0 samples in the omitted
@@ -420,6 +441,7 @@ fn nonlinear_jackknife_error(estimates: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::Vector3;
 
     #[test]
     fn decay_fit_recovers_exponential() {

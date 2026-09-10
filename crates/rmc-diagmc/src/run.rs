@@ -238,9 +238,8 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
     }
     let mut report = summarize(
         output.output,
-        model.as_ref(),
+        model.electron_energy(cfg.p_ext),
         cfg.mu,
-        cfg.p_ext,
         cfg.max_tau,
         cfg.tau_fit,
         cfg.fixed_tau,
