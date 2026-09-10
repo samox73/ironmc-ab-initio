@@ -194,13 +194,14 @@ fn table_run_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         return Err(format!("unknown option {unknown}").into());
     }
     let table = Arc::new(VertexTable::load(table_path)?);
-    let max_steps = config.max_steps;
     let started = Instant::now();
     let report = rmc_diagmc::run(Arc::new(AbInitioModel::new(table)), config)?;
     let wall_secs = started.elapsed().as_secs_f64();
+    // steps_done is the honest count under a deadline stop; wall includes
+    // warmup and summarize (percent-level for production shapes).
     log::info!(
-        "DMC complete: {wall_secs:.3} s, {:.0} steps/sec/chain",
-        max_steps as f64 / wall_secs
+        "DMC complete: {wall_secs:.3} s, {:.3e} steps/sec across all chains",
+        report.steps_done as f64 / wall_secs
     );
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
