@@ -3144,10 +3144,12 @@ dependencies = [
  "rand 0.8.6",
  "rand_distr",
  "rand_xoshiro",
+ "rayon",
  "rmc-core",
  "rmc-numeric",
  "rmc-stats",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3162,7 +3164,6 @@ dependencies = [
  "num-complex",
  "proptest",
  "rand 0.8.6",
- "rand_distr",
  "rmc-core",
  "rmc-grids",
  "rmc-io",

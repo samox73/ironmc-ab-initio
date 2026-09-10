@@ -699,25 +699,25 @@ impl Measurement<Diagram> for PolaronMeasurement {
     }
 }
 
-impl Measurement<FlatDiagram> for PolaronMeasurement {
-    type Output = PolaronStats;
-
-    fn measure(&mut self, d: &FlatDiagram) {
-        let Some(index) = self.grid.bin_index(d.tau()) else {
+impl PolaronMeasurement {
+    /// Record one flat-engine sample from its scalar summary `(tau, order, exact_value)`.
+    ///
+    /// This is the GPU replay entry point: the device computes `exact_value` (the exact estimator
+    /// evaluated at the bin center of `tau`); every statistics push happens here on the host.
+    /// `exact_value` is ignored at order 0. The internal self-consistent reweighting is *not*
+    /// triggered by this path — callers manage reweighting externally, as the batched driver does
+    /// (`self_consistent_period == usize::MAX`).
+    pub fn measure_flat_sample(&mut self, tau: f64, order: usize, exact_value: f64) {
+        let Some(index) = self.grid.bin_index(tau) else {
             return;
         };
 
-        let is_zeroth = d.order == 0;
-        let t0 = self.grid.bin_center(index).expect("bin center must exist");
-        let exact_value = if is_zeroth {
-            0.0
-        } else {
-            d.exact_estimator(t0)
-        };
+        let is_zeroth = order == 0;
+        let exact_value = if is_zeroth { 0.0 } else { exact_value };
         let exp_energy = if is_zeroth {
             0.0
         } else {
-            ((self.stats.energy_estimate - d.mu) * d.tau()).exp()
+            ((self.stats.energy_estimate - self.stats.mu) * tau).exp()
         };
 
         self.stats.zeroth.push(if is_zeroth { 1.0 } else { 0.0 });
@@ -729,8 +729,8 @@ impl Measurement<FlatDiagram> for PolaronMeasurement {
             .push(if is_zeroth { 0.0 } else { -exp_energy });
         self.stats
             .a
-            .push(if is_zeroth { 0.0 } else { d.tau() * exp_energy });
-        self.stats.order.push(d.order as f64);
+            .push(if is_zeroth { 0.0 } else { tau * exp_energy });
+        self.stats.order.push(order as f64);
 
         let hist_value = if is_zeroth { 0.0 } else { 1.0 };
         self.stats.exact.push(index, exact_value);
@@ -738,6 +738,24 @@ impl Measurement<FlatDiagram> for PolaronMeasurement {
 
         self.stats.sample_count += 1;
         self.stats.self_consistent_count += 1;
+    }
+}
+
+impl Measurement<FlatDiagram> for PolaronMeasurement {
+    type Output = PolaronStats;
+
+    fn measure(&mut self, d: &FlatDiagram) {
+        let Some(index) = self.grid.bin_index(d.tau()) else {
+            return;
+        };
+
+        let exact_value = if d.order == 0 {
+            0.0
+        } else {
+            let t0 = self.grid.bin_center(index).expect("bin center must exist");
+            d.exact_estimator(t0)
+        };
+        self.measure_flat_sample(d.tau(), d.order, exact_value);
         if self.stats.self_consistent_count > self.stats.self_consistent_period {
             self.reevaluate_flat_energy_estimate(d);
         }

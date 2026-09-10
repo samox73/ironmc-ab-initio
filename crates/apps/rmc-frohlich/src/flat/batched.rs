@@ -20,6 +20,8 @@ pub struct BatchedRunOutput {
     pub stats: SimulationStats,
     pub measurement: PolaronStats,
     pub update_stats: Vec<UpdateStatEntry>,
+    /// Final state of every chain, for GPU-vs-CPU parity checks.
+    pub chains: Vec<FlatDiagram>,
 }
 
 pub fn run_batched(
@@ -81,7 +83,7 @@ pub fn run_batched(
         maybe_reweight_uniformly(
             cfg,
             samples_done,
-            &chains,
+            chains[0].momentum_out(),
             &mut measurements,
             &mut self_consistent_period,
         );
@@ -97,10 +99,11 @@ pub fn run_batched(
         stats,
         measurement,
         update_stats,
+        chains,
     })
 }
 
-fn build_flat_diagram(cfg: &RunConfig) -> FlatDiagram {
+pub(crate) fn build_flat_diagram(cfg: &RunConfig) -> FlatDiagram {
     FlatDiagram::with_parameters(
         cfg.alpha,
         cfg.mu,
@@ -174,7 +177,7 @@ fn step_selected<R: Rng + ?Sized>(
     }
 }
 
-fn update_stat_templates(
+pub(crate) fn update_stat_templates(
     updates: &rmc_core::mc::WeightedUpdateSet<FlatPolaronUpdate>,
 ) -> Vec<UpdateStatEntry> {
     updates
@@ -186,10 +189,10 @@ fn update_stat_templates(
         .collect()
 }
 
-fn maybe_reweight_uniformly(
+pub(crate) fn maybe_reweight_uniformly(
     cfg: &RunConfig,
     samples_done: usize,
-    chains: &[FlatDiagram],
+    momentum_out: crate::physics::Vec3,
     measurements: &mut [PolaronMeasurement],
     self_consistent_period: &mut usize,
 ) {
@@ -213,14 +216,14 @@ fn maybe_reweight_uniformly(
     if !estimate.mean.is_finite() {
         return;
     }
-    let energy_estimate = physics::bare_dispersion(chains[0].momentum_out()) + estimate.mean;
+    let energy_estimate = physics::bare_dispersion(momentum_out) + estimate.mean;
     *self_consistent_period = next_period;
     for measurement in measurements {
         measurement.reset_flat_energy_window(energy_estimate, next_period);
     }
 }
 
-fn measurements_into_group_batches(
+pub(crate) fn measurements_into_group_batches(
     measurements: Vec<PolaronMeasurement>,
     n_batches: usize,
     n_chains: usize,

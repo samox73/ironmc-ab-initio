@@ -1,11 +1,12 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use indicatif::{MultiProgress, ProgressBar};
 use nalgebra::Vector3;
 use rand::Rng;
 use rmc_core::mc::{
     default_progress_style, IndicatifProgress, Kernel, MetropolisKernel, Runner, SimulationParams,
-    StepOutcome,
+    StepOutcome, WithDeadline,
 };
 use rmc_core::random::{ChainId, SeedSource};
 use rmc_core::{Result, RmcError};
@@ -28,6 +29,10 @@ pub struct DiagConfig {
     pub max_order: usize,
     pub tau_fit: f64,
     pub seed: u64,
+    /// Number of independent chains. `0` (or omitting the field in JSON)
+    /// auto-sizes to the rayon thread pool — one chain per available thread,
+    /// which under slurm follows `RAYON_NUM_THREADS`/the cpuset allocation.
+    #[serde(default)]
     pub chains: u64,
     pub max_steps: u64,
     pub warmup_steps: u64,
@@ -35,6 +40,15 @@ pub struct DiagConfig {
     pub n_batches: usize,
     /// Pin the external time to `max_tau` and use only the thermodynamic estimator.
     pub fixed_tau: bool,
+    /// Safety margin (seconds) before `SLURM_JOB_END_TIME` at which the
+    /// measurement loop stops so the report can be summarized and written.
+    /// Inert unless the env var is set.
+    #[serde(default = "default_end_time_margin_secs")]
+    pub end_time_margin_secs: f64,
+}
+
+fn default_end_time_margin_secs() -> f64 {
+    60.0
 }
 
 impl Default for DiagConfig {
@@ -54,6 +68,7 @@ impl Default for DiagConfig {
             steps_per_cycle: 10,
             n_batches: 20,
             fixed_tau: false,
+            end_time_margin_secs: default_end_time_margin_secs(),
         }
     }
 }
@@ -68,10 +83,11 @@ impl DiagConfig {
             || self.num_bins < 2
             || self.min_order != 0
             || self.max_order == 0
-            || self.chains == 0
             || self.max_steps == 0
             || self.steps_per_cycle == 0
             || self.n_batches < 2
+            || !self.end_time_margin_secs.is_finite()
+            || self.end_time_margin_secs < 0.0
         {
             return Err(RmcError::InvalidArgument("invalid DiagConfig".to_string()));
         }
@@ -91,13 +107,48 @@ impl DiagConfig {
     }
 }
 
+/// Deadline derived from `SLURM_JOB_END_TIME` (epoch seconds, exported by
+/// slurm ≥ 22.05), minus the safety margin. Read once at startup; a mid-run
+/// `scontrol update TimeLimit` is not tracked. No env var → `None`, feature off.
+fn slurm_deadline(margin_secs: f64) -> Result<Option<Instant>> {
+    let Ok(raw) = std::env::var("SLURM_JOB_END_TIME") else {
+        return Ok(None);
+    };
+    let end: u64 = raw.parse().map_err(|_| {
+        RmcError::InvalidArgument(format!(
+            "SLURM_JOB_END_TIME is not epoch seconds: {raw:?}"
+        ))
+    })?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before 1970")
+        .as_secs_f64();
+    let remaining = end as f64 - now - margin_secs;
+    if remaining <= 0.0 {
+        return Err(RmcError::InvalidState(format!(
+            "SLURM job ends within the {margin_secs} s end-time margin; refusing to start"
+        )));
+    }
+    log::info!("SLURM end-time deadline: stopping in {remaining:.0} s (margin {margin_secs} s)");
+    Ok(Some(Instant::now() + Duration::from_secs_f64(remaining)))
+}
+
 pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
     cfg.validate()?;
+    let deadline = slurm_deadline(cfg.end_time_margin_secs)?;
     if model.n_branches() == 0 {
         return Err(RmcError::InvalidArgument(
             "model must contain at least one phonon branch".to_string(),
         ));
     }
+
+    let chains = if cfg.chains == 0 {
+        let auto = rayon::current_num_threads() as u64;
+        log::info!("chains = 0 → auto-sized to {auto} (one chain per rayon thread)");
+        auto
+    } else {
+        cfg.chains
+    };
 
     let expected_samples = cfg.max_steps.div_ceil(cfg.steps_per_cycle) as usize;
     let build_cfg = cfg.clone();
@@ -135,7 +186,7 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
         );
         (diagram, kernel, measurement)
     })
-    .chains(cfg.chains)
+    .chains(chains)
     .warmup(SimulationParams {
         max_steps: cfg.warmup_steps,
         steps_per_cycle: cfg.steps_per_cycle,
@@ -158,20 +209,34 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
                 format!("warmup {} done", chain.0),
             )
         })
-        .callbacks(|chain: ChainId| {
-            progress(
+        .callbacks(|chain: ChainId| WithDeadline {
+            inner: progress(
                 cfg.max_steps,
                 format!("chain {}", chain.0),
                 format!("chain {} done", chain.0),
-            )
+            ),
+            deadline,
         });
 
     let output = runner.run(SimulationParams {
         max_steps: cfg.max_steps,
         steps_per_cycle: cfg.steps_per_cycle,
-        cycles_per_check: 0,
+        // 4096 cycles between deadline checks matches the drift-check cadence;
+        // 0 keeps the loop check-free when no deadline is set.
+        cycles_per_check: if deadline.is_some() { 4096 } else { 0 },
     })?;
-    summarize(
+    let total_steps = chains * cfg.max_steps;
+    if output.stats.steps_done < total_steps {
+        log::warn!(
+            "deadline stop: {}/{} measurement steps completed ({:.1}%); \
+             error bars are honest but larger, and the sample count is \
+             wall-clock-dependent (not reproducible from the seed alone)",
+            output.stats.steps_done,
+            total_steps,
+            100.0 * output.stats.steps_done as f64 / total_steps as f64
+        );
+    }
+    let mut report = summarize(
         output.output,
         model.as_ref(),
         cfg.mu,
@@ -179,7 +244,9 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
         cfg.max_tau,
         cfg.tau_fit,
         cfg.fixed_tau,
-    )
+    )?;
+    report.steps_done = output.stats.steps_done;
+    Ok(report)
 }
 
 struct DriftCheckedKernel<S> {

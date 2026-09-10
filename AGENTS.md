@@ -10,11 +10,8 @@
 
 ## Build & Test
 
-- Never run the full workspace test suite yourself. When full-suite verification is needed, give the
-  user the exact `rtk cargo test --release --workspace` command and wait for their results.
-- The debug profile is off limits by default. Run Cargo builds, checks, tests, and applications with
-  `--release` (or `--profile release-tuned` for tuned runs). Use debug only after a concrete problem
-  requires it, and state that reason first.
+- Never run the full workspace test suite yourself. When full-suite verification is needed, give the user the exact `rtk cargo test --release --workspace` command and wait for their results.
+- The debug profile is off limits by default. Run Cargo builds, checks, tests, and applications with `--release` (or `--profile release-tuned` for tuned runs). Use debug only after a concrete problem requires it, and state that reason first.
 - Run only the smallest relevant release-mode test/check target yourself.
 - `make run` does the default Frohlich-polaron run.
 - The `release-tuned` profile exists for tuned performance builds; see `README.md`.
@@ -34,8 +31,7 @@ rtk cargo test
 
 Do not run benchmark commands yourself.
 
-Benchmark commands may require `sudo` to isolate a CPU core. When benchmark verification is needed,
-tell the user exactly which command to run and wait for their results.
+Benchmark commands may require `sudo` to isolate a CPU core. When benchmark verification is needed, tell the user exactly which command to run and wait for their results.
 
 Copy-pasteable benchmark commands from `README.md`:
 
@@ -47,5 +43,5 @@ cargo bench-compare -p rmc-frohlich --bin rmc-frohlich --reps 5 --metric-regex '
 
 ## Conventions
 
-- Plan files live at the repo root as `plan-*.md`.
+- Plan files live in `plans/*.md`.
 - Prefer existing `type: summary` commit subjects such as `chore:`, `refactor:`, and `fix:`.

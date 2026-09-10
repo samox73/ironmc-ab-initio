@@ -1,0 +1,22 @@
+{
+  "alpha": 1.0,
+  "mu": -1.1,
+  "momentum": 0.0,
+  "max_tau": 30.0,
+  "start_tau": 1.0,
+  "min_order": 0,
+  "max_order": 10000,
+  "max_order_gpu": 256,
+  "num_bins": 500,
+  "n_batches": 32,
+  "energy_estimate": -1.0168,
+  "initial_self_consistent_period": 1000000000000000,
+  "period_multiplier": 1.5,
+  "fft_beta": 100.0,
+  "seed": 8267165747609980501,
+  "chains": 64,
+  "max_steps": 20000000,
+  "warmup_steps": 100000,
+  "steps_per_cycle": 100,
+  "cycles_per_check": 1000000
+}

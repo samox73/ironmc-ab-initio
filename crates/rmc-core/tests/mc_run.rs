@@ -1,10 +1,11 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use rmc_core::mc::{
     run_chain, Measurement, MetropolisKernel, NoopCallbacks, RunCallbacks, SimulationCtx,
     SimulationParams, SingleUpdateSet, SteppingUpdateSet, Update, UpdateSet, WeightedUpdate,
-    WeightedUpdateSet,
+    WeightedUpdateSet, WithDeadline,
 };
 use rmc_core::random::{ChainId, SeedSource};
 
@@ -140,6 +141,37 @@ fn run_callbacks_can_stop_the_loop() {
     assert_eq!(stats.steps_done, 6);
     assert_eq!(stats.cycles_done, 2);
     assert_eq!(value.get(), 6);
+}
+
+#[test]
+fn with_deadline_stops_when_past_and_delegates_when_none() {
+    let ctx = SimulationCtx {
+        steps_done: 0,
+        cycles_done: 0,
+        steps_in_cycle: 0,
+    };
+
+    let mut expired = WithDeadline {
+        inner: NoopCallbacks,
+        deadline: Some(Instant::now() - Duration::from_secs(1)),
+    };
+    assert!(expired.stop_when(&ctx));
+
+    let mut inert = WithDeadline {
+        inner: NoopCallbacks,
+        deadline: None,
+    };
+    assert!(!inert.stop_when(&ctx));
+
+    // A None deadline still forwards the inner callback's stop decision.
+    let mut delegating = WithDeadline {
+        inner: StopAfterTwoCycles,
+        deadline: None,
+    };
+    assert!(delegating.stop_when(&SimulationCtx {
+        cycles_done: 2,
+        ..ctx
+    }));
 }
 
 #[test]

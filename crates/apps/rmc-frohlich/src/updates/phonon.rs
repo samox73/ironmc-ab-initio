@@ -1,6 +1,6 @@
 use nalgebra::Vector3;
 use rand::Rng;
-use rmc_core::random::{exponential_sample_bounded, uniform_index};
+use rmc_core::random::{exponential_sample_bounded, uniform_index_from_u01};
 use slotmap::Key;
 
 use crate::diagram::{draw_new_q_from_uniforms, vec3, Diagram, VKey};
@@ -188,5 +188,5 @@ fn draw_new_q<R: Rng + ?Sized>(rng: &mut R) -> Vector3<f64> {
 }
 
 fn random_vertex<R: Rng + ?Sized>(d: &Diagram, rng: &mut R) -> VKey {
-    d.storage[uniform_index(rng, d.storage.len())]
+    d.storage[uniform_index_from_u01(rng.gen(), d.storage.len())]
 }

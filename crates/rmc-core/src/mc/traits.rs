@@ -173,6 +173,37 @@ pub trait RunCallbacks<C> {
     }
 }
 
+/// Callback wrapper that adds a wall-clock deadline to `stop_when`.
+///
+/// `Option<Instant>` is `Copy`, so every chain's callback carries the same deadline value with no
+/// shared state. `None` delegates to `inner` unchanged.
+#[derive(Clone, Copy, Debug)]
+pub struct WithDeadline<C> {
+    pub inner: C,
+    pub deadline: Option<std::time::Instant>,
+}
+
+impl<Ctx, C: RunCallbacks<Ctx>> RunCallbacks<Ctx> for WithDeadline<C> {
+    fn on_step(&mut self, ctx: &Ctx) {
+        self.inner.on_step(ctx)
+    }
+
+    fn on_cycle(&mut self, ctx: &Ctx) {
+        self.inner.on_cycle(ctx)
+    }
+
+    fn on_checkpoint(&mut self, ctx: &Ctx) {
+        self.inner.on_checkpoint(ctx)
+    }
+
+    fn stop_when(&mut self, ctx: &Ctx) -> bool {
+        self.inner.stop_when(ctx)
+            || self
+                .deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+    }
+}
+
 impl<Ctx, C: RunCallbacks<Ctx> + ?Sized> RunCallbacks<Ctx> for &mut C {
     fn on_step(&mut self, ctx: &Ctx) {
         (**self).on_step(ctx)

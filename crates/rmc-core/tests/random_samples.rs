@@ -1,8 +1,8 @@
 use rmc_core::random::{
     cauchy_pdf, cauchy_sample, exclusive_uniform_int_pdf, exponential_pdf, exponential_pdf_bounded,
-    exponential_sample, exponential_sample_bounded, normal_pdf, safe_exponential_pdf,
-    safe_exponential_sample, uniform_index, uniform_int_pdf, uniform_pdf, uniform_sample, ChainId,
-    SeedSource,
+    exponential_sample, exponential_sample_bounded, normal_from_uniforms, normal_pdf,
+    safe_exponential_pdf, safe_exponential_sample, uniform_index, uniform_index_from_u01,
+    uniform_int_pdf, uniform_pdf, uniform_sample, ChainId, SeedSource,
 };
 
 fn assert_close(actual: f64, expected: f64) {
@@ -87,6 +87,38 @@ fn transform_sampler_midpoint_moments_match_analytical_values() {
         (exponential_mean - (offset + 1.0 / lambda)).abs() < 1e-4,
         "exponential mean={exponential_mean}"
     );
+}
+
+#[test]
+fn uniform_index_from_u01_covers_range_without_overflow() {
+    assert_eq!(uniform_index_from_u01(0.0, 5), 0);
+    assert_eq!(uniform_index_from_u01(0.2, 5), 1);
+    // The largest representable u01 draw must still land in the final bucket, never at len.
+    let r_max = 1.0 - f64::EPSILON / 2.0;
+    assert_eq!(uniform_index_from_u01(r_max, 5), 4);
+    assert_eq!(uniform_index_from_u01(r_max, 1), 0);
+}
+
+#[test]
+fn normal_from_uniforms_matches_moments_and_edges() {
+    // r1 = 0 maps to radius 0, so the sample is exactly the mean.
+    assert_eq!(normal_from_uniforms(0.0, 0.37, 1.5, 2.0), 1.5);
+    // The largest u01 draw stays finite.
+    assert!(normal_from_uniforms(1.0 - f64::EPSILON / 2.0, 0.0, 0.0, 1.0).is_finite());
+
+    let n = 100_000;
+    let (mut sum, mut sum_sq) = (0.0, 0.0);
+    let mut rng = SeedSource::new(0x5150).rng_for(ChainId(0));
+    for _ in 0..n {
+        use rand::Rng;
+        let z = normal_from_uniforms(rng.gen(), rng.gen(), -1.0, 2.0);
+        sum += z;
+        sum_sq += z * z;
+    }
+    let mean = sum / n as f64;
+    let var = sum_sq / n as f64 - mean * mean;
+    assert!((mean + 1.0).abs() < 0.03, "mean={mean}");
+    assert!((var - 4.0).abs() < 0.1, "var={var}");
 }
 
 #[test]

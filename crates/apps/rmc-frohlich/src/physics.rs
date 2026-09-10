@@ -58,6 +58,17 @@ pub fn phi_from_cartesian(r: Vec3) -> f64 {
     r[1].atan2(r[0])
 }
 
+/// Apply `Rz(phi) · Ry(theta)` to `v`.
+///
+/// GPU-portable replacement for the `nalgebra::Rotation3` composition in `ChangeQDirection`;
+/// consumes no RNG and uses only `sin`/`cos`, so the same expression runs inside CubeCL kernels.
+pub fn rotate_z_then_y(phi: f64, theta: f64, v: Vec3) -> Vec3 {
+    let (st, ct) = (theta.sin(), theta.cos());
+    let (sp, cp) = (phi.sin(), phi.cos());
+    let w = [ct * v[0] + st * v[2], v[1], -st * v[0] + ct * v[2]];
+    [cp * w[0] - sp * w[1], sp * w[0] + cp * w[1], w[2]]
+}
+
 pub fn draw_new_q_from_uniforms(r1: f64, r2: f64, r3: f64) -> Vec3 {
     let theta = (1.0 - 2.0 * r1).acos();
     let q = p0() / r2 - p0();
@@ -149,5 +160,28 @@ mod tests {
         assert!((norm(v) - 2.0).abs() < 1.0e-12);
         assert!((theta_from_cartesian(v) - 0.7).abs() < 1.0e-12);
         assert!((phi_from_cartesian(v) - 1.2).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn rotate_z_then_y_matches_nalgebra() {
+        use nalgebra::{Rotation3, Vector3};
+        for (phi, theta, v) in [
+            (0.3, 1.1, [0.25, -0.5, 1.25]),
+            (-2.4, 0.0, [1.0, 0.0, 0.0]),
+            (0.0, 3.0, [0.0, -1.0, 2.0]),
+        ] {
+            let expected = (Rotation3::from_axis_angle(&Vector3::z_axis(), phi)
+                * Rotation3::from_axis_angle(&Vector3::y_axis(), theta))
+                * Vector3::new(v[0], v[1], v[2]);
+            let actual = rotate_z_then_y(phi, theta, v);
+            for i in 0..3 {
+                assert!(
+                    (actual[i] - expected[i]).abs() < 1.0e-14,
+                    "component {i}: {} vs {}",
+                    actual[i],
+                    expected[i]
+                );
+            }
+        }
     }
 }

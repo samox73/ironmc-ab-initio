@@ -14,5 +14,5 @@ pub use runner::{RunReport, Runner};
 pub use sets::{SingleUpdateSet, WeightedUpdate, WeightedUpdateSet};
 pub use traits::{
     Kernel, Measurement, RunCallbacks, StepOutcome, SteppingUpdateSet, Update, UpdateSet,
-    UpdateStats,
+    UpdateStats, WithDeadline,
 };

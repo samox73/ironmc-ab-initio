@@ -4,19 +4,16 @@ pub mod phonon;
 
 use std::f64::consts::PI;
 
-use nalgebra::{Rotation3, Vector3};
+use nalgebra::Vector3;
 use rand::Rng;
-use rand_distr::{Distribution, Normal};
 use rmc_core::dispatch_update;
 use rmc_core::mc::{WeightedUpdate, WeightedUpdateSet};
-use rmc_core::random::{safe_exponential_sample, uniform_index};
+use rmc_core::random::{normal_from_uniforms, safe_exponential_sample, uniform_index_from_u01};
 use rmc_core::Result;
 use slotmap::Key;
 
 use crate::diagram::VKey;
-use crate::diagram::{
-    phi_from_cartesian, spherical_to_cartesian, theta_from_cartesian, vec3, Diagram,
-};
+use crate::diagram::{phi_from_cartesian, theta_from_cartesian, vec3, Diagram};
 use crate::physics;
 use phonon::{AddPhonon, RemovePhonon};
 
@@ -76,6 +73,11 @@ impl ChangeTau {
             d.dispersion(&d.v(second_last).p_out) + if d.order != 0 { physics::OMEGA } else { 0.0 };
         self.tau_prime =
             safe_exponential_sample(rng.gen(), lambda, d.v(second_last).tau, d.max_tau);
+        // List order and arc orientation rely on strictly increasing taus; a sample landing
+        // (up to rounding) on the neighbor's tau would create a degenerate pair.
+        if self.tau_prime - d.v(second_last).tau < physics::DELTA_TAU_LIMIT {
+            return 0.0;
+        }
         1.0
     }
 
@@ -116,7 +118,11 @@ impl ChangeInternalTau {
         );
         self.vertex = vertex;
         self.tau_prime = safe_exponential_sample(rng.gen(), lambda, tau_previous, tau_next);
-        if self.tau_prime.is_finite() {
+        // Reject tau-degenerate proposals; strict ordering is load-bearing (see ChangeTau).
+        if self.tau_prime.is_finite()
+            && self.tau_prime - tau_previous >= physics::DELTA_TAU_LIMIT
+            && tau_next - self.tau_prime >= physics::DELTA_TAU_LIMIT
+        {
             1.0
         } else {
             0.0
@@ -145,10 +151,13 @@ impl RescaleDiagram {
         }
 
         let mut energy = -d.mu;
+        let mut min_delta = f64::INFINITY;
         let mut k = d.head;
         while k != d.tail {
             let next = d.next(k);
-            let delta_s_i = (d.v(next).tau - d.v(k).tau) / d.tau();
+            let delta = d.v(next).tau - d.v(k).tau;
+            min_delta = min_delta.min(delta);
+            let delta_s_i = delta / d.tau();
             let phonon_count = if d.is_incoming(k) {
                 d.v(k).phonons_above
             } else {
@@ -159,11 +168,17 @@ impl RescaleDiagram {
         }
 
         let n = (d.order - 1) as f64;
-        let Ok(normal) = Normal::new(2.0 * n / energy, (2.0 * n).sqrt() / energy) else {
+        let sigma = (2.0 * n).sqrt() / energy;
+        if !sigma.is_finite() || sigma < 0.0 {
             return 0.0;
-        };
-        self.tau_prime = normal.sample(rng);
+        }
+        self.tau_prime = normal_from_uniforms(rng.gen(), rng.gen(), 2.0 * n / energy, sigma);
         if self.tau_prime < 0.0 || self.tau_prime > d.max_tau || !self.tau_prime.is_finite() {
+            return 0.0;
+        }
+        // Rescaling multiplies every tau by tau_prime / tau; with a 10x margin over
+        // DELTA_TAU_LIMIT no adjacent pair can collapse to equal floats through rounding.
+        if min_delta * (self.tau_prime / d.tau()) < 10.0 * physics::DELTA_TAU_LIMIT {
             return 0.0;
         }
 
@@ -203,10 +218,10 @@ impl ChangeQModulus {
             .get_p_mean_range(left, right, d.v(left).q)
             .dot(&(d.v(left).q / q_norm));
         let sigma = physics::change_q_modulus_sigma(d.v(right).tau - d.v(left).tau);
-        let Ok(normal) = Normal::new(q0, sigma) else {
+        if !sigma.is_finite() || sigma < 0.0 {
             return 0.0;
-        };
-        self.q_prime = normal.sample(rng);
+        }
+        self.q_prime = normal_from_uniforms(rng.gen(), rng.gen(), q0, sigma);
         self.vertex1 = left;
         self.vertex2 = right;
         if self.q_prime < 0.0 || !self.q_prime.is_finite() {
@@ -250,9 +265,12 @@ impl ChangeQDirection {
         let theta = (log_val / a).acos();
         let theta_base = theta_from_cartesian(&p_mean);
         let phi_base = phi_from_cartesian(&p_mean);
-        let rotation = Rotation3::from_axis_angle(&Vector3::z_axis(), phi_base)
-            * Rotation3::from_axis_angle(&Vector3::y_axis(), theta_base);
-        self.q_prime = rotation * spherical_to_cartesian(q_norm, theta, phi);
+        let rotated = physics::rotate_z_then_y(
+            phi_base,
+            theta_base,
+            physics::spherical_to_cartesian(q_norm, theta, phi),
+        );
+        self.q_prime = Vector3::new(rotated[0], rotated[1], rotated[2]);
         self.vertex1 = left;
         self.vertex2 = right;
         if self.q_prime.iter().any(|x| x.is_nan()) {
@@ -339,7 +357,7 @@ impl ChangeTopology {
 }
 
 fn random_vertex<R: Rng + ?Sized>(d: &Diagram, rng: &mut R) -> VKey {
-    d.storage[uniform_index(rng, d.storage.len())]
+    d.storage[uniform_index_from_u01(rng.gen(), d.storage.len())]
 }
 
 fn random_arc<R: Rng + ?Sized>(d: &Diagram, rng: &mut R) -> (VKey, VKey) {

@@ -3,3 +3,5 @@
 checkpoint.json
 raw_stats.json
 results/
+/slurm/
+/plans/

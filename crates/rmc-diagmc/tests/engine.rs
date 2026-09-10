@@ -238,3 +238,28 @@ fn frohlich_alpha_two_energy_curve_flattens() {
     let error = (report.e0.stderr.powi(2) + report.e0_thermo.stderr.powi(2)).sqrt();
     assert!((report.e0.mean - report.e0_thermo.mean).abs() <= 3.0 * error);
 }
+
+#[test]
+fn zero_chains_auto_sizes_to_the_thread_pool() {
+    let model: Arc<dyn Model> = Arc::new(FrohlichModel::new(1.0));
+    let cfg = DiagConfig {
+        chains: 0,
+        max_steps: 20_000,
+        warmup_steps: 2_000,
+        max_tau: 10.0,
+        tau_fit: 5.0,
+        ..DiagConfig::default()
+    };
+    let report = run(model, cfg).expect("chains = 0 must auto-size, not fail validation");
+    assert!(report.e0.mean.is_finite());
+    assert!((report.sign.mean - 1.0).abs() < 1.0e-12);
+}
+
+#[test]
+fn old_config_without_end_time_margin_parses_with_default() {
+    let json = serde_json::to_value(DiagConfig::default()).unwrap();
+    let mut map = json;
+    map.as_object_mut().unwrap().remove("end_time_margin_secs");
+    let cfg: DiagConfig = serde_json::from_value(map).unwrap();
+    assert_eq!(cfg.end_time_margin_secs, 60.0);
+}

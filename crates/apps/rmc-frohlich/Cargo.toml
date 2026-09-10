@@ -14,7 +14,6 @@ rmc-numeric.workspace = true
 rmc-io.workspace = true
 nalgebra = { workspace = true, features = ["serde-serialize"] }
 rand.workspace = true
-rand_distr.workspace = true
 rustfft.workspace = true
 num-complex.workspace = true
 serde.workspace = true
