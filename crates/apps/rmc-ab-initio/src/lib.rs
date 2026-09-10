@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod epb;
+pub mod flat;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod eph_svd;

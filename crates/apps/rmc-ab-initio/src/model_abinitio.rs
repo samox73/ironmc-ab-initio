@@ -53,6 +53,54 @@ impl AbInitioModel {
             q_weight_sum,
         }
     }
+
+    /// The proposal CDF search on a raw target in `[0, q_weight_sum)` — the
+    /// single source the flat CPU spec and the GPU kernel must replay
+    /// bit-identically: first index with `q_cdf[q] > target`, clamped.
+    #[inline]
+    pub fn q_from_target(&self, target: f64) -> usize {
+        self.q_cdf
+            .partition_point(|&x| x <= target)
+            .min(self.table.len() - 1)
+    }
+
+    /// Index-level phonon proposal from two uniforms (one for the CDF target,
+    /// one floor-mapped onto the branch), as consumed by the flat/GPU engines.
+    /// The `Model::propose_phonon` path keeps its original `gen_range` branch
+    /// draw so existing slotmap RNG streams are untouched.
+    pub fn propose_phonon_index(&self, u_q: f64, u_nu: f64) -> (usize, usize, f64) {
+        let q = self.q_from_target(u_q * self.q_weight_sum);
+        let nu = rmc_core::random::uniform_index_from_u01(u_nu, self.table.nmodes);
+        (q, nu, self.phonon_pdf_index(q))
+    }
+
+    /// Proposal pdf by grid index (branch-independent; zero only at Γ).
+    #[inline]
+    pub fn phonon_pdf_index(&self, q: usize) -> f64 {
+        self.q_weight[q] / (self.q_weight_sum * self.table.nmodes as f64)
+    }
+
+    #[inline]
+    pub fn electron_ev_index(&self, k: usize) -> f64 {
+        self.table.electron_ev[k]
+    }
+
+    #[inline]
+    pub fn phonon_ev_index(&self, q: usize, nu: usize) -> f64 {
+        self.table.phonon_ev[q * self.table.nmodes + nu]
+    }
+
+    /// The full vertex (short dot + long-range term) at this model's rank cap.
+    #[inline]
+    pub fn vertex_index(&self, k: usize, q: usize, nu: usize) -> Complex64 {
+        self.table.full_indices_capped(k, q, nu, &self.rank_cap)
+    }
+
+    /// ln N_q, the discrete-grid momentum measure.
+    #[inline]
+    pub fn ln_nq(&self) -> f64 {
+        (self.table.len() as f64).ln()
+    }
 }
 
 impl Model for AbInitioModel {
@@ -84,17 +132,13 @@ impl Model for AbInitioModel {
     }
 
     fn propose_phonon(&self, rng: &mut dyn RngCore) -> (Vector3<f64>, usize, f64) {
-        let target = rng.gen::<f64>() * self.q_weight_sum;
-        let q = self
-            .q_cdf
-            .partition_point(|&x| x <= target)
-            .min(self.table.len() - 1);
+        let q = self.q_from_target(rng.gen::<f64>() * self.q_weight_sum);
         debug_assert_ne!(q, 0);
         let nu = rng.gen_range(0..self.table.nmodes);
         let point = self.table.point(q);
         // The pdf comes straight from the sampled index — no point↔index
         // float round-trip in the proposal hot path.
-        let pdf = self.q_weight[q] / (self.q_weight_sum * self.table.nmodes as f64);
+        let pdf = self.phonon_pdf_index(q);
         debug_assert_eq!(pdf, self.propose_phonon_pdf(point, nu));
         (point, nu, pdf)
     }
@@ -106,7 +150,7 @@ impl Model for AbInitioModel {
         let Some(q) = self.table.index_of(q) else {
             return 0.0;
         };
-        self.q_weight[q] / (self.q_weight_sum * self.table.nmodes as f64)
+        self.phonon_pdf_index(q)
     }
 
     fn log_momentum_measure(&self) -> f64 {
