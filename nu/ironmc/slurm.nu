@@ -15,12 +15,12 @@ use cuda.nu
 
 # VSC-5 queue map (gitlab.tuwien.ac.at vsc5_queues.md, fetched 2026-09-07).
 export const PARTITIONS = [
-    [partition, default_qos, devel_qos, max_walltime, description];
-    [zen3_0512, zen3_0512, zen3_0512_devel, "72:00:00", "default, 512 GB"]
-    [zen3_1024, zen3_1024, null, "72:00:00", "high memory, 1 TB"]
-    [zen3_2048, zen3_2048, null, "72:00:00", "higher memory, 2 TB"]
-    [zen2_0256_a40x2, zen2_0256_a40x2, null, "72:00:00", "GPU, 2× A40"]
-    [zen3_0512_a100x2, zen3_0512_a100x2, zen3_0512_a100x2_devel, "72:00:00", "GPU, 2× A100"]
+    [partition, default_qos, devel_qos, max_walltime, gpus, description];
+    [zen3_0512, zen3_0512, zen3_0512_devel, "72:00:00", 0, "default, 512 GB"]
+    [zen3_1024, zen3_1024, null, "72:00:00", 0, "high memory, 1 TB"]
+    [zen3_2048, zen3_2048, null, "72:00:00", 0, "higher memory, 2 TB"]
+    [zen2_0256_a40x2, zen2_0256_a40x2, null, "72:00:00", 2, "GPU, 2× A40"]
+    [zen3_0512_a100x2, zen3_0512_a100x2, zen3_0512_a100x2_devel, "72:00:00", 2, "GPU, 2× A100"]
 ]
 
 const DEVEL_WALLTIME = "00:10:00"
@@ -162,7 +162,6 @@ export def submit [
     --qos: string              # defaults to the partition's default QoS
     --devel                    # devel QoS: fixed 10-minute walltime
     --cpus: int = 128          # zen3 nodes have 128 cores
-    --gpus: int = 2            # gres GPU count on GPU partitions (both a40x2/a100x2 nodes carry 2)
     --gpu-ranks: int = 1       # >1: srun that many tasks, one GPU each; the target reads $SLURM_PROCID (gpu run does)
     --job-name: string         # defaults to the target with dashes
     --dry-run                  # print the batch script instead of submitting
@@ -209,17 +208,18 @@ export def submit [
         error make {msg: "cargo not found in PATH at submit time — load/install the rust toolchain first"}
     }
 
-    let gpu_partition = ($partition =~ 'a100|a40')
-    if $gpu_ranks > 1 and not $gpu_partition {
-        error make {msg: "--gpu-ranks needs a GPU partition"}
+    if $gpu_ranks > $row.gpus and $gpu_ranks > 1 {
+        error make {msg: $"($partition) has ($row.gpus) GPUs per node; --gpu-ranks ($gpu_ranks) does not fit"}
     }
     let ntasks = if $gpu_ranks > 1 { $gpu_ranks } else { 1 }
     let cpus_per_task = if $gpu_ranks > 1 { $cpus // $gpu_ranks } else { $cpus }
-    # VSC-5's submit filter only understands --gres=gpu:N (it injects an
-    # all-GPU selection otherwise and the devel reservation never schedules);
-    # per-task GPU binding happens via CUDA_VISIBLE_DEVICES in the task script.
-    let gpu_directives = if $gpu_partition {
-        [$"#SBATCH --gres=gpu:($gpus)"]
+    # The GPU count is a per-partition constant (queue map above). VSC-5's
+    # submit filter would default to all node GPUs anyway, but it only parses
+    # --gres=gpu:N — never use --gpus-per-task (jobs pend forever); the
+    # per-task device split happens via CUDA_VISIBLE_DEVICES in the task
+    # script instead.
+    let gpu_directives = if $row.gpus > 0 {
+        [$"#SBATCH --gres=gpu:($row.gpus)"]
     } else {
         []
     }
@@ -280,7 +280,7 @@ export def submit [
     # before anything is queued).
     cd $ROOT
     cargo build --release --workspace
-    if $gpu_partition {
+    if $row.gpus > 0 {
         # cudarc pins the CUDA version via CUDA_PATH at build time; match the
         # toolkit the in-job `ironmc cuda load` will point at.
         cuda load
