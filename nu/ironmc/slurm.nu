@@ -141,6 +141,19 @@ export def logs [
     }
 }
 
+# Cancel queued/running jobs. Requires explicit ids (no "newest" default —
+# cancelling shouldn't guess); tab completes them from your queue.
+export def cancel [
+    ...job_ids: string@job-id-completions  # one or more job ids
+] {
+    if ($job_ids | is-empty) {
+        error make {msg: "no job id given; try `ironmc slurm cancel <tab>`"}
+    }
+    scancel ...$job_ids
+    print $"cancelled: ($job_ids | str join ', ')"
+    queue
+}
+
 # Submit an ironmc target as a slurm job.
 export def submit [
     ...target: string@target-completions  # e.g.: ladder run 50 — or quoted if it contains flags: "ladder guard-tau --baseline -0.25"
@@ -202,9 +215,10 @@ export def submit [
     }
     let ntasks = if $gpu_ranks > 1 { $gpu_ranks } else { 1 }
     let cpus_per_task = if $gpu_ranks > 1 { $cpus // $gpu_ranks } else { $cpus }
-    let gpu_directives = if $gpu_ranks > 1 {
-        ["#SBATCH --gpus-per-task=1"]
-    } else if $gpu_partition {
+    # VSC-5's submit filter only understands --gres=gpu:N (it injects an
+    # all-GPU selection otherwise and the devel reservation never schedules);
+    # per-task GPU binding happens via CUDA_VISIBLE_DEVICES in the task script.
+    let gpu_directives = if $gpu_partition {
         [$"#SBATCH --gres=gpu:($gpus)"]
     } else {
         []
@@ -242,9 +256,14 @@ export def submit [
         let task_script = ($logdir | path join $"($name)-($stamp)-task.sh")
         [
             "#!/bin/bash"
+            "# One GPU per task: bind by node-local task id unless slurm already"
+            "# restricted this task to a single device."
+            "if [ -z \"${CUDA_VISIBLE_DEVICES:-}\" ] || [[ \"$CUDA_VISIBLE_DEVICES\" == *,* ]]; then"
+            "    export CUDA_VISIBLE_DEVICES=${SLURM_LOCALID:-0}"
+            "fi"
             $"RESULT=\"($logdir)/($name)-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
             $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
-            "echo; echo \"=== result rank ${SLURM_PROCID} ===\"; cat \"$RESULT\""
+            "echo; echo \"=== result rank ${SLURM_PROCID} \(GPU $CUDA_VISIBLE_DEVICES\) ===\"; cat \"$RESULT\""
         ] | str join "\n" | save -f $task_script
         ($lines | drop 3 | append [$"srun bash '($task_script)'"])
     } else {
