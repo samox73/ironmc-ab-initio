@@ -184,24 +184,22 @@ $\mathbf{e}_{\kappa\nu}(\qv)$ that enter Eq.~\eqref{eq:longrange}.
 
 Several early non-goals of the \emph{first} prototype have since been \textbf{lifted}: the
 $\Gamma$-slice vertex, the single Einstein branch, the ``no tensor compression'' rule, the
-reweighted sampler, and the Fr\"ohlich-unit engine constants. The model now uses the full
-electron-momentum vertex $g(\kv,\qv,\nu)$, all phonon branches, an SVD-compressed Wannier
-tensor evaluated on a grid, a native $|g|^{2}$ momentum proposal, and physical units. What
+reweighted sampler, the Fr\"ohlich-unit engine constants, and the ``no GPU path'' rule
+(N7). The model now uses the full electron-momentum vertex $g(\kv,\qv,\nu)$, all phonon
+branches, an SVD-compressed Wannier tensor evaluated on a grid, a native $|g|^{2}$ momentum
+proposal, physical units, and a validated CUDA backend (Section~\ref{sec:gpu}). What
 remains deliberately out of scope:
 
 \begin{description}
   \item[N1 --- Electron polaron only.] The single, non-degenerate conduction-band minimum
     at $\Gamma$. The hole/valence polaron (degenerate top valence band) is out of scope.
 
-  \item[N7 --- No GPU path.] The ab-initio model targets the CPU driver only; the GPU
-    (\texttt{\#[cube]}) mirror is not extended to it.
-
   \item[N8 --- Single material.] LiF is the sole validation target; this is not yet a
     general multi-material framework.
 \end{description}
 
 \noindent
-(The retired non-goals keep their original labels N2--N6 where referenced elsewhere; they
+(The retired non-goals keep their original labels N2--N7 where referenced elsewhere; they
 are now realized features, recorded as done in Section~\ref{sec:deferred}.)
 
 \section{Deferred to future work}
@@ -209,8 +207,9 @@ are now realized features, recorded as done in Section~\ref{sec:deferred}.)
 
 \paragraph{Done.} The full-$\kv$ vertex with SVD compression and on-grid evaluation (former
 N2/N4), all dispersive branches $\omega_{\nu}(\qv)$ (N3), the non-parabolic Wannier
-dispersion $\varepsilon(\kv)$ via the generic \texttt{Model} trait (N6), and the native
-$|g|^{2}$ momentum sampler (N5) are now \emph{implemented}.
+dispersion $\varepsilon(\kv)$ via the generic \texttt{Model} trait (N6), the native
+$|g|^{2}$ momentum sampler (N5), and the CUDA backend (former N7/D3,
+Section~\ref{sec:gpu}) are now \emph{implemented}.
 
 \paragraph{Remaining.}
 \begin{description}
@@ -219,14 +218,11 @@ $|g|^{2}$ momentum sampler (N5) are now \emph{implemented}.
     energy converges from above with a leading $1/n$ error (at $n{=}8$ the formation energy
     is $E_{0}\approx-0.122$~eV against a converged target near $-0.4$~eV). The ladder
     $n=20,32,40,50$ with a linear $1/n\to0$ extrapolation
-    (Section~\ref{sec:discretization}) is in progress; its dominant cost is the vertex-cache
-    memory (Section~\ref{sec:performance}), not the sampler.
+    (Section~\ref{sec:discretization}) is in progress; the GPU backend
+    (Section~\ref{sec:gpu}) reduces one rung from node-hours to minutes.
 
   \item[D2 --- Hole polaron.] The degenerate valence-band-maximum polaron (lifting N1),
     needing a multi-band, degenerate (matrix-product sign-fix) treatment.
-
-  \item[D3 --- GPU path.] A \texttt{\#[cube]} GPU implementation of the ab-initio model
-    (lifting N7), guarded by the existing lockstep parity tests.
 
   \item[D4 --- More materials.] Generalize beyond LiF once the LiF prototype is validated
     (lifting N8).
@@ -253,9 +249,15 @@ The goals of Section~\ref{sec:goals} are checked in rungs of increasing physical
     $\Delta_{\mathrm{rank}}$ is quoted as a systematic on every production number
     (Section~\ref{sec:discretization}).
   \item \textbf{Material comparison.} The grid-ladder formation energy against FEP-DMC
-    (Luo, Park, Bernardi, 2025): $E_{0}(20^{3})=-0.248$~eV before extrapolation and
+    (Luo, Park, Bernardi, 2025): their $E_{0}(20^{3})=-0.2479$~eV before extrapolation and
     $-0.408$~eV in the $1/n\to0$ limit, with Sio \emph{et al.} (2019) as a secondary
-    reference --- pending the ladder runs (D1).
+    reference. The first rung is met: the CPU engine measures
+    $E_{0}(20^{3})=-0.24996\pm0.00026$~eV (fixed-$\tau$ thermodynamic estimator,
+    $\tau=60$~eV$^{-1}$, rank-$800$ table), $\sim\!2$~meV inside the $\pm30$~meV checkpoint
+    band; the GPU engine reproduces the same Hamiltonian at $-0.24826\pm0.00023$~eV, with
+    the residual $1.7$~meV attributed to an equilibration transient
+    (Section~\ref{sec:gpu}), not the engine. The $1/n\to0$ extrapolation over
+    $n=20\ldots50$ remains pending (D1).
 \end{enumerate}
 
 \section{Discretization, compression, and the thermodynamic limit}
@@ -336,6 +338,79 @@ chains, $8^{3}$ grid), a single rank drops from $258\to23$~s at $r{=}50$ and
 $1033\to54$~s at $r{=}100$ --- an $11$--$19\times$ wall-clock reduction that grows with $r$.
 The evaluation is now memory-bandwidth bound on the factor tables; the $O(\text{order})$
 phase recomputation in the decay estimator is a smaller secondary term, left for later.
+
+\section{GPU sampling of the discretized Hamiltonian}
+\label{sec:gpu}
+
+The former non-goal N7 is lifted: the ab-initio engine runs on CUDA (CubeCL), and the port
+exists to \emph{win on throughput}, unlike the earlier Fr\"ohlich GPU port (a correctness
+vehicle). The physics favors the GPU here because the dominant cost is not pointer chasing
+but the vertex evaluation of Section~\ref{sec:performance}: a contiguous rank-$r$ complex
+dot streaming $\approx16r$ bytes per call --- a memory-\emph{bandwidth} problem, and HBM
+bandwidth is the one resource where a GPU outclasses a CPU node by an order of magnitude.
+Measured on an A100 at production rank ($r=800$, $50^{3}$ grid), the cooperative evaluation
+sustains $\approx1.24$~TB/s ($\approx80\%$ of HBM peak; $\approx90\%$ at $20^{3}$ where L2
+helps), versus $14$--$76$~GB/s for the same evaluation on CPU nodes.
+
+\paragraph{Parallelism and the cooperative vertex dot.}
+Chains never communicate, so the natural mapping is many independent chains per device.
+The microbenchmark that gated the port showed that \emph{per-thread} evaluations never
+coalesce ($0.4\times$ a CPU node), so the kernel assigns \textbf{one chain per 32-lane
+warp}: every lane executes the chain's update logic \emph{redundantly} --- the RNG is
+counter-based (Philox4x32-10 keyed by $(\text{seed},\text{chain},\text{step})$), so all
+lanes compute identical draws with no communication, control flow is warp-uniform by
+construction, and lanes cooperate only inside vertex evaluations, striding the rank axis
+with a shared-memory reduce. One arc factor $g(\kv_{e},\qv,\nu)\,g^{*}(\kv_{a},\qv,\nu)$
+fuses both dots over a single shared $v_{g}(\qv,\nu)$ strip, halving the dominant table
+traffic. Diagram state is a dense $\tau$-sorted array per chain (positional keys mirroring
+the CPU engine one-to-one); one lane applies accepted mutations between barriers. Tables
+are stored planar (separate re/im f32), $\tau$ and all weight arithmetic are f64, and
+momenta are exact integer grid indices, as on the CPU.
+
+\paragraph{Determinism and multi-GPU scaling.}
+Because chain streams are keyed by \emph{global} chain ids, a population split across
+ranks (one rank per GPU, chain offset $=\text{rank}\times C$) is a pure repacking of a
+single larger run: per-chain measurement batches concatenate in global chain order, and
+the merged report is \textbf{bit-identical} to the equivalent single-device run ---
+verified on a $2\times$A100 node ($2\times8192$ chains vs.\ one $16384$-chain run, every
+estimator equal to the last bit). Multi-GPU throughput is therefore linear and the merged
+statistics are a pure function of (seed, total chains), independent of packing.
+
+\paragraph{Validation ladder.}
+Correctness is certified in rungs, each mechanical to check: (i) a flat, fixed-capacity
+CPU re-implementation of the four updates (the ``executable spec'') agrees with the
+production engine's acceptance ratios to $10^{-10}$ on imported random diagrams; (ii) the
+CUDA kernel, run at one lane per chain on CubeCL's CPU runtime, reproduces the flat driver
+\emph{bit-for-bit} on the real LiF table (identical reports and accept counts); (iii) the
+same kernel passes exact accept-count parity on real hardware at 32 lanes; (iv) the
+physics anchor: the full $20^{3}$ ladder configuration on one A100 gives
+$E_{0}=-0.24826\pm0.00023$~eV against FEP-DMC's $-0.2479$~eV. All floating-point
+association in the kernel mirrors the CPU code term by term, so rung (ii) is exact rather
+than statistical.
+
+\paragraph{Throughput at matched physics.}
+At $20^{3}$, rank $800$, $\langle n\rangle\approx16$, fixed $\tau=60$~eV$^{-1}$: one A100
+sustains $8.79\times10^{6}$ steps/s (kernel-only; a full production-statistics rung-1 run
+is $151$~s wall), versus $2.83\times10^{6}$ steps/s measured for the production CPU engine
+on a 128-core Zen3 node with the same configuration --- $3.1\times$ per GPU, $6.2\times$
+per two-GPU node. This is the CPU's \emph{best} case: the $20^{3}$ table ($0.34$~GB) fits
+the node's aggregate L3, while at $50^{3}$ ($5.4$~GB) the CPU falls to DRAM bandwidth and
+the GPU keeps streaming from HBM, so the margin grows with the grid --- exactly where the
+D1 ladder needs it.
+
+\paragraph{Estimator bookkeeping at GPU populations.}
+Two scaling lessons from operating $10^{4}$ chains. First, the leave-one-out jackknife
+must be computed as $\text{total}-\text{batch}$ (O(bins) per replicate); recomputing the
+aggregate per replicate is $O(n_{\mathrm{batches}}^{2})$ and silently turns a two-minute
+run into hours at $10^{5}$ batches. With chains independent, the natural batching is
+\emph{one batch per chain}, jackknifing over chains. Second, warmup must exceed the
+diagram-order equilibration transient ($\sim\!10^{5}$ steps for LiF at $20^{3}$)
+\emph{regardless} of how many chains amortize the statistics: a many-short-chain ensemble
+does not dilute the transient the way one long chain does. An early GPU run with $2\times
+10^{4}$ warmup steps per chain came out $1.7$~meV shallow with $\langle n\rangle$ low by
+$2\%$ --- statistically resolved at $5\sigma$ against the long-chain CPU value --- purely
+from under-equilibration; production GPU configs now warm up $3\times10^{5}$ steps per
+chain.
 
 \section{Practical pitfalls and fixes}
 \label{sec:pitfalls}
