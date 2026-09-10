@@ -147,7 +147,10 @@ export def submit [
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
         $"RESULT=\"($logdir)/($name)-${SLURM_JOB_ID}.json\""
-        $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | to json out> '\"$RESULT\""
+        # `save` picks the format from the extension: structured results become
+        # real JSON, plain-text targets (external stdout) are written raw
+        # instead of one escaped JSON string full of literal \n.
+        $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
         "echo; echo '=== result ==='; cat \"$RESULT\""
     ])
     $lines | str join "\n" | save -f $script
