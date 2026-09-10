@@ -12,6 +12,13 @@ use crate::diagram::Diagram;
 use crate::model::Model;
 use crate::weight;
 
+/// Minimum τ separation accepted between any two vertices (10·ε, matching
+/// `rmc_frohlich::physics::DELTA_TAU_LIMIT`). Strict τ ordering is
+/// load-bearing for the diagram bookkeeping and for the flat/GPU engines'
+/// list walks; proposals closer than this to an existing vertex are rejected
+/// as impossible in the slotmap engine, the flat spec, and the kernel alike.
+pub const DELTA_TAU_LIMIT: f64 = 10.0 * f64::EPSILON;
+
 #[derive(Clone)]
 pub struct AddPhonon {
     model: Arc<dyn Model>,
@@ -59,10 +66,22 @@ impl Update<Diagram> for AddPhonon {
         }
 
         let tau1 = rng.gen::<f64>() * diagram.tau();
-        let p = diagram.v(weight::segment_at(diagram, tau1)).p_out;
+        let segment1 = weight::segment_at(diagram, tau1);
+        if tau1 - diagram.v(segment1).tau < DELTA_TAU_LIMIT
+            || diagram.v(segment1 + 1).tau - tau1 < DELTA_TAU_LIMIT
+        {
+            return -1.0;
+        }
+        let p = diagram.v(segment1).p_out;
         let lambda = decay_rate(self.model.as_ref(), p, q, branch);
         let tau2 = exponential_sample_bounded(rng.gen(), lambda, tau1, diagram.tau());
-        if tau1 <= 0.0 || tau2 <= tau1 || tau2 >= diagram.tau() {
+        if tau2 - tau1 < DELTA_TAU_LIMIT {
+            return -1.0;
+        }
+        let segment2 = weight::segment_at(diagram, tau2);
+        if tau2 - diagram.v(segment2).tau < DELTA_TAU_LIMIT
+            || diagram.v(segment2 + 1).tau - tau2 < DELTA_TAU_LIMIT
+        {
             return -1.0;
         }
         let tau_pdf = time_proposal_pdf(diagram.tau(), tau1, tau2, lambda);
@@ -174,7 +193,7 @@ impl Update<Diagram> for ChangeTau {
             return -1.0;
         }
         let tau = lower_tau + rng.gen::<f64>() * (diagram.max_tau - lower_tau);
-        if tau <= lower_tau {
+        if tau - lower_tau < DELTA_TAU_LIMIT {
             return -1.0;
         }
         let ratio = weight::shift_tail_ratio(diagram, self.model.as_ref(), tau);
@@ -217,7 +236,7 @@ impl Update<Diagram> for ChangeInternalTau {
         let lower = diagram.v(key - 1).tau;
         let upper = diagram.v(key + 1).tau;
         let tau = lower + rng.gen::<f64>() * (upper - lower);
-        if tau <= lower || tau >= upper {
+        if tau - lower < DELTA_TAU_LIMIT || upper - tau < DELTA_TAU_LIMIT {
             return -1.0;
         }
         let ratio = weight::shift_vertex_tau_ratio(diagram, self.model.as_ref(), key, tau);
