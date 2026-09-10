@@ -45,12 +45,12 @@ export def run [
     --lanes: int = 32
     --max-order-gpu: int = 256
     --cycles-per-launch: int = 256
-    --out-dir: string             # RankDump dir; defaults to results-gpu/<jobid> so jobs never clobber each other
+    --out-dir: string             # RankDump dir; defaults to results/gpu/<jobid> so jobs never clobber each other
 ] {
     cuda load
     cd $ROOT
     let rank = ($rank | default ($env.SLURM_PROCID? | default 0 | into int))
-    let out_dir = ($out_dir | default $"results-gpu/($env.SLURM_JOB_ID? | default 'local')")
+    let out_dir = ($out_dir | default $"results/gpu/($env.SLURM_JOB_ID? | default 'local')")
     let table = (table-path $grid $rank_table)
     let config_path = if ($config | path exists) {
         $config
@@ -80,7 +80,7 @@ export def scale [
         print $"=== chains ($chains) ==="
         (cargo run --release -p rmc-ab-initio --features gpu-cuda --
             run-gpu --table $table --config $config_path --chains $chains
-            --cycles-per-launch $cycles_per_launch --out-dir results-gpu-scale)
+            --cycles-per-launch $cycles_per_launch --out-dir $"results/gpu-scale/($chains)")
     }
 }
 

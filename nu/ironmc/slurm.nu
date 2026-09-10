@@ -88,7 +88,7 @@ def stdout-path [job_id: string] {
         let parsed = ($info.stdout | parse -r 'StdOut=(?<path>\S+)')
         if ($parsed | is-not-empty) { return ($parsed | first | get path) }
     }
-    let hits = (try { ls (slurm-logdir | path join $"*-($job_id).out" | into glob) } catch { [] })
+    let hits = (try { ls (slurm-logdir | path join "*" $"job-($job_id).out" | into glob) } catch { [] })
     if ($hits | is-empty) {
         error make {msg: $"cannot resolve stdout of job ($job_id): not in scontrol, no match in (slurm-logdir)"}
     }
@@ -124,7 +124,7 @@ export def logs [
     let path = if $id != null {
         stdout-path $id
     } else {
-        let logs = (try { ls (slurm-logdir | path join "*.out" | into glob) | sort-by modified } catch { [] })
+        let logs = (try { ls (slurm-logdir | path join "*" "*.out" | into glob) | sort-by modified } catch { [] })
         if ($logs | is-empty) {
             error make {msg: $"no job id given, queue is empty, and no logs in (slurm-logdir)"}
         }
@@ -196,9 +196,13 @@ export def submit [
     let name = ($job_name | default ($target | str replace --all " " "-"))
     let stamp = (date now | format date "%Y%m%d-%H%M%S")
     let root = ($env.DATA | path join ironmc)
-    let logdir = ($root | path join slurm)
-    mkdir $logdir
-    let script = ($logdir | path join $"($name)-($stamp).sh")
+    # One directory per job, prefixed by the submission stamp: lexicographic
+    # listing/tab order = submission order = job-id order (ids are monotone in
+    # time), and — unlike a job-id prefix — the name is known before sbatch,
+    # so scripts, output, and results are born in their final place.
+    let jobdir = ($env.DATA | path join ironmc slurm $"($stamp)-($name)")
+    mkdir $jobdir
+    let script = ($jobdir | path join "job.sh")
     let modpath = ($root | path join nu ironmc)
     let nu_exe = $nu.current-exe
     # Resolve cargo NOW and embed its directory: the batch shell on the compute
@@ -234,7 +238,7 @@ export def submit [
         $"#SBATCH --cpus-per-task=($cpus_per_task)"
     ] | append $gpu_directives
       | append [
-        $"#SBATCH --output=($logdir)/%x-%j.out"
+        $"#SBATCH --output=($jobdir)/job-%j.out"
         ""
         $"export PATH=\"($cargo_dir):$HOME/.cargo/bin:$PATH\""
         "# Explicit rayon pool size; falls back to cgroup autodetection otherwise."
@@ -243,7 +247,7 @@ export def submit [
         "# start time + walltime so the in-run deadline stop arms either way."
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
-        $"RESULT=\"($logdir)/($name)-${SLURM_JOB_ID}.json\""
+        $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}.json\""
         # `save` picks the format from the extension: structured results become
         # real JSON, plain-text targets (external stdout) are written raw
         # instead of one escaped JSON string full of literal \n.
@@ -253,7 +257,7 @@ export def submit [
     # Multi-rank GPU jobs: each srun task runs the target with its own GPU and
     # result file; rank-aware targets (gpu run) read $SLURM_PROCID themselves.
     let lines = if $gpu_ranks > 1 {
-        let task_script = ($logdir | path join $"($name)-($stamp)-task.sh")
+        let task_script = ($jobdir | path join "task.sh")
         [
             "#!/bin/bash"
             "# One GPU per task: bind by node-local task id unless slurm already"
@@ -261,7 +265,7 @@ export def submit [
             "if [ -z \"${CUDA_VISIBLE_DEVICES:-}\" ] || [[ \"$CUDA_VISIBLE_DEVICES\" == *,* ]]; then"
             "    export CUDA_VISIBLE_DEVICES=${SLURM_LOCALID:-0}"
             "fi"
-            $"RESULT=\"($logdir)/($name)-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
+            $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
             $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
             "echo; echo \"=== result rank ${SLURM_PROCID} \(GPU $CUDA_VISIBLE_DEVICES\) ===\"; cat \"$RESULT\""
         ] | str join "\n" | save -f $task_script
@@ -292,16 +296,9 @@ export def submit [
     let out = (sbatch $script | str trim)
     print $out
     let id = ($out | parse "Submitted batch job {id}" | get -o 0.id)
-    # slurm copied the script at submission, so renaming it to the job id
-    # (matching the %x-%j .out and the job's $SLURM_JOB_ID result) is safe.
-    let script = if $id != null {
-        let renamed = ($logdir | path join $"($name)-($id).sh")
-        mv $script $renamed
-        $renamed
-    } else { $script }
     {
-        script: $script
-        result: (if $id != null { $logdir | path join $"($name)-($id).json" } else { null })
+        jobdir: $jobdir
+        result: (if $id != null { $jobdir | path join $"result-($id).json" } else { null })
         job_id: $id
         partition: $partition
         qos: $qos
