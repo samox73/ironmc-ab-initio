@@ -328,7 +328,7 @@ pub fn run_device_with_deadline<R: Runtime>(
             "device runs must pin `chains` explicitly".to_string(),
         ));
     }
-    if cfg.max_steps == 0 || cfg.steps_per_cycle == 0 || cfg.n_batches < 2 {
+    if cfg.max_steps == 0 || cfg.steps_per_cycle == 0 || cfg.n_batches < 1 {
         return Err(RmcError::InvalidArgument("invalid DiagConfig".to_string()));
     }
     let n_chains = cfg.chains as usize;

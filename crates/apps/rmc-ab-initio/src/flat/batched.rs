@@ -74,7 +74,10 @@ pub fn run_batched_with_deadline(
              so update-selection groups align across ranks"
         )));
     }
-    if cfg.max_steps == 0 || cfg.steps_per_cycle == 0 || cfg.n_batches < 2 {
+    // n_batches = 1 is legal here (per-chain single batch): with many chains
+    // the jackknife still has plenty of replicates, and summarize refuses
+    // fewer than two non-empty batches overall.
+    if cfg.max_steps == 0 || cfg.steps_per_cycle == 0 || cfg.n_batches < 1 {
         return Err(RmcError::InvalidArgument("invalid DiagConfig".to_string()));
     }
     let n_chains = cfg.chains as usize;

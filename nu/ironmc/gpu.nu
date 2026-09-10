@@ -60,6 +60,27 @@ export def run [
         --cycles-per-launch $cycles_per_launch --out-dir $out_dir)
 }
 
+# Chain-count scaling probe: short runs at increasing populations with
+# per-segment logs — localizes where throughput falls off a cliff. Runs
+# largest-last so a hang still leaves the smaller points in the log.
+export def scale [
+    grid: int = 20
+    --chains-list: list<int> = [256, 1024, 4096, 8192]
+    --config: string = "ladder-lif-gpu-smoke"
+    --cycles-per-launch: int = 8
+] {
+    cuda load
+    cd $ROOT
+    let table = (table-path $grid 800)
+    let config_path = ($ROOT | path join crates apps rmc-ab-initio configs $"($config).json")
+    for chains in $chains_list {
+        print $"=== chains ($chains) ==="
+        (cargo run --release -p rmc-ab-initio --features gpu-cuda --
+            run-gpu --table $table --config $config_path --chains $chains
+            --cycles-per-launch $cycles_per_launch --out-dir results-gpu-scale)
+    }
+}
+
 # A5 CUDA parity checkpoint: the engine parity suite on this node's GPU.
 export def parity [] {
     cuda load

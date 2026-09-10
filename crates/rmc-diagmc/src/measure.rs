@@ -66,6 +66,24 @@ impl Batch {
         self.order_sum += other.order_sum;
         self.count += other.count;
     }
+
+    /// `total − self`: the leave-one-out replicate in O(bins) instead of a
+    /// fresh O(n_batches · bins) aggregation — the jackknife was quadratic in
+    /// the batch count, a wall at GPU-scale chain populations.
+    fn subtracted_from(&self, total: &Self) -> Self {
+        let mut out = total.clone();
+        for (lhs, rhs) in out.hist.iter_mut().zip(&self.hist) {
+            *lhs -= rhs;
+        }
+        for (lhs, rhs) in out.eloc_hist.iter_mut().zip(&self.eloc_hist) {
+            *lhs -= rhs;
+        }
+        out.zeroth -= self.zeroth;
+        out.phase_sum -= self.phase_sum;
+        out.order_sum -= self.order_sum;
+        out.count -= self.count;
+        out
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -183,7 +201,7 @@ pub fn summarize(
             "decay jackknife needs at least two non-empty batches".to_string(),
         ));
     }
-    let total = aggregate(&nonempty, None);
+    let total = aggregate(&nonempty);
     let num_bins = total.hist.len();
     let bin_width = max_tau / num_bins as f64;
     let tau: Vec<_> = (0..num_bins)
@@ -202,7 +220,7 @@ pub fn summarize(
         let mut z_leave_one = Vec::with_capacity(nonempty.len());
         let mut skipped = 0_usize;
         for omitted in 0..nonempty.len() {
-            let sample = aggregate(&nonempty, Some(omitted));
+            let sample = nonempty[omitted].subtracted_from(&total);
             match normalized_green(&sample, norm0, bin_width)
                 .and_then(|green| decay_fit(&tau, &green, mu, tau_fit))
             {
@@ -241,8 +259,9 @@ pub fn summarize(
         }
         log::warn!("thermodynamic estimator has no samples past tau_fit; e0_thermo is NaN");
     }
-    let all_thermo: Vec<_> = (0..nonempty.len())
-        .map(|omitted| energy_ratio(&aggregate(&nonempty, Some(omitted)), first_fit_bin))
+    let all_thermo: Vec<_> = nonempty
+        .iter()
+        .map(|batch| energy_ratio(&batch.subtracted_from(&total), first_fit_bin))
         .collect();
     let e0_thermo_leave_one: Vec<_> = all_thermo
         .iter()
@@ -346,11 +365,12 @@ fn energy_curve(total: &Batch, batches: &[Batch]) -> Vec<Estimate> {
             } else {
                 total.eloc_hist[bin].re / total.hist[bin].re
             };
-            let leave_one: Vec<_> = (0..batches.len())
-                .filter_map(|omitted| {
-                    let sample = aggregate(batches, Some(omitted));
-                    (sample.hist[bin].re != 0.0)
-                        .then(|| sample.eloc_hist[bin].re / sample.hist[bin].re)
+            let leave_one: Vec<_> = batches
+                .iter()
+                .filter_map(|batch| {
+                    let hist = total.hist[bin].re - batch.hist[bin].re;
+                    let eloc = total.eloc_hist[bin].re - batch.eloc_hist[bin].re;
+                    (hist != 0.0).then(|| eloc / hist)
                 })
                 .collect();
             Estimate {
@@ -361,12 +381,10 @@ fn energy_curve(total: &Batch, batches: &[Batch]) -> Vec<Estimate> {
         .collect()
 }
 
-fn aggregate(batches: &[Batch], omitted: Option<usize>) -> Batch {
+fn aggregate(batches: &[Batch]) -> Batch {
     let mut total = Batch::new(batches[0].hist.len());
-    for (index, batch) in batches.iter().enumerate() {
-        if Some(index) != omitted {
-            total.add_assign(batch);
-        }
+    for batch in batches {
+        total.add_assign(batch);
     }
     total
 }

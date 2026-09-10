@@ -314,10 +314,13 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 
     let mut options = options(args)?;
     let table_path: PathBuf = take(&mut options, "--table", None)?;
-    let config: DiagConfig = match options.remove("--config") {
+    let mut config: DiagConfig = match options.remove("--config") {
         Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
         None => DiagConfig::default(),
     };
+    if let Some(chains) = options.remove("--chains") {
+        config.chains = chains.parse()?;
+    }
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     let lanes: u32 = take(&mut options, "--lanes", Some(DEFAULT_LANES))?;
     let max_order_gpu: usize =
