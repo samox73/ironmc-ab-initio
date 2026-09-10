@@ -40,6 +40,7 @@ export def run [
     grid: int = 20
     --config: string = "ladder-lif-node"
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID (multi-rank srun)
+    --chains: int = 0             # override the config's chain count (0 = keep config)
     --rank-table: int = 800       # table rank in the artifact filename
     --lanes: int = 32
     --max-order-gpu: int = 256
@@ -56,7 +57,7 @@ export def run [
         $ROOT | path join crates apps rmc-ab-initio configs $"($config).json"
     }
     (cargo run --release -p rmc-ab-initio --features gpu-cuda --
-        run-gpu --table $table --config $config_path --rank $rank
+        run-gpu --table $table --config $config_path --rank $rank --chains $chains
         --lanes $lanes --max-order-gpu $max_order_gpu
         --cycles-per-launch $cycles_per_launch --out-dir $out_dir)
 }

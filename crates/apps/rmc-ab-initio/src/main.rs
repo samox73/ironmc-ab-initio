@@ -318,8 +318,12 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
         None => DiagConfig::default(),
     };
+    // 0 = keep the config's chain count (lets wrappers always pass the flag).
     if let Some(chains) = options.remove("--chains") {
-        config.chains = chains.parse()?;
+        let chains: u64 = chains.parse()?;
+        if chains > 0 {
+            config.chains = chains;
+        }
     }
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     let lanes: u32 = take(&mut options, "--lanes", Some(DEFAULT_LANES))?;
