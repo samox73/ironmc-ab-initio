@@ -7,6 +7,7 @@
 //! reference only.
 
 pub mod config;
+pub mod dump;
 pub mod epb;
 pub mod flat;
 #[cfg(feature = "gpu")]

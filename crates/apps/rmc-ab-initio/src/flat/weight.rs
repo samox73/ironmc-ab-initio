@@ -234,3 +234,18 @@ pub fn sync_cache(d: &mut FlatDiagram, model: &AbInitioModel) {
     let (log_modulus, phase) = log_modulus_and_phase(d, model);
     d.set_cached_weight(log_modulus, phase);
 }
+
+/// Thermodynamic estimator E_loc = (1/τ)[Σ_s ε·Δτ + Σ_a ω·Δτ − 2·order],
+/// mirroring `measure::local_energy` on the flat layout.
+pub fn local_energy(d: &FlatDiagram, model: &AbInitioModel) -> f64 {
+    let mut electron = 0.0;
+    for key in 0..d.tail() {
+        electron += model.electron_ev_index(d.p_out[key] as usize) * (d.tau[key + 1] - d.tau[key]);
+    }
+    let mut phonon = 0.0;
+    for (left, right) in d.arcs() {
+        phonon += model.phonon_ev_index(d.q[left] as usize, d.branch[left] as usize)
+            * (d.tau[right] - d.tau[left]);
+    }
+    (electron + phonon - 2.0 * d.order as f64) / d.tau_ext()
+}

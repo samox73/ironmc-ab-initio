@@ -10,6 +10,7 @@
 //! LiF's mean orders. Momenta are exact flat grid indices (`wrap_add`/`neg`
 //! integer arithmetic); fractional `Vector3` appears only in the adapters.
 
+pub mod batched;
 pub mod updates;
 pub mod weight;
 

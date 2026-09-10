@@ -13,7 +13,7 @@ use rmc_ab_initio::run::run_and_write;
 use rmc_ab_initio::vertex_table::{
     TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
 };
-use rmc_diagmc::DiagConfig;
+use rmc_diagmc::{DiagConfig, Model};
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -214,6 +214,95 @@ fn load_config(path: impl AsRef<Path>) -> BoxResult<AbInitioConfig> {
     Ok(config)
 }
 
+/// Phase A3 batched flat-engine run (plan `gpu-abinitio`): one rank of
+/// lockstep chains, RankDump output for the offline `merge`.
+fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
+    use rmc_ab_initio::dump::RankDump;
+    use rmc_ab_initio::flat::batched::{
+        run_batched, DEFAULT_GROUP_SIZE, DEFAULT_MAX_ORDER_GPU,
+    };
+
+    let mut options = options(args)?;
+    let table_path: PathBuf = take(&mut options, "--table", None)?;
+    let config: DiagConfig = match options.remove("--config") {
+        Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+        None => DiagConfig::default(),
+    };
+    let rank: u64 = take(&mut options, "--rank", Some(0))?;
+    let group: usize = take(&mut options, "--group", Some(DEFAULT_GROUP_SIZE))?;
+    let max_order_gpu: usize =
+        take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
+    let out_dir: PathBuf = take(&mut options, "--out-dir", Some(PathBuf::from(".")))?;
+    if let Some(unknown) = options.keys().next() {
+        return Err(format!("unknown option {unknown}").into());
+    }
+
+    let table = Arc::new(VertexTable::load(table_path)?);
+    let model = Arc::new(AbInitioModel::new(table));
+    let chain_offset = rank * config.chains;
+    let started = Instant::now();
+    let output = run_batched(&model, &config, chain_offset, group, max_order_gpu)?;
+    let wall_secs = started.elapsed().as_secs_f64();
+
+    std::fs::create_dir_all(&out_dir)?;
+    let dump_path = out_dir.join(RankDump::filename(rank));
+    RankDump {
+        electron_energy_pext: model.electron_energy(config.p_ext),
+        chains: config.chains,
+        steps_done: output.steps_done,
+        data: output.data,
+        config,
+        rank,
+    }
+    .save(&dump_path)?;
+    log::info!("wrote {}", dump_path.display());
+
+    // Timers in the summary itself, not only logs; steps/s is step-loop-only.
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "report": output.report,
+            "update_stats": output.update_stats,
+            "step_secs": output.step_secs,
+            "replay_secs": output.replay_secs,
+            "wall_secs": wall_secs,
+            "steps_per_sec_step_loop": output.steps_done as f64 / output.step_secs,
+        }))?
+    );
+    Ok(())
+}
+
+/// Merge rank dumps into one report: `merge [--out report.json] <dumps...>`.
+fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
+    use rmc_ab_initio::dump::{merge_dumps, RankDump};
+
+    let mut out: Option<PathBuf> = None;
+    let mut paths = Vec::new();
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        if arg == "--out" {
+            out = Some(PathBuf::from(args.next().ok_or("missing value for --out")?));
+        } else {
+            paths.push(PathBuf::from(arg));
+        }
+    }
+    if paths.is_empty() {
+        return Err("usage: merge [--out report.json] <batches-rank*.bin...>".into());
+    }
+    let dumps = paths
+        .iter()
+        .map(RankDump::load)
+        .collect::<Result<Vec<_>, _>>()?;
+    let report = merge_dumps(dumps)?;
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(out) = out {
+        std::fs::write(&out, &json)?;
+        log::info!("wrote {}", out.display());
+    }
+    println!("{json}");
+    Ok(())
+}
+
 /// Phase A1 vertex-dot microbenchmark (plan `gpu-abinitio`).
 #[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
 fn vbench_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
@@ -246,6 +335,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("table") => table_command(args)?,
         Some("run") => table_run_command(args)?,
+        Some("run-flat") => run_flat_command(args)?,
+        Some("merge") => merge_command(args)?,
         Some("vbench") => vbench_command(args)?,
         Some("model") => {
             let dataset = args
