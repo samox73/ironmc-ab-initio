@@ -259,8 +259,9 @@ fn decay_rate(model: &dyn Model, p: Vector3<f64>, q: Vector3<f64>, branch: usize
 
 /// Joint density of (τ1 uniform on (0, τ_ext), τ2 truncated-exponential on
 /// (τ1, τ_ext)); the exponential part is rmc-core's shared sampler so the draw
-/// in `AddPhonon` and this reverse-move density can never drift apart.
-fn time_proposal_pdf(tau_ext: f64, tau1: f64, tau2: f64, lambda: f64) -> f64 {
+/// in `AddPhonon` and this reverse-move density can never drift apart. Public
+/// because the flat/GPU ab-initio engines replay the identical density.
+pub fn time_proposal_pdf(tau_ext: f64, tau1: f64, tau2: f64, lambda: f64) -> f64 {
     exponential_pdf_bounded(tau2, lambda, tau1, tau_ext) / tau_ext
 }
 
