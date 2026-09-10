@@ -11,6 +11,7 @@
 # walltime compiling). --dry-run skips the build.
 
 use common.nu [ROOT]
+use cuda.nu
 
 # VSC-5 queue map (gitlab.tuwien.ac.at vsc5_queues.md, fetched 2026-09-07).
 export const PARTITIONS = [
@@ -30,7 +31,7 @@ const DEVEL_WALLTIME = "00:10:00"
 # values unquoted), so `submit gates <Tab>` offers e2/dmc, etc.
 def target-completions [context: string] {
     let all = (scope commands
-        | where name =~ '^(ironmc )?(tables|ladder|gates|test|bench|qe) '
+        | where name =~ '^(ironmc )?(tables|ladder|gates|test|bench|qe|gpu) '
         | each {|cmd|
             {
                 name: ($cmd.name | str replace "ironmc " "")
@@ -78,6 +79,7 @@ export def submit [
     --qos: string              # defaults to the partition's default QoS
     --devel                    # devel QoS: fixed 10-minute walltime
     --cpus: int = 128          # zen3 nodes have 128 cores
+    --gpus: int = 2            # gres GPU count on GPU partitions (both a40x2/a100x2 nodes carry 2)
     --job-name: string         # defaults to the target with dashes
     --dry-run                  # print the batch script instead of submitting
 ] {
@@ -123,7 +125,8 @@ export def submit [
         error make {msg: "cargo not found in PATH at submit time — load/install the rust toolchain first"}
     }
 
-    let lines = [
+    let gpu_partition = ($partition =~ 'a100|a40')
+    let lines = ([
         "#!/bin/bash"
         $"#SBATCH --job-name=($name)"
         $"#SBATCH --partition=($partition)"
@@ -132,6 +135,8 @@ export def submit [
         "#SBATCH --nodes=1"
         "#SBATCH --ntasks=1"
         $"#SBATCH --cpus-per-task=($cpus)"
+    ] | append (if $gpu_partition { [$"#SBATCH --gres=gpu:($gpus)"] } else { [] })
+      | append [
         $"#SBATCH --output=($logdir)/%x-%j.out"
         ""
         $"export PATH=\"($cargo_dir):$HOME/.cargo/bin:$PATH\""
@@ -144,7 +149,7 @@ export def submit [
         $"RESULT=\"($logdir)/($name)-${SLURM_JOB_ID}.json\""
         $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | to json out> '\"$RESULT\""
         "echo; echo '=== result ==='; cat \"$RESULT\""
-    ]
+    ])
     $lines | str join "\n" | save -f $script
 
     if $dry_run {
@@ -156,6 +161,13 @@ export def submit [
     # before anything is queued).
     cd $ROOT
     cargo build --release --workspace
+    if $gpu_partition {
+        # cudarc pins the CUDA version via CUDA_PATH at build time; match the
+        # toolkit the in-job `ironmc cuda load` will point at.
+        cuda load
+        cargo build --release -p rmc-ab-initio --features gpu-cuda
+        cargo build --release -p rmc-frohlich --features gpu-cuda
+    }
     let out = (sbatch $script | str trim)
     print $out
     let id = ($out | parse "Submitted batch job {id}" | get -o 0.id)

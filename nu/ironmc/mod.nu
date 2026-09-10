@@ -23,6 +23,7 @@ export use bench.nu
 export use qe.nu
 export use slurm.nu
 export use cuda.nu
+export use gpu.nu
 
 # One-screen overview: built tables and the latest journal entries.
 export def status [] {
