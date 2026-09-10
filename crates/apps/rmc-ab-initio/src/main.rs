@@ -310,11 +310,16 @@ fn vbench_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let table_path: PathBuf = take(&mut options, "--table", None)?;
     let n_evals: usize = take(&mut options, "--evals", Some(1 << 22))?;
     let seed: u64 = take(&mut options, "--seed", Some(7))?;
+    let variants = rmc_ab_initio::gpu::vertex_bench::Variant::parse_list(
+        &options
+            .remove("--variants")
+            .unwrap_or_else(|| "scalar,vector,coop".to_string()),
+    )?;
     if let Some(unknown) = options.keys().next() {
         return Err(format!("unknown option {unknown}").into());
     }
     let table = VertexTable::load(table_path)?;
-    rmc_ab_initio::gpu::vertex_bench::run_vertex_bench(&table, n_evals, seed)
+    rmc_ab_initio::gpu::vertex_bench::run_vertex_bench(&table, n_evals, seed, &variants)
 }
 
 #[cfg(not(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda")))]

@@ -6,13 +6,21 @@
 //! elementwise against the CPU oracle:
 //!
 //! 1. `Scalar` — one eval per thread, per-g `bra_band` lookup (CPU mirror).
-//! 2. `Vector` — one eval per thread, planar re/im f32 tables loaded as
+//! 2. `Vector` — one eval per thread, the planar tables loaded as
 //!    `Vector<f32, 4>` lanes; the per-pair `bra_band` step function is hoisted
 //!    into `nbnd` contiguous band segments (bra_band is monotone by
 //!    construction: pair index = n·nbnd + m and `pair_offsets` is sorted).
 //! 3. `Coop` — one eval per 32-lane row of a cube, strided coalesced loads,
 //!    shared-memory reduce (plane ops are unsupported on the CubeCL CPU
 //!    runtime, and for a 16r-byte streaming eval the reduce cost is noise).
+//!    A1 winner on the P100: 31.9M evals/s (409 GB/s), 5.4× the host node.
+//!
+//! Tables live on device in **planar re/im f32** only — the coop winner's
+//! layout, and it keeps the largest single buffer at `nk·nmodes·rank·4 B`
+//! (cubecl-cuda caps one allocation at total-memory/4, which the interleaved
+//! n50 vtab exceeded on the P100). The vector kernel takes the same planar
+//! handles twice, once as `Vector<f32,4>` and once as scalar `f32` for the
+//! unaligned band-segment edges (read-only aliasing).
 //!
 //! Cube-dialect rules: see the notes atop `rmc-frohlich/src/gpu/kernel.rs`
 //! (usize indexing, literal inits for mutable vars, statement-form ifs,
@@ -49,6 +57,18 @@ impl Variant {
             Variant::Coop => "coop",
         }
     }
+
+    /// Parse a comma-separated variant list (e.g. `coop` or `scalar,coop`).
+    pub fn parse_list(list: &str) -> Result<Vec<Variant>, String> {
+        list.split(',')
+            .map(|name| match name.trim() {
+                "scalar" => Ok(Variant::Scalar),
+                "vector" => Ok(Variant::Vector),
+                "coop" => Ok(Variant::Coop),
+                other => Err(format!("unknown variant '{other}' (scalar|vector|coop)")),
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -69,8 +89,10 @@ fn wrap_add(k: u32, q: u32, n: u32) -> u32 {
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn vertex_dot_scalar(
-    wtab: &Array<f32>,
-    vtab: &Array<f32>,
+    w_re: &Array<f32>,
+    w_im: &Array<f32>,
+    v_re: &Array<f32>,
+    v_im: &Array<f32>,
     cbm: &Array<f64>,
     bra_band: &Array<u32>,
     ks: &Array<u32>,
@@ -89,32 +111,33 @@ fn vertex_dot_scalar(
         let q = qs[i];
         let nu = nus[i];
         let kp = wrap_add(k, q, grid_n);
-        let u0 = (k * rank) as usize * 2;
-        let v0 = ((q * nmodes + nu) * rank) as usize * 2;
+        let u0 = (k * rank) as usize;
+        let v0 = ((q * nmodes + nu) * rank) as usize;
         let c0 = (kp * nbnd) as usize * 2;
         let mut acc_re = 0.0f64;
         let mut acc_im = 0.0f64;
         for g in 0..rank as usize {
-            let w_re = f64::cast_from(wtab[u0 + 2 * g]);
-            let w_im = f64::cast_from(wtab[u0 + 2 * g + 1]);
-            let v_re = f64::cast_from(vtab[v0 + 2 * g]);
-            let v_im = f64::cast_from(vtab[v0 + 2 * g + 1]);
+            let a_re = f64::cast_from(w_re[u0 + g]);
+            let a_im = f64::cast_from(w_im[u0 + g]);
+            let b_re = f64::cast_from(v_re[v0 + g]);
+            let b_im = f64::cast_from(v_im[v0 + g]);
             let b = bra_band[g] as usize;
-            let b_re = cbm[c0 + 2 * b];
-            let b_im = cbm[c0 + 2 * b + 1];
-            let wv_re = w_re * v_re - w_im * v_im;
-            let wv_im = w_re * v_im + w_im * v_re;
-            acc_re += b_re * wv_re + b_im * wv_im;
-            acc_im += b_re * wv_im - b_im * wv_re;
+            let c_re = cbm[c0 + 2 * b];
+            let c_im = cbm[c0 + 2 * b + 1];
+            let wv_re = a_re * b_re - a_im * b_im;
+            let wv_im = a_re * b_im + a_im * b_re;
+            acc_re += c_re * wv_re + c_im * wv_im;
+            acc_im += c_re * wv_im - c_im * wv_re;
         }
         out[2 * i] = acc_re * RY2EV;
         out[2 * i + 1] = acc_im * RY2EV;
     }
 }
 
-/// Variant 2: per-thread eval over planar re/im tables with `Vector<f32, 4>`
+/// Variant 2: per-thread eval over the planar tables with `Vector<f32, 4>`
 /// loads; band segments hoist the bra factor out of the inner loop. Scalar
-/// head/tail at unaligned segment edges read the interleaved arrays.
+/// head/tail at unaligned segment edges read the same planar buffers through
+/// the scalar-view aliases (`*_s`).
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn vertex_dot_vector(
@@ -122,8 +145,10 @@ fn vertex_dot_vector(
     w_im: &Array<Vector<f32, Const<VEC>>>,
     v_re: &Array<Vector<f32, Const<VEC>>>,
     v_im: &Array<Vector<f32, Const<VEC>>>,
-    wtab: &Array<f32>,
-    vtab: &Array<f32>,
+    w_re_s: &Array<f32>,
+    w_im_s: &Array<f32>,
+    v_re_s: &Array<f32>,
+    v_im_s: &Array<f32>,
     cbm: &Array<f64>,
     band_start: &Array<u32>,
     ks: &Array<u32>,
@@ -165,10 +190,10 @@ fn vertex_dot_vector(
                 head_end = g_end;
             }
             for g in g_begin..head_end {
-                let a_re = f64::cast_from(wtab[2 * (u0 + g)]);
-                let a_im = f64::cast_from(wtab[2 * (u0 + g) + 1]);
-                let b_re = f64::cast_from(vtab[2 * (v0 + g)]);
-                let b_im = f64::cast_from(vtab[2 * (v0 + g) + 1]);
+                let a_re = f64::cast_from(w_re_s[u0 + g]);
+                let a_im = f64::cast_from(w_im_s[u0 + g]);
+                let b_re = f64::cast_from(v_re_s[v0 + g]);
+                let b_im = f64::cast_from(v_im_s[v0 + g]);
                 s_re += a_re * b_re - a_im * b_im;
                 s_im += a_re * b_im + a_im * b_re;
             }
@@ -195,10 +220,10 @@ fn vertex_dot_vector(
                 tail_begin = g_begin;
             }
             for g in tail_begin..g_end {
-                let a_re = f64::cast_from(wtab[2 * (u0 + g)]);
-                let a_im = f64::cast_from(wtab[2 * (u0 + g) + 1]);
-                let b_re = f64::cast_from(vtab[2 * (v0 + g)]);
-                let b_im = f64::cast_from(vtab[2 * (v0 + g) + 1]);
+                let a_re = f64::cast_from(w_re_s[u0 + g]);
+                let a_im = f64::cast_from(w_im_s[u0 + g]);
+                let b_re = f64::cast_from(v_re_s[v0 + g]);
+                let b_im = f64::cast_from(v_im_s[v0 + g]);
                 s_re += a_re * b_re - a_im * b_im;
                 s_im += a_re * b_im + a_im * b_re;
             }
@@ -218,8 +243,10 @@ fn vertex_dot_vector(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn vertex_dot_coop(
-    wtab: &Array<f32>,
-    vtab: &Array<f32>,
+    w_re: &Array<f32>,
+    w_im: &Array<f32>,
+    v_re: &Array<f32>,
+    v_im: &Array<f32>,
     cbm: &Array<f64>,
     bra_band: &Array<u32>,
     ks: &Array<u32>,
@@ -246,24 +273,24 @@ fn vertex_dot_coop(
         let q = qs[i];
         let nu = nus[i];
         let kp = wrap_add(k, q, grid_n);
-        let u0 = (k * rank) as usize * 2;
-        let v0 = ((q * nmodes + nu) * rank) as usize * 2;
+        let u0 = (k * rank) as usize;
+        let v0 = ((q * nmodes + nu) * rank) as usize;
         let c0 = (kp * nbnd) as usize * 2;
         let iters = (rank as usize + COOP_LANES as usize - 1) / COOP_LANES as usize;
         for t in 0..iters {
             let g = lane + t * COOP_LANES as usize;
             if g < rank as usize {
-                let w_re = f64::cast_from(wtab[u0 + 2 * g]);
-                let w_im = f64::cast_from(wtab[u0 + 2 * g + 1]);
-                let v_re = f64::cast_from(vtab[v0 + 2 * g]);
-                let v_im = f64::cast_from(vtab[v0 + 2 * g + 1]);
+                let a_re = f64::cast_from(w_re[u0 + g]);
+                let a_im = f64::cast_from(w_im[u0 + g]);
+                let b_re = f64::cast_from(v_re[v0 + g]);
+                let b_im = f64::cast_from(v_im[v0 + g]);
                 let b = bra_band[g] as usize;
-                let b_re = cbm[c0 + 2 * b];
-                let b_im = cbm[c0 + 2 * b + 1];
-                let wv_re = w_re * v_re - w_im * v_im;
-                let wv_im = w_re * v_im + w_im * v_re;
-                acc_re += b_re * wv_re + b_im * wv_im;
-                acc_im += b_re * wv_im - b_im * wv_re;
+                let c_re = cbm[c0 + 2 * b];
+                let c_im = cbm[c0 + 2 * b + 1];
+                let wv_re = a_re * b_re - a_im * b_im;
+                let wv_im = a_re * b_im + a_im * b_re;
+                acc_re += c_re * wv_re + c_im * wv_im;
+                acc_im += c_re * wv_im - c_im * wv_re;
             }
         }
     }
@@ -292,36 +319,35 @@ fn vertex_dot_coop(
 // Host side
 // ---------------------------------------------------------------------------
 
-fn tab_to_f32(tab: &Tab, len: usize) -> Vec<f32> {
-    let mut out = Vec::with_capacity(2 * len);
+fn tab_to_planar(tab: &Tab, len: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut re = Vec::with_capacity(len);
+    let mut im = Vec::with_capacity(len);
     match tab {
         Tab::F32(values) => {
             for value in values {
-                out.push(value.re);
-                out.push(value.im);
+                re.push(value.re);
+                im.push(value.im);
             }
         }
         Tab::F64(values) => {
             for value in values {
-                out.push(value.re as f32);
-                out.push(value.im as f32);
+                re.push(value.re as f32);
+                im.push(value.im as f32);
             }
         }
     }
-    assert_eq!(out.len(), 2 * len);
-    out
+    assert_eq!(re.len(), len);
+    (re, im)
 }
 
-/// Device-resident vertex tables (interleaved f32 + planar f32 copies for the
-/// vector variant; grid data f64), plus the dims the kernels need.
+/// Device-resident vertex tables (planar re/im f32; grid data f64), plus the
+/// dims the kernels need.
 pub struct DeviceTables<R: Runtime> {
     pub client: ComputeClient<R>,
     pub grid_n: u32,
     pub rank: u32,
     pub nmodes: u32,
     pub nbnd: u32,
-    wtab: cubecl::server::Handle,
-    vtab: cubecl::server::Handle,
     w_re: cubecl::server::Handle,
     w_im: cubecl::server::Handle,
     v_re: cubecl::server::Handle,
@@ -342,20 +368,24 @@ impl<R: Runtime> DeviceTables<R> {
             table.bra_band.windows(2).all(|w| w[0] <= w[1]),
             "bra_band must be monotone (pair-major component order)"
         );
+        // The largest single buffer is one vtab plane; cubecl caps one
+        // allocation at total-memory/4, so fail here with a real message
+        // instead of a worker-thread panic and garbage downstream.
+        let largest = (nk * table.nmodes * rank * 4) as u64;
+        let max_page = client.properties().memory.max_page_size;
+        assert!(
+            largest <= max_page,
+            "vtab plane needs {largest} B but this device caps one allocation at \
+             {max_page} B (total memory / 4); use a smaller grid or rank"
+        );
         // band_start[b] = first component with band >= b; segments are exact
         // because bra_band is monotone.
         let band_start: Vec<u32> = (0..=table.nbnd)
             .map(|b| table.bra_band.partition_point(|&x| (x as usize) < b) as u32)
             .collect();
 
-        let wtab = tab_to_f32(&table.wtab, nk * rank);
-        let vtab = tab_to_f32(&table.vtab, nk * table.nmodes * rank);
-        let planar = |interleaved: &[f32], re: bool| -> Vec<f32> {
-            interleaved
-                .chunks_exact(2)
-                .map(|c| if re { c[0] } else { c[1] })
-                .collect()
-        };
+        let (w_re, w_im) = tab_to_planar(&table.wtab, nk * rank);
+        let (v_re, v_im) = tab_to_planar(&table.vtab, nk * table.nmodes * rank);
         let cbm: Vec<f64> = table
             .cbm_evec
             .iter()
@@ -368,12 +398,10 @@ impl<R: Runtime> DeviceTables<R> {
             rank: rank as u32,
             nmodes: table.nmodes as u32,
             nbnd: table.nbnd as u32,
-            wtab: client.create_from_slice(f32::as_bytes(&wtab)),
-            vtab: client.create_from_slice(f32::as_bytes(&vtab)),
-            w_re: client.create_from_slice(f32::as_bytes(&planar(&wtab, true))),
-            w_im: client.create_from_slice(f32::as_bytes(&planar(&wtab, false))),
-            v_re: client.create_from_slice(f32::as_bytes(&planar(&vtab, true))),
-            v_im: client.create_from_slice(f32::as_bytes(&planar(&vtab, false))),
+            w_re: client.create_from_slice(f32::as_bytes(&w_re)),
+            w_im: client.create_from_slice(f32::as_bytes(&w_im)),
+            v_re: client.create_from_slice(f32::as_bytes(&v_re)),
+            v_im: client.create_from_slice(f32::as_bytes(&v_im)),
             cbm: client.create_from_slice(f64::as_bytes(&cbm)),
             bra_band: client.create_from_slice(u32::as_bytes(&bra_band)),
             band_start: client.create_from_slice(u32::as_bytes(&band_start)),
@@ -434,16 +462,18 @@ impl<R: Runtime> DeviceTables<R> {
         let arr = |h: &cubecl::server::Handle, len: usize| -> ArrayArg<R> {
             unsafe { ArrayArg::from_raw_parts(h.clone(), len) }
         };
-        let wtab_len = 2 * nk * rank;
-        let vtab_len = 2 * nk * self.nmodes as usize * rank;
+        let w_len = nk * rank;
+        let v_len = nk * self.nmodes as usize * rank;
         let cbm_len = 2 * nk * self.nbnd as usize;
         match variant {
             Variant::Scalar => vertex_dot_scalar::launch::<R>(
                 client,
                 CubeCount::Static((n as u32).div_ceil(256), 1, 1),
                 CubeDim::new_1d(256),
-                arr(&self.wtab, wtab_len),
-                arr(&self.vtab, vtab_len),
+                arr(&self.w_re, w_len),
+                arr(&self.w_im, w_len),
+                arr(&self.v_re, v_len),
+                arr(&self.v_im, v_len),
                 arr(&self.cbm, cbm_len),
                 arr(&self.bra_band, rank),
                 arr(ks, n),
@@ -460,12 +490,14 @@ impl<R: Runtime> DeviceTables<R> {
                 client,
                 CubeCount::Static((n as u32).div_ceil(256), 1, 1),
                 CubeDim::new_1d(256),
-                arr(&self.w_re, wtab_len / 2 / VEC),
-                arr(&self.w_im, wtab_len / 2 / VEC),
-                arr(&self.v_re, vtab_len / 2 / VEC),
-                arr(&self.v_im, vtab_len / 2 / VEC),
-                arr(&self.wtab, wtab_len),
-                arr(&self.vtab, vtab_len),
+                arr(&self.w_re, w_len / VEC),
+                arr(&self.w_im, w_len / VEC),
+                arr(&self.v_re, v_len / VEC),
+                arr(&self.v_im, v_len / VEC),
+                arr(&self.w_re, w_len),
+                arr(&self.w_im, w_len),
+                arr(&self.v_re, v_len),
+                arr(&self.v_im, v_len),
                 arr(&self.cbm, cbm_len),
                 arr(&self.band_start, self.nbnd as usize + 1),
                 arr(ks, n),
@@ -482,8 +514,10 @@ impl<R: Runtime> DeviceTables<R> {
                 client,
                 CubeCount::Static((n as u32).div_ceil(COOP_ROWS), 1, 1),
                 CubeDim::new_2d(COOP_LANES, COOP_ROWS),
-                arr(&self.wtab, wtab_len),
-                arr(&self.vtab, vtab_len),
+                arr(&self.w_re, w_len),
+                arr(&self.w_im, w_len),
+                arr(&self.v_re, v_len),
+                arr(&self.v_im, v_len),
                 arr(&self.cbm, cbm_len),
                 arr(&self.bra_band, rank),
                 arr(ks, n),
@@ -542,6 +576,7 @@ pub fn run_vertex_bench(
     table: &VertexTable,
     n_evals: usize,
     seed: u64,
+    variants: &[Variant],
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::gpu::SelectedRuntime;
 
@@ -588,7 +623,7 @@ pub fn run_vertex_bench(
         );
     }
 
-    for variant in Variant::ALL {
+    for &variant in variants {
         let (values, _) = tables.evaluate(variant, &cks, &cqs, &cnus, false);
         let err = max_rel_error(table, &cks, &cqs, &cnus, &values);
         assert!(
