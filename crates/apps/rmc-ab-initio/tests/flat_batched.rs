@@ -105,9 +105,13 @@ fn misaligned_offset_is_rejected() {
     let model = synthetic_model(7);
     let cfg = test_config(2);
     assert!(run_batched(&model, &cfg, 3, 2, 24).is_err());
-    let mut auto = cfg;
+    let mut auto = cfg.clone();
     auto.chains = 0;
     assert!(run_batched(&model, &auto, 0, 2, 24).is_err());
+    // Whole cycles only: a short final cycle would break checkpoint extension.
+    let mut ragged = cfg;
+    ragged.max_steps = 4001;
+    assert!(run_batched(&model, &ragged, 0, 2, 24).is_err());
 }
 
 /// Statistical agreement with the standard runner on the production-mode

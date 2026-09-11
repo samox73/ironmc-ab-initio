@@ -161,7 +161,6 @@ pub struct SegmentParams {
     pub step0: u64,
     pub n_cycles: u32,
     pub steps_per_cycle: u32,
-    pub last_cycle_steps: u32,
 }
 
 pub struct SegmentOutput {
@@ -189,7 +188,6 @@ pub fn launch_segment<R: Runtime>(
 ) -> SegmentOutput {
     assert_eq!(RY2EV, crate::reconstruct::RY_TO_EV);
     assert!(params.n_cycles > 0);
-    assert!(params.last_cycle_steps <= params.steps_per_cycle);
     let client = &state.client;
     let chains = state.chains;
     let nk = (tables.grid_n as usize).pow(3);
@@ -252,7 +250,6 @@ pub fn launch_segment<R: Runtime>(
         state.capacity,
         params.n_cycles,
         params.steps_per_cycle,
-        params.last_cycle_steps,
         tables.grid_n,
         tables.rank,
         tables.nmodes,
@@ -344,13 +341,18 @@ pub fn run_device<R: Runtime>(
     if cfg.max_steps == 0 || cfg.steps_per_cycle == 0 || cfg.n_batches < 1 {
         return Err(RmcError::InvalidArgument("invalid DiagConfig".to_string()));
     }
+    if cfg.max_steps % cfg.steps_per_cycle != 0 {
+        return Err(RmcError::InvalidArgument(format!(
+            "max_steps ({}) must be a multiple of steps_per_cycle ({})",
+            cfg.max_steps, cfg.steps_per_cycle
+        )));
+    }
     let n_chains = cfg.chains as usize;
     let steps_per_cycle = cfg.steps_per_cycle;
     let expected_samples = cfg.max_steps.div_ceil(steps_per_cycle) as usize;
     let warmup_cycles = cfg.warmup_steps.div_ceil(steps_per_cycle);
     let measured_cycles = expected_samples as u64;
     let total_cycles = warmup_cycles + measured_cycles;
-    let final_cycle_steps = cfg.max_steps - (measured_cycles - 1) * steps_per_cycle;
     let max_order_eff = cfg.max_order.min(max_order_gpu) as u32;
 
     let (cycle_start0, initial_chains) = match resume {
@@ -437,7 +439,6 @@ pub fn run_device<R: Runtime>(
             }
         }
         let n_cycles = cycles_per_launch.min(leg_end - cycle_start);
-        let contains_final = cycle_start + n_cycles == total_cycles;
         let t = std::time::Instant::now();
         let segment = launch_segment(
             &state,
@@ -451,11 +452,6 @@ pub fn run_device<R: Runtime>(
                 step0: cycle_start * steps_per_cycle,
                 n_cycles: n_cycles as u32,
                 steps_per_cycle: steps_per_cycle as u32,
-                last_cycle_steps: if contains_final {
-                    final_cycle_steps as u32
-                } else {
-                    steps_per_cycle as u32
-                },
             },
         );
         let segment_secs = t.elapsed().as_secs_f64();
@@ -472,12 +468,7 @@ pub fn run_device<R: Runtime>(
             if cycle_start + (cycle as u64) < warmup_cycles {
                 continue;
             }
-            measured_steps_per_chain +=
-                if contains_final && cycle as u64 + 1 == n_cycles {
-                    final_cycle_steps
-                } else {
-                    steps_per_cycle
-                };
+            measured_steps_per_chain += steps_per_cycle;
             for (chain, measurement) in measurements.iter_mut().enumerate() {
                 let i = cycle * n_chains + chain;
                 measurement.measure_sample(

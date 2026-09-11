@@ -623,7 +623,6 @@ pub fn mc_kernel(
     capacity: u32,
     n_cycles: u32,
     steps_per_cycle: u32,
-    last_cycle_steps: u32,
     grid_n: u32,
     rank: u32,
     nmodes: u32,
@@ -648,12 +647,7 @@ pub fn mc_kernel(
         let mut sm = SharedMemory::<f64>::new(SM_LEN as usize);
 
         for cycle in 0..n_cycles {
-            let steps = if cycle + 1 == n_cycles {
-                last_cycle_steps
-            } else {
-                steps_per_cycle
-            };
-            for s in 0..steps {
+            for s in 0..steps_per_cycle {
                 let step = step0
                     + u64::cast_from(cycle) * u64::cast_from(steps_per_cycle)
                     + u64::cast_from(s);

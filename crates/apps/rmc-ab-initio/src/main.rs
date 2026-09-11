@@ -363,21 +363,8 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
             return Err("checkpoint chain offset differs from --rank; refusing to resume".into());
         }
         if checkpoint.config.max_steps != config.max_steps {
-            let spc = config.steps_per_cycle.max(1);
-            let old_total = checkpoint.config.warmup_steps.div_ceil(spc)
-                + checkpoint.config.max_steps.div_ceil(spc);
-            // A completed short final cycle skipped step indices the extended
-            // schedule would run — the one case where extension breaks the
-            // bit-determinism guarantee.
-            if checkpoint.cycles_done >= old_total && checkpoint.config.max_steps % spc != 0 {
-                return Err(format!(
-                    "cannot extend: the previous schedule (max_steps {}) completed on a short \
-                     cycle (not a multiple of steps_per_cycle {spc}), so extension would break \
-                     determinism",
-                    checkpoint.config.max_steps
-                )
-                .into());
-            }
+            // Extension is exact: whole-cycle schedules only (validated by the
+            // driver), so a longer schedule is a strict superset.
             log::info!(
                 "extending schedule: max_steps {} → {}",
                 checkpoint.config.max_steps,

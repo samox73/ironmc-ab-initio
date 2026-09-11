@@ -83,6 +83,14 @@ pub fn run_batched_with_deadline(
     if cfg.max_steps == 0 || cfg.steps_per_cycle == 0 || cfg.n_batches < 1 {
         return Err(RmcError::InvalidArgument("invalid DiagConfig".to_string()));
     }
+    // Whole cycles only: a short final cycle would skip step indices, breaking
+    // checkpoint-extension determinism, and buys nothing.
+    if cfg.max_steps % cfg.steps_per_cycle != 0 {
+        return Err(RmcError::InvalidArgument(format!(
+            "max_steps ({}) must be a multiple of steps_per_cycle ({})",
+            cfg.max_steps, cfg.steps_per_cycle
+        )));
+    }
     let n_chains = cfg.chains as usize;
     let n_updates = if cfg.fixed_tau { 3 } else { 4 };
     let steps_per_cycle = cfg.steps_per_cycle;
@@ -90,7 +98,6 @@ pub fn run_batched_with_deadline(
     let warmup_cycles = cfg.warmup_steps.div_ceil(steps_per_cycle);
     let measured_cycles = expected_samples as u64;
     let total_cycles = warmup_cycles + measured_cycles;
-    let final_cycle_steps = cfg.max_steps - (measured_cycles - 1) * steps_per_cycle;
 
     // Per-chain measurement memory ≈ bins × batches × 32 B must stay small
     // (the Fröhlich sizing lesson); warn loudly before it hurts at GPU scale.
@@ -149,13 +156,8 @@ pub fn run_batched_with_deadline(
         }
         cycles_done = cycle + 1;
         let measured = cycle >= warmup_cycles;
-        let steps = if measured && cycle + 1 == total_cycles {
-            final_cycle_steps
-        } else {
-            steps_per_cycle
-        };
         let t0 = std::time::Instant::now();
-        for s in 0..steps {
+        for s in 0..steps_per_cycle {
             let step = cycle * steps_per_cycle + s;
             for (local_group, (chain_group, update_group)) in chains
                 .chunks_mut(group_size)
@@ -182,7 +184,7 @@ pub fn run_batched_with_deadline(
         step_secs += t0.elapsed().as_secs_f64();
 
         if measured {
-            measured_steps_per_chain += steps;
+            measured_steps_per_chain += steps_per_cycle;
             let t0 = std::time::Instant::now();
             for (chain, measurement) in chains.iter().zip(&mut measurements) {
                 measurement.measure_sample(
