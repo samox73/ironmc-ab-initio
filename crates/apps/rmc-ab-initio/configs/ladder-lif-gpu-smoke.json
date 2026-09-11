@@ -1,0 +1,16 @@
+{
+  "mu": 0.0,
+  "p_ext": [0.0, 0.0, 0.0],
+  "max_tau": 60.0,
+  "num_bins": 80,
+  "min_order": 0,
+  "max_order": 500,
+  "tau_fit": 30.0,
+  "seed": 11,
+  "chains": 256,
+  "max_steps": 20000,
+  "warmup_steps": 2000,
+  "steps_per_cycle": 10,
+  "n_batches": 4,
+  "fixed_tau": true
+}

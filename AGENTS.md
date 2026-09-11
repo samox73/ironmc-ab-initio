@@ -45,3 +45,5 @@ cargo bench-compare -p rmc-frohlich --bin rmc-frohlich --reps 5 --metric-regex '
 
 - Plan files live in `plans/*.md`.
 - Prefer existing `type: summary` commit subjects such as `chore:`, `refactor:`, and `fix:`.
+- Document implementation chunks in journal.md and physics notes and methodology in ./latex/ab-initio-diagmc/ab-initio-diagmc.tex
+- Project terminology is defined in ./latex/glossary/glossary.tex — keep it current when new terms appear.

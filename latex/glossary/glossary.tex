@@ -1,0 +1,628 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\kv}{\mathbf{k}}
+\newcommand{\qv}{\mathbf{q}}
+\newcommand{\term}[1]{\item[#1.]}
+
+\title{\texttt{ironmc} / \texttt{rmc-ab-initio} project glossary}
+\author{Samuel Recker}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\noindent
+Working vocabulary of the ab-initio DiagMC project. Terms are grouped into
+\textbf{physics} (Section~\ref{sec:physics}) and \textbf{software engineering}
+(Section~\ref{sec:swe}); overloaded words that mean different things in different
+contexts are disambiguated in Section~\ref{sec:overloaded}. The methodology note
+\texttt{latex/ab-initio-diagmc/ab-initio-diagmc.tex} is the authoritative physics
+reference; this file only defines the words.
+
+\section{Physics}
+\label{sec:physics}
+
+\subsection{Model and observables}
+
+\begin{description}
+\term{Polaron} An electron dressed by the lattice distortion (phonon cloud) it drags
+  along. The project computes the \emph{electron} polaron of LiF: one carrier at the
+  conduction-band minimum plus its phonon cloud.
+
+\term{Formation energy $E_{0}$} The polaron ground-state energy relative to the bare
+  band edge, $E_{0}=E_{\mathrm{polaron}}-\varepsilon_{\mathrm{CBM}}$. Negative;
+  the headline observable of every production run. LiF references:
+  $-0.2479$~eV on the $20^{3}$ grid, $-0.408$~eV extrapolated (FEP-DMC).
+
+\term{Fr\"ohlich model} The textbook continuum polaron: parabolic electron band, one
+  dispersionless LO phonon, vertex $|g(\qv)|^{2}\propto\alpha/q^{2}$. Serves two roles
+  here: the analytic limit LiF is close to (so an analytic cross-check exists), and the
+  engine-validation model (see \emph{rung}, Section~\ref{sec:swe-validation}).
+
+\term{Coupling constant $\alpha$} The dimensionless Fr\"ohlich electron--phonon
+  coupling. $\alpha_{\mathrm{LiF}}\approx4.76$ (intermediate-to-strong coupling),
+  computed from $m^{*}$, $\omega_{\mathrm{LO}}$, $\varepsilon_{\infty}$,
+  $\varepsilon_{0}$. Weak-coupling target: $E^{(2)}\approx-\alpha\hbar\omega_{\mathrm{LO}}$.
+
+\term{LO / TO phonons, LO--TO splitting} Longitudinal / transverse optical branches. In
+  a polar crystal the long-range dipole field stiffens the LO branch at $\Gamma$
+  (LiF: LO $18.45$~THz vs TO $8.12$~THz). The splitting is carried entirely by the
+  long-range part of the dynamical matrix, which EPW subtracts and the code must restore.
+
+\term{Imaginary time $\tau$} The evolution variable of the zero-temperature
+  imaginary-time formulation. With $\hbar=1$ and energies in eV, $\tau$ has units
+  eV$^{-1}$. Diagrams live on a $\tau$ interval $[0,\tau_{\max}]$.
+
+\term{Green's function $G(\tau)$} The imaginary-time electron propagator whose
+  large-$\tau$ decay $G(\tau)\sim Z e^{-(E_{0}-\mu)\tau}$ encodes the ground-state
+  energy. What the decay estimator fits; \emph{not} the same object as the self-energy.
+
+\term{Chemical potential $\mu$} A reweighting shift $e^{+\mu\tau}$ applied to the
+  electron propagator to keep diagram weights bounded. In the decay estimator it must
+  bracket $E_{0}$ from below (P9 of the methodology note); in the fixed-$\tau$
+  thermodynamic ensemble it drops out entirely.
+
+\term{Units (physical vs natural)} The ab-initio model runs in physical units:
+  energies eV, time eV$^{-1}$, momenta in fractional (crystal) coordinates on a
+  $\Gamma$-centered grid. Fr\"ohlich toy runs use polaron natural units
+  $\hbar=m=\omega_{\mathrm{LO}}=1$. Ab-initio inputs arrive in Rydberg
+  ($\approx13.6057$~eV) or THz and are converted on load.
+
+\term{Effective mass $m^{*}$, CBM} Conduction-band minimum and its curvature mass.
+  LiF's CBM is single and non-degenerate at $\Gamma$ (why LiF is the first material);
+  $m^{*}$ enters $\alpha$ and the $q$-unit bridge of the reduced Fr\"ohlich comparison.
+
+\term{Second-order energy $E^{(2)}$} The lowest-order (one-phonon) perturbative
+  polaron energy, $E^{(2)}(\kv)=-\frac{1}{N_{q}}\sum_{\qv\nu}
+  |g(\kv,\qv,\nu)|^{2}/(\varepsilon_{\kv+\qv}-\varepsilon_{\kv}+\omega_{\qv\nu})$.
+  Cheap to evaluate exactly; used as the vertex-scale check and as a (biased) scanning
+  proxy for compression error --- it overestimates the in-sampler systematic by
+  $3$--$10\times$, so it never decides a budget (see \emph{gate}).
+
+\term{Lang--Firsov / dispersionless model} Exactly solvable lattice polaron
+  ($\varepsilon(\kv)=\mathrm{const}$), $E_{0}=-\bar g^{2}/\omega$ at all couplings.
+  Used as an analytic validation target for the thermodynamic estimator.
+
+\term{Discretized Hamiltonian $\hat H_{n}$} The polaron Hamiltonian restricted to a
+  uniform $n^{3}$ Brillouin-zone grid shared by electron and phonon momenta, closed
+  under momentum addition, with per-arc measure $\frac{1}{N_{q}}\sum_{\qv\neq\Gamma}$,
+  $N_{q}=n^{3}$. \emph{This} is what the sampler solves --- numerically exactly. All
+  physics statements are statements about the sequence $E_{0}(n)$.
+
+\term{Thermodynamic limit / $1/n$ extrapolation} Because the discrete BZ sum
+  underweights the $1/q^{2}$ polar region near $\Gamma$, $E_{0}(n)$ converges from
+  above with leading error $\propto1/n$. The continuum answer is the intercept of a
+  linear fit of $E_{0}(n)$ against $1/n$ over the grid ladder $n=20,32,40,50$
+  (same methodology as FEP-DMC).
+\end{description}
+
+\subsection{Diagrammatics and sampling}
+
+\begin{description}
+\term{DiagMC (diagrammatic Monte Carlo)} Stochastic sampling of the Feynman-diagram
+  expansion of an observable --- here the imaginary-time worldline expansion of the
+  polaron partition function / Green's function --- by a Metropolis Markov chain over
+  diagram topologies, momenta, and times.
+
+\term{Diagram, worldline, backbone} One Monte-Carlo configuration: an electron line
+  (backbone) on $[0,\tau]$, cut into \emph{segments} by interaction vertices, with
+  phonon \emph{arcs} connecting vertex pairs. Stored as a dense $\tau$-sorted array
+  (GPU) or slotmap (CPU).
+
+\term{Segment} A piece of electron line between adjacent vertices, carrying momentum
+  $\kv_{s}$ and weight $e^{-\varepsilon(\kv_{s})\Delta\tau_{s}}$.
+
+\term{Arc (phonon arc)} A phonon propagator $D(\omega_{\qv\nu},\Delta\tau)$ joining
+  two vertices; carries branch $\nu$ and momentum $\qv$, which is subtracted from the
+  backbone momentum underneath it.
+
+\term{Vertex (diagrammatic)} An electron--phonon interaction event at a time
+  $\tau_{i}$, weighted by the matrix element $g(\kv,\qv,\nu)$. Not to be confused with
+  ``vertex'' as shorthand for the matrix element itself (common in this repo).
+
+\term{Diagram order $n$, $\langle n\rangle$ (\texttt{mean\_order})} Number of phonon
+  arcs in the current diagram. The equilibrium mean order tracks coupling strength
+  (LiF at $20^{3}$: $\langle n\rangle\approx16$); a collapsing or runaway order is the
+  standard symptom of a mis-set $\mu$, a mis-scaled vertex, or under-equilibration.
+
+\term{Update} One Metropolis move proposal (insert/remove arc, shift times, swap,
+  \dots). The engine is built from an update set run by a \texttt{Runner} through a
+  \texttt{MetropolisKernel}.
+
+\term{Chain} One independent Markov chain with its own deterministic RNG stream.
+  Production runs use many chains ($12$ per CPU node config, $8192$ per GPU) for
+  honest, embarrassingly parallel statistics.
+
+\term{Warmup / equilibration transient} Steps discarded before measuring, which must
+  exceed the diagram-order equilibration time ($\sim10^{5}$ steps for LiF at
+  $20^{3}$) \emph{per chain} --- many short chains do \emph{not} dilute the transient
+  the way one long chain does (the GPU warmup lesson).
+
+\term{Sign, average sign $\langle s\rangle$} The complex vertex makes diagram weights
+  non-positive-definite; each sample carries $\operatorname{sign}(\operatorname{Re}\,w)$
+  and observables are divided by $\langle s\rangle$. For LiF(e) the sign stays
+  benign ($\approx0.99$); for the Fr\"ohlich model it is $\equiv1$.
+
+\term{$|g|^{2}$-weighted proposal} The native phonon-momentum proposal distribution:
+  new arc momenta are drawn $\propto|g(\qv)|^{2}$ (tabulated), so the polar $1/q^{2}$
+  peak is proposed where the weight lives instead of rejected.
+\end{description}
+
+\subsection{Estimators and statistics}
+
+\begin{description}
+\term{Decay estimator} Reads $E_{0}$ from the large-$\tau$ slope of the measured
+  $G(\tau)$, $E_{0}=\mu+\mathrm{slope}$, fitted beyond \texttt{tau\_fit}. Requires
+  bracketing $\mu$ and a fit window clear of excited-state contamination
+  ($\tau_{\mathrm{fit}}\gg1/\omega_{\mathrm{LO}}$); acceptance criterion is
+  $\mu$-independence of the result. Superseded for production by the thermodynamic
+  estimator; kept as a cross-check.
+
+\term{Thermodynamic (fixed-$\tau$) estimator} The FEP-DMC-style operator estimator:
+  the sampler runs in a fixed-$\tau$ ensemble (external time pinned at
+  $\tau_{\max}=\beta$, \texttt{fixed\_tau: true}) and averages the local energy
+  $E_{\mathrm{loc}}=\tau^{-1}[\sum_{\mathrm{seg}}\varepsilon\,\Delta\tau
+  +\sum_{\mathrm{arcs}}\omega\,\Delta\tau-2N_{\mathrm{arcs}}]$ over the whole
+  worldline --- no fit, no $\mu$ bracketing, lower variance. Reported as
+  \texttt{e0\_thermo}. Systematic error controlled by $\beta$
+  (excited-state contamination $\sim e^{-\Delta\beta}$), checked by $\tau$-doubling
+  (guard~A).
+
+\term{Exp-reweighted estimator, \texttt{energy\_estimate}} The older rung-1/rung-2
+  estimator $\langle-\exp((E_{\mathrm{est}}-\mu)\tau)\rangle$ whose self-consistent
+  update diverges for $\alpha\gtrsim1$ (fixed-point slope $\approx-2.2$); the rung
+  configs freeze \texttt{energy\_estimate} and it is bisected by hand to the fixed
+  point $E\approx E_{\mathrm{est}}$.
+
+\term{Local energy} The per-worldline value of $\langle\hat H\rangle$ decomposed into
+  band, phonon, and interaction accumulators (segment $\varepsilon\Delta\tau$ sums,
+  arc $\omega\Delta\tau$ sums, vertex count); its sign-weighted time average is the
+  thermodynamic estimator.
+
+\term{Thermal phonon propagator}
+  $D(\omega,\tau)=[e^{-\omega\tau}+e^{-\omega(\beta-\tau)}]/(1-e^{-\omega\beta})$:
+  spontaneous emission $+$ thermal wrap-around, Bose-enhanced. The
+  \texttt{zeroTMC} limit hard-codes $\beta\to\infty$, i.e.\ $D=e^{-\omega\tau}$;
+  LiF(e) production runs are effectively $T=0$. Modes below a
+  $\sim1$~meV frequency cutoff are dropped to avoid the $\omega\to0$ divergences.
+
+\term{Jackknife} Leave-one-out resampling over measurement batches for error bars,
+  computed as total$-$batch (never re-aggregating per replicate --- the $O(N^{2})$
+  trap). With independent chains the natural batching is one batch per chain.
+
+\term{Batch (\texttt{n\_batches})} A contiguous block of measurements forming one
+  jackknife unit. Under deadline truncation the batch pooling still guarantees
+  $\geq$ one block per chain.
+
+\term{\texttt{steps\_done}} The actually executed step count reported by a run; all
+  quoted steps/s throughput numbers use it, so deadline-truncated runs stay honest.
+\end{description}
+
+\subsection{Ab-initio pipeline (DFT $\to$ DFPT $\to$ Wannier $\to$ vertex)}
+
+\begin{description}
+\term{Quantum ESPRESSO (QE)} The plane-wave DFT suite: \texttt{pw.x} (SCF/NSCF
+  ground state and band structure), \texttt{ph.x} (DFPT phonons). One QE version must
+  be used for the whole \texttt{scf/ph/nscf/epw} chain.
+
+\term{DFPT} Density-functional perturbation theory; supplies phonon frequencies and
+  eigenvectors, Born effective charges $\mathbf{Z}^{*}$, and the electronic dielectric
+  tensor $\bm\varepsilon_{\infty}$.
+
+\term{EPW} The QE companion code that Wannier-interpolates the electron--phonon
+  coupling; produces the Wannier-representation tensor \texttt{LiF.epmatwp} and (with
+  \texttt{lpolar=.true.}) subtracts the polar long-range part first.
+
+\term{Wannier functions / interpolation} Localized real-space orbitals obtained from
+  the Bloch states; matrix elements stored on real-space pairs $(\mathbf{R}_{e},
+  \mathbf{R}_{p})$ interpolate to any $(\kv,\qv)$ by Fourier transform. The electron
+  dispersion $\varepsilon(\kv)$ used by the sampler is the Wannier-interpolated
+  conduction band (not a parabola).
+
+\term{Disentanglement windows} Wannierization energy windows
+  (\texttt{dis\_win\_max}, \texttt{dis\_froz\_max}) selecting/freezing bands. Must be
+  re-tuned when pseudopotentials shift the band edges, or the frozen CBM slips out.
+
+\term{Pseudopotentials: ultrasoft vs norm-conserving (ONCV)} EPW's e--ph matrix
+  elements require \emph{norm-conserving} pseudopotentials; the initial ultrasoft
+  (GBRV) deck silently produced an all-NaN tensor (pitfall P1). The fix (Pseudo Dojo
+  ONCV) raises \texttt{ecutwfc} $50\to96$~Ry.
+
+\term{\texttt{.epmatwp}} EPW's Wannier-representation e--ph tensor file
+  $g(\mathbf{R}_{e},\mathbf{R}_{p})$ --- the primary input the Rust reader consumes.
+
+\term{\texttt{.epb}} EPW's coarse Bloch-representation dump: the \emph{full},
+  pre-subtraction coupling at the coarse $q$-points, plus eigenvalues, dynamical
+  matrices, $\mathbf{Z}^{*}$, $\bm\varepsilon_{\infty}$. One Fortran unformatted
+  record per MPI pool; the ground truth for the round-trip validation.
+
+\term{\texttt{dynq}} The coarse DFPT dynamical matrices; ground truth for the phonon
+  (P7) round-trip.
+
+\term{Vertex $g_{mn\nu}(\kv,\qv)$} The electron--phonon matrix element: scattering of
+  an electron from band $n$ at $\kv$ to band $m$ at $\kv+\qv$ emitting/absorbing a
+  phonon of branch $\nu$, momentum $\qv$. Complex; the sampler consumes
+  gauge-invariant $|g|^{2}$ combinations.
+
+\term{Short/long-range split $g=g^{\mathcal S}+g^{\mathcal L}$} EPW subtracts the
+  analytic polar (Fr\"ohlich-like, $1/q$) part $g^{\mathcal L}$ before Wannierization
+  so the stored tensor $g^{\mathcal S}$ is short-ranged; the code re-adds
+  $g^{\mathcal L}$ (Verdi--Giustino form, Ewald-summed) exactly, never compressed.
+  The split lives in the Cartesian displacement basis and carries an electron
+  band-rotation factor (pitfall P6).
+
+\term{Polar restoration of the dynamical matrix} The same subtraction applies to the
+  dynamical matrix: the rigid-ion dipole--dipole term (Gonze form, EPW
+  \texttt{rgd\_blk}) must be added back before diagonalization or the LO--TO
+  splitting is lost and the zero-point factor mis-scales $|g|^{2}$ by $\sim2$
+  (pitfall P7).
+
+\term{Zero-point factor} The $(\hbar/2M_{\kappa}\omega_{\qv\nu})^{1/2}$ phonon
+  quantization factor in the branch projection of the coupling. Omitting it (pitfall
+  P8) inflated every $|g|$ by $\sim7\times$.
+
+\term{Acoustic sum rule} The $\qv=0$ self-term subtraction on the diagonal blocks of
+  the long-range dynamical matrix that keeps the acoustic branches gapless at
+  $\Gamma$.
+
+\term{Born effective charges $\mathbf{Z}^{*}_{\kappa}$, $\bm\varepsilon_{\infty}$,
+  $\varepsilon_{0}$} Per-atom dynamical charge tensors and the electronic /static
+  dielectric constants; the ingredients of both long-range terms. Consistency check:
+  Lyddane--Sachs--Teller,
+  $\varepsilon_{0}/\varepsilon_{\infty}=(\omega_{\mathrm{LO}}/\omega_{\mathrm{TO}})^{2}$.
+
+\term{Gauge / band rotation $U$} Bloch states carry an arbitrary per-$\kv$ phase (and
+  mixing, where degenerate); the factor $[U_{\kv+\qv}U^{\dagger}_{\kv}]_{mn}$ rotates
+  the polar term into the smooth Wannier gauge. Per-band comparisons are only
+  meaningful in gauge-invariant combinations.
+
+\term{$W$ star} The star of the $W$ point of the fcc BZ, contained in the $8^{3}$
+  coarse grid, where the two lowest conduction bands are exactly degenerate --- making
+  per-band round-trip checks gauge-ambiguous there (those $q$ are skipped; the
+  sampler is unaffected).
+
+\term{Reduced model} The single-band, $\Gamma$-slice scalar reduction
+  $|g(\Gamma,\qv,\nu)|^{2}$ cached to \texttt{reduced-model.json} for the early
+  rung-2 runs; superseded by the full-$\kv$ tabulated model but still built by the
+  \texttt{model} subcommand.
+\end{description}
+
+\subsection{Compression and tabulation}
+
+\begin{description}
+\term{SVD compression / rank budget} The short-range Wannier tensor is compressed by
+  per-band-pair truncated SVD; the \emph{global rank budget} $r$ keeps the largest
+  singular values across all band pairs (production: $800$ of $1600$). A vertex
+  evaluation is then a rank-$r$ contraction
+  $g=\sum_{g}s_{g}u_{g}(\kv)v_{g}(\qv,\nu)+g^{\mathcal L}$.
+
+\term{Factor tables $u,v$} The SVD factors tabulated on the momentum grid,
+  stored $\kv$-major / $(\qv,\nu)$-major so one evaluation streams contiguous memory
+  (the $11$--$19\times$ cache-layout win); f32 on the GPU tables, with all weight
+  arithmetic f64.
+
+\term{$\Delta_{\mathrm{rank}}$} The compression systematic,
+  $E_{0}(\text{budget})-E_{0}(\text{uncompressed})$, measured by two
+  otherwise-identical DMC runs \emph{in the sampler itself} and quoted on every
+  production number. Current certification: $\Delta_{\mathrm{rank}}(800)=1.0\pm0.8$~meV.
+  Never decided by element-wise reconstruction error or the $E^{(2)}$ proxy, and
+  ``two nearby budgets agree'' is not evidence (convergence in the budget is
+  non-monotonic).
+
+\term{Uncompressed reference} The rank-$1600$ (full-rank) table used as the
+  comparison baseline for $\Delta_{\mathrm{rank}}$; built on demand by
+  \texttt{ironmc tables reference}.
+
+\term{Table (\texttt{.rmcvtab})} A self-contained ladder artifact
+  (\texttt{table-n\{grid\}-r\{rank\}-f32.rmcvtab}): the complete discretized
+  Hamiltonian $\hat H_{n}$ --- Wannier CBM dispersion, all six polar-restored phonon
+  branches, exact long-range vertex, SVD factor tables, gauge overlaps. DMC runs
+  consume a table; building it is a separate, cheaper step
+  (\texttt{ironmc tables build/ladder}).
+\end{description}
+
+\section{Software engineering}
+\label{sec:swe}
+
+\subsection{Validation vocabulary}
+\label{sec:swe-validation}
+
+\begin{description}
+\term{Validation ladder} The general pattern: correctness is certified in ordered
+  \emph{rungs} of increasing physical content (or increasing hardware realism, for
+  the GPU port), each rung mechanical to check, so a failure localizes to the first
+  rung that breaks. The main ladder: engine on analytic Fr\"ohlich $\to$ vertex scale
+  $\to$ compression convergence $\to$ material comparison. The GPU ladder:
+  executable spec $\to$ CPU-runtime bit parity $\to$ hardware accept-count parity
+  $\to$ physics anchor.
+
+\term{Rung} One level of a validation ladder. Concretely, in run configs and the
+  journal:
+  \textbf{rung 1} $=$ the engine validated on the analytic Fr\"ohlich model at
+  $\alpha_{\mathrm{LiF}}=4.76$ against Mishchenko \emph{et al.}\ (2000)
+  (\texttt{configs/rung1-frohlich-lif.json}; sanity anchors $E_{0}(\alpha{=}1)=-1.013$,
+  $E_{0}(\alpha{=}2)=-2.08$);
+  \textbf{rung 2} $=$ the same engine driven by the \emph{real} LiF tensor, validated
+  against literature ab-initio numbers
+  (\texttt{configs/rung2-tensor-lif.json}; Sio--Giustino 2019, and concretely the
+  FEP-DMC $20^{3}$ anchor). ``Rung-2-grade number'' means: good enough to survive the
+  rung-2 checkpoint, i.e.\ quotable physics. Beware the second sense of the word ---
+  a grid-ladder rung (below and Section~\ref{sec:overloaded}).
+
+\term{Rung-2 checkpoint} The concrete pass/fail criterion of rung 2:
+  $|E_{0}(20^{3})-(-0.2479~\mathrm{eV})|<30$~meV against FEP-DMC
+  (\texttt{ironmc ladder checkpoint}). Current status: CPU
+  $-0.24996\pm0.00026$~eV passes at $\sim2$~meV; the first GPU point sat $1.7$~meV
+  shallow from under-warmup and is not yet rung-2-grade.
+
+\term{Grid ladder} The D1/D7 production campaign: the sequence of grids
+  $n=20,32,40,50$ whose $E_{0}(n)$ feed the $1/n\to0$ extrapolation. Each grid is one
+  \emph{rung} of this ladder (so ``rung-1 run'' in GPU/throughput contexts means the
+  $n=20$ ladder point, \emph{not} the Fr\"ohlich validation rung).
+
+\term{Ladder run} One production DMC run at a single grid-ladder rung:
+  \texttt{ironmc ladder run <n> [--rank 800] [--tau120] [--node]} loads the prebuilt
+  \texttt{.rmcvtab} table for $n^{3}$, runs the fixed-$\tau$ thermodynamic-estimator
+  config, and returns a structured record
+  \{\texttt{grid, rank, tau, e0, stderr, sign, order, steps\_done}\}. Records pipe
+  into \texttt{ironmc ladder fit} for the $1/n$ extrapolation.
+
+\term{Gate} An \emph{encoded}, numeric pass/fail acceptance check that decides a
+  promotion (of a rank budget, a dataset, a backend) --- the antidote to eyeballing.
+  The decided gates are cargo aliases / \texttt{ironmc gates} commands:
+  \texttt{gate-e2} (the $E^{(2)}$ compression gate at $8^{3}$:
+  $|E^{(2)}(800)-\mathrm{ref}|<3$~meV, $|E^{(2)}(300)-\mathrm{ref}|<12$~meV, short
+  fraction $<35\%$) and \texttt{gate-dmc} (the in-sampler rank gate, budget vs the
+  uncompressed $1600$ reference; scout-sized by default, production via
+  \texttt{IRONMC\_DMC\_STEPS=100000000}). Thresholds are calibrated once, recorded in
+  \texttt{journal.md}, then enforced mechanically.
+
+\term{Guard} A gate run \emph{on the production configuration itself} before the
+  expensive sweep: \textbf{guard A} (\texttt{ladder guard-tau}) doubles
+  $\tau_{\max}$ $60\to120$ at $20^{3}$ and requires the $E_{0}$ shift $<2\sigma$
+  (finite-$\beta$ systematic under control); \textbf{guard B}
+  (\texttt{ladder guard-rank}) re-measures $\Delta_{\mathrm{rank}}(800)$ on the
+  production grid with tolerance $\max(2\sigma,3~\mathrm{meV})$. The remaining rungs
+  (\texttt{ladder sweep}) run only after both guards pass.
+
+\term{Checkpoint} A comparison of a computed number against an external reference
+  with a stated tolerance band (e.g.\ the rung-2 $\pm30$~meV band). Unlike a gate it
+  references literature, not an internal baseline.
+
+\term{Smoke test} A deliberately tiny end-to-end run whose only job is to prove the
+  whole path executes and produces sane values before compute is spent --- e.g.\
+  \texttt{ladder-lif-gpu-smoke.json} ($256$ chains $\times$ $20$k steps vs the
+  production $8192\times160$k $+$ $300$k warmup), the first $8^{3}$ DMC smoke, or
+  the reader's physics smoke tests. Institutional memory of pitfall P2: a run can
+  finish cleanly, at the right file size, and be $100\%$ NaN --- so smoke tests check
+  \emph{values}, never existence or size.
+
+\term{Pin (pinned value)} A hard-coded expected number in a test (band energies,
+  phonon frequencies, tensor dimensions, $\mathbf{Z}^{*}$ components) asserted
+  against freshly-read data; ``reader pins updated'' means the dataset changed and
+  the expected values were re-recorded deliberately.
+
+\term{Oracle} An independent, direct (slow, uncompressed) evaluation of a quantity
+  used as the reference in a test --- e.g.\ the direct Wannier-sum vertex against the
+  SVD-tabulated one. Lesson from P8: an oracle that shares a bug with the code under
+  test validates nothing; oracles must be derived independently.
+
+\term{Round-trip} Reconstructing upstream ground truth from the decomposed parts:
+  $g^{\mathcal S}+\langle u|u\rangle g^{\mathcal L}$ against the coarse \texttt{.epb}
+  coupling (machine precision at all $215$ coarse $\qv$), and short-range $+$
+  long-range dynamical matrix against \texttt{dynq}. The strongest data-preparation
+  check in the repo.
+
+\term{Executable spec} A deliberately flat, fixed-capacity CPU re-implementation of
+  the four sampler updates, simple enough to audit line-by-line, used as the
+  reference the GPU kernel must match bit-for-bit (rung (i)--(ii) of the GPU ladder).
+
+\term{Parity} Agreement between two implementations at a stated strictness:
+  \emph{bit parity} (identical reports to the last bit --- GPU kernel on the CubeCL
+  CPU runtime vs the flat driver; multi-GPU merge vs single-device run) or
+  \emph{accept-count parity} (identical acceptance counts on real hardware, where
+  lane scheduling forbids bitwise transcript equality). \texttt{ironmc gpu parity}
+  runs the hardware check.
+
+\term{Scout-sized vs production} Two sizes of the same measurement: a scout run
+  (minutes, larger error bars) to steer, then the production run (node-hours, quoted
+  statistics) to decide. Gates default to scout size and take an environment override
+  for certification.
+
+\term{Anchor} An external reference number a validation rung lands on (Mishchenko
+  $\alpha=1,2$; FEP-DMC $-0.2479$~eV at $20^{3}$).
+\end{description}
+
+\subsection{Codebase}
+
+\begin{description}
+\term{\texttt{ironmc}} This Rust workspace: DiagMC engines and batteries for polaron
+  problems.
+
+\term{\texttt{rmc-core}} The engine crate: updates, Metropolis kernels, update sets,
+  runner, seeding.
+
+\term{\texttt{rmc-diagmc}} The state-generic DiagMC engine (runner, updates, decay
+  estimator) behind the \texttt{Model} trait.
+
+\term{\texttt{Model} trait} The abstraction a material implements: electron
+  dispersion $\varepsilon(\kv)$, phonon dispersion $\omega_{\qv\nu}$, complex vertex
+  $g(\kv,\qv,\nu)$, and a phonon-momentum proposal. Two implementations: analytic
+  Fr\"ohlich and the ab-initio LiF model.
+
+\term{\texttt{rmc-frohlich}} The standalone Fr\"ohlich polaron engine and performance
+  fixture.
+
+\term{\texttt{rmc-ab-initio}} The ab-initio consumer app: EPW readers, Wannier
+  reconstruction, polar terms, SVD tabulation, table building, and the production
+  run/merge CLI.
+
+\term{\texttt{rmc-minimal}} The hot-path benchmark fixture crate.
+
+\term{Config (\texttt{configs/*.json})} A run definition: sampler knobs
+  (\texttt{mu}, \texttt{max\_tau}, \texttt{chains}, \texttt{max\_steps},
+  \texttt{warmup\_steps}, \texttt{n\_batches}, \texttt{seed},
+  \texttt{fixed\_tau}, \dots). Naming: \texttt{rung1-*}/\texttt{rung2-*} for the
+  validation rungs; \texttt{ladder-lif*} for grid-ladder production
+  (\texttt{-node} $=$ full-node chain count, \texttt{-tau120} $=$ guard-A variant,
+  \texttt{-gpu} $=$ GPU population, \texttt{-smoke} $=$ smoke-sized).
+
+\term{Report} The JSON a run emits (\texttt{e0\_thermo}, \texttt{sign},
+  \texttt{mean\_order}, \texttt{steps\_done}, \dots), consumed as structured data by
+  the \texttt{nu} tooling.
+
+\term{\texttt{RankDump} / \texttt{merge}} Per-SLURM-rank raw measurement dump written
+  by multi-GPU jobs (default under \texttt{results-gpu/<jobid>}), merged offline into
+  one report; the merge is bit-identical to the equivalent single-device run by the
+  global-chain-id construction.
+\end{description}
+
+\subsection{Reproducibility and RNG}
+
+\begin{description}
+\term{Deterministic chain streams} The load-bearing invariant: each chain's RNG
+  stream is derived from (master seed, \emph{stable} chain id), never from scheduling
+  order --- so thread/rayon scheduling can never change which stream a chain gets.
+  CPU: xoshiro256++ streams. GPU: counter-based Philox4x32-10 keyed by
+  (seed, chain, step), which lets all $32$ lanes of a warp compute identical draws
+  with no communication.
+
+\term{Global chain id} Chain ids are global across ranks (offset $=$
+  rank $\times$ chains-per-rank), so a multi-rank population is a pure repacking of a
+  single larger run and merged statistics are a function of (seed, total chains)
+  only.
+
+\term{f64 policy} All physics arithmetic is f64 (weights, $\tau$, energies);
+  f32 appears only as a \emph{storage} format for the big factor tables. Momenta are
+  exact integer grid indices.
+\end{description}
+
+\subsection{GPU port}
+
+\begin{description}
+\term{CubeCL} The Rust GPU compute framework used for the CUDA backend; its CPU
+  runtime executes the same kernel on the host, enabling the bit-parity rung.
+
+\term{Warp-per-chain / redundant lanes} The kernel's parallel mapping: one chain per
+  $32$-lane warp, every lane redundantly executing the chain's update logic
+  (warp-uniform control flow for free), lanes cooperating only inside vertex
+  evaluations.
+
+\term{Cooperative vertex dot} The rank-$r$ contraction strided across the $32$ lanes
+  with a shared-memory reduce; the emit/absorb pair
+  $g(\kv_{e},\qv,\nu)\,g^{*}(\kv_{a},\qv,\nu)$ fuses both dots over one shared
+  $v_{g}(\qv,\nu)$ strip, halving table traffic.
+
+\term{Bandwidth-bound} The regime the design targets: a vertex evaluation streams
+  $\approx16r$ bytes, so HBM bandwidth ($\approx1.24$~TB/s sustained on an A100,
+  $\approx80\%$ of peak) --- not FLOPs --- sets throughput; this is where a GPU beats a
+  CPU node by an order of magnitude, and why the margin grows with grid size once the
+  table no longer fits CPU L3.
+
+\term{Planar layout} Complex tables stored as separate real/imaginary f32 planes for
+  coalesced loads.
+
+\term{\texttt{ironmc gpu} commands} \texttt{run} (production GPU run),
+  \texttt{scale} (chain-count throughput sweep), \texttt{parity} (hardware parity
+  test), \texttt{vbench} (vertex-evaluation microbenchmark), \texttt{info}.
+\end{description}
+
+\subsection{Cluster operations}
+
+\begin{description}
+\term{VSC-5} The Vienna Scientific Cluster the campaigns run on: $128$-core Zen3 CPU
+  nodes ($512$~GB--$2$~TB) and $2\times$A100 GPU nodes, driven via SLURM.
+
+\term{Partition / QoS / devel} SLURM node classes (\texttt{zen3\_0512},
+  \texttt{zen3\_0512\_a100x2}, \dots) with default and \emph{devel} QoS --- the devel
+  queue gives fast turnaround at a fixed $10$-minute walltime cap; smoke- and
+  scout-sized runs are shaped to fit it. The partition table (including GPU counts)
+  lives in \texttt{nu/ironmc/slurm.nu}.
+
+\term{\texttt{ironmc slurm submit}} Wraps a target command (e.g.\
+  \texttt{ladder run 50}) in a generated per-job SLURM script with its own job
+  directory and results under \texttt{./results/}.
+
+\term{Deadline truncation} Sizing \texttt{max\_steps} beyond the walltime and letting
+  the SLURM end-time stop the run; statistics remain valid because batches pool
+  across chains and throughput is quoted from \texttt{steps\_done}.
+
+\term{\texttt{--node} config} The full-node CPU variant of a ladder run: chain count
+  auto-sized to the CPU allocation, $10^{7}$ steps per chain.
+\end{description}
+
+\subsection{Tooling and process}
+
+\begin{description}
+\term{\texttt{rtk}} Token-optimizing CLI proxy; shell commands in agent sessions are
+  prefixed with \texttt{rtk} (e.g.\ \texttt{rtk git status}).
+
+\term{\texttt{nu/ironmc}} The Nushell operations module (\texttt{ladder},
+  \texttt{tables}, \texttt{gates}, \texttt{gpu}, \texttt{slurm}, \texttt{qe},
+  \texttt{bench}, \texttt{test} submodules); every command returns structured records
+  meant to be piped, not parsed.
+
+\term{\texttt{journal.md}} The append-only lab notebook: dated entries recording each
+  implementation chunk, calibration, gate result, and lesson. Methodology graduates
+  from the journal into the LaTeX note.
+
+\term{Plans (\texttt{plans/*.md})} Design documents for work campaigns
+  (\texttt{plan-large-grids.md}, \texttt{gpu-abinitio.md}, \dots). Steps inside a
+  plan are labeled \texttt{A0, A1, \dots} (phases), so ``A0'' or ``D7'' always refers
+  to a step \emph{of a specific plan}; the journal names the plan when ambiguous.
+
+\term{G/N/D/P labels} The methodology note's own numbering: \textbf{G}oals,
+  \textbf{N}on-goals, \textbf{D}eferred items, \textbf{P}itfalls (P1--P9). Retired
+  non-goals keep their labels for reference.
+
+\term{Phase A / Phase B} The two halves of the original ab-initio plan: A $=$
+  data preparation (QE/EPW runs, readers, reconstruction), B $=$ the DiagMC consumer
+  (sampling the prepared vertex).
+
+\term{Profiles} Cargo build profiles: \texttt{release} is the default for everything
+  (debug is off limits without a stated reason); \texttt{release-tuned} exists for
+  tuned performance builds.
+
+\term{\texttt{bench-compare}} The benchmark harness alias comparing steps/s across
+  revisions with repetitions; benchmarks need an isolated core and are run by the
+  user, not by agents.
+\end{description}
+
+\subsection{Overloaded terms --- read by context}
+\label{sec:overloaded}
+
+\begin{description}
+\term{rank} (1) SVD rank budget of the compressed vertex ($800$, $1600$) --- the sense
+  in \texttt{--rank}, \texttt{gate-dmc}, $\Delta_{\mathrm{rank}}$, table filenames.
+  (2) SLURM/MPI rank --- one process, one GPU, in multi-device jobs (\texttt{RankDump},
+  ``two-rank job''). Table names use sense (1); results directories use sense (2).
+
+\term{rung} (1) A validation-ladder level: rung 1 $=$ Fr\"ohlich engine check, rung 2
+  $=$ real-tensor material check (the rung-2 checkpoint). (2) One grid of the
+  D1/D7 grid ladder ($n=20$ is its first rung, so ``rung-1 run'' in throughput
+  contexts $=$ the $20^{3}$ production run). Validation rungs are about
+  \emph{correctness}; grid rungs are about \emph{convergence}.
+
+\term{ladder} (1) The validation ladder (correctness rungs). (2) The grid ladder
+  ($1/n$ extrapolation campaign; the \texttt{ironmc ladder} command family). (3) In
+  ponytail/agent instructions, an unrelated decision ladder --- ignore in physics
+  contexts.
+
+\term{vertex} (1) The e--ph matrix element $g(\kv,\qv,\nu)$ (``vertex evaluation'',
+  ``vertex cache''). (2) A diagrammatic interaction event on the worldline (``vertex
+  count $N_{v}$'').
+
+\term{order} (1) Diagram order (number of phonon arcs). (2) Perturbative order
+  ($E^{(2)}$ is second order in $g$). (3) Ordering of $\tau$ values in the diagram
+  array (``$\tau$-sorted'').
+
+\term{table} (1) The \texttt{.rmcvtab} discretized-Hamiltonian artifact. (2) The
+  in-memory SVD factor tables. (3) Nushell's tabular output.
+\end{description}
+
+\end{document}
