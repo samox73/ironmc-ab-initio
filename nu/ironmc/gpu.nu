@@ -2,15 +2,13 @@
 #
 #   ironmc gpu vbench 20                        # A1 microbench on this node's GPU
 #   ironmc gpu vbench 50 --variants coop        # winner-only, biggest grid
-#   ironmc slurm submit gpu vbench 50 --partition zen3_0512_a100x2 --devel
-#   (quote the target when it carries flags:
-#    ironmc slurm submit "gpu vbench 50 --variants coop" --partition zen3_0512_a100x2)
+#   ironmc slurm submit { ironmc gpu vbench 50 } --partition zen3_0512_a100x2 --devel
 #
 # Each target does `cuda load` itself, so it works interactively and inside
 # sbatch scripts alike (the toolkit must exist: `ironmc cuda setup`, once per
 # machine — $HOME is shared with the compute nodes).
 
-use common.nu [ROOT table-path]
+use common.nu [ROOT table-path config-names]
 use cuda.nu
 
 # A1 vertex-dot microbenchmark (GO/NO-GO): prints the node's cpu-host rayon
@@ -38,7 +36,7 @@ export def vbench [
 # crates/apps/rmc-ab-initio/configs (e.g. ladder-lif-node).
 export def run [
     grid: int = 20
-    --config: string = "ladder-lif-node"
+    --config: string@config-names = "ladder-lif-node"
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID (multi-rank srun)
     --chains: int = 0             # override the config's chain count (0 = keep config)
     --rank-table: int = 800       # table rank in the artifact filename
@@ -73,7 +71,7 @@ export def run [
 export def scale [
     grid: int = 20
     --chains-list: list<int> = [256, 1024, 4096, 8192]
-    --config: string = "ladder-lif-gpu-smoke"
+    --config: string@config-names = "ladder-lif-gpu-smoke"
     --cycles-per-launch: int = 8
 ] {
     cuda load
@@ -86,6 +84,22 @@ export def scale [
             run-gpu --table $table --config $config_path --chains $chains
             --cycles-per-launch $cycles_per_launch --out-dir $"results/gpu-scale/($chains)")
     }
+}
+
+# Merge every RankDump (all ranks, all legs) in a results dir into one
+# report. This is the cumulative statistics of a checkpointed run; the
+# per-job result-*.json files are per-leg views, not merge inputs.
+export def merge [
+    dir: string                   # e.g. results/gpu/n50-prod
+    --out: string                 # merged report path (default <dir>/merged.json)
+] {
+    cd $ROOT
+    let dumps = (glob ($dir | path join "batches-rank*.bin"))
+    if ($dumps | is-empty) {
+        error make {msg: $"no batches-rank*.bin in ($dir)"}
+    }
+    let out = ($out | default ($dir | path join "merged.json"))
+    (^target/release/rmc-ab-initio merge --out $out ...$dumps)
 }
 
 # A5 CUDA parity checkpoint: the engine parity suite on this node's GPU.
