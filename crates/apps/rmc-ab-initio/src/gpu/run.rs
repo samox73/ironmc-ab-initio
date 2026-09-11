@@ -14,7 +14,7 @@ use rmc_diagmc::measure::{summarize, DiagMeasurement};
 use rmc_diagmc::{DiagConfig, Model};
 use rmc_frohlich::update_stats::UpdateStatEntry;
 
-use crate::flat::batched::{build_chain, BatchedRunOutput};
+use crate::flat::batched::{build_chain, BatchedRunOutput, DEFAULT_MAX_ORDER_GPU};
 use crate::flat::FlatDiagram;
 use crate::gpu::kernel::{mc_kernel, RY2EV};
 use crate::gpu::vertex_bench::DeviceTables;
@@ -286,42 +286,55 @@ pub fn launch_segment<R: Runtime>(
     }
 }
 
-/// Run the full MC on device `R`, mirroring `run_batched(group_size = 1)`,
-/// with the `SLURM_JOB_END_TIME` deadline armed: the segment loop stops
-/// early (a segment is seconds of work against the 60 s default margin),
-/// keeps every replayed sample, and reports the truncated `steps_done`.
+/// Knobs for one device run (or one leg of a checkpointed run).
+pub struct DeviceRunOpts {
+    pub chain_offset: u64,
+    pub max_order_gpu: usize,
+    pub lanes: u32,
+    pub cycles_per_launch: u64,
+    /// Stop between segments once past this instant (see `slurm_deadline`).
+    pub deadline: Option<std::time::Instant>,
+    /// Resume from a checkpoint: (total cycles already done, final chain
+    /// states). Counter-addressable RNG makes the resumed trajectory
+    /// bit-identical to an uninterrupted run.
+    pub resume: Option<(u64, Vec<FlatDiagram>)>,
+    /// Cap this leg at N cycles (deterministic legs; the deadline still
+    /// applies on top).
+    pub leg_cycles: Option<u64>,
+}
+
+impl Default for DeviceRunOpts {
+    fn default() -> Self {
+        Self {
+            chain_offset: 0,
+            max_order_gpu: DEFAULT_MAX_ORDER_GPU,
+            lanes: DEFAULT_LANES,
+            cycles_per_launch: CYCLES_PER_LAUNCH,
+            deadline: None,
+            resume: None,
+            leg_cycles: None,
+        }
+    }
+}
+
+/// Run the full MC (or one leg of it) on device `R`, mirroring
+/// `run_batched(group_size = 1)`. The returned report and dump carry *this
+/// leg's* measured statistics; `cycles_done` is the resume point.
 pub fn run_device<R: Runtime>(
     client: ComputeClient<R>,
     model: &Arc<AbInitioModel>,
     cfg: &DiagConfig,
-    chain_offset: u64,
-    max_order_gpu: usize,
-    lanes: u32,
+    opts: DeviceRunOpts,
 ) -> Result<BatchedRunOutput> {
-    let deadline = rmc_diagmc::run::slurm_deadline(cfg.end_time_margin_secs)?;
-    run_device_with_deadline(
-        client,
-        model,
-        cfg,
+    let DeviceRunOpts {
         chain_offset,
         max_order_gpu,
         lanes,
-        CYCLES_PER_LAUNCH,
+        cycles_per_launch,
         deadline,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_device_with_deadline<R: Runtime>(
-    client: ComputeClient<R>,
-    model: &Arc<AbInitioModel>,
-    cfg: &DiagConfig,
-    chain_offset: u64,
-    max_order_gpu: usize,
-    lanes: u32,
-    cycles_per_launch: u64,
-    deadline: Option<std::time::Instant>,
-) -> Result<BatchedRunOutput> {
+        resume,
+        leg_cycles,
+    } = opts;
     assert!(cycles_per_launch > 0);
     if cfg.chains == 0 {
         return Err(RmcError::InvalidArgument(
@@ -340,11 +353,36 @@ pub fn run_device_with_deadline<R: Runtime>(
     let final_cycle_steps = cfg.max_steps - (measured_cycles - 1) * steps_per_cycle;
     let max_order_eff = cfg.max_order.min(max_order_gpu) as u32;
 
-    let template = build_chain(model, cfg, max_order_gpu)?;
+    let (cycle_start0, initial_chains) = match resume {
+        Some((cycles_done, chains)) => {
+            if chains.len() != n_chains {
+                return Err(RmcError::InvalidArgument(format!(
+                    "checkpoint has {} chains, config wants {n_chains}",
+                    chains.len()
+                )));
+            }
+            if chains[0].capacity() != 2 * max_order_gpu + 2 {
+                return Err(RmcError::InvalidArgument(
+                    "checkpoint capacity differs from --max-order-gpu".to_string(),
+                ));
+            }
+            if cycles_done >= total_cycles {
+                return Err(RmcError::InvalidState(format!(
+                    "run already complete ({cycles_done}/{total_cycles} cycles)"
+                )));
+            }
+            (cycles_done, chains)
+        }
+        None => {
+            let template = build_chain(model, cfg, max_order_gpu)?;
+            (0, vec![template; n_chains])
+        }
+    };
     let t0 = std::time::Instant::now();
     let tables = DeviceTables::upload(client.clone(), &model.table);
     let dmodel = DeviceModel::upload(&client, model);
-    let state = DeviceState::upload(client, &vec![template; n_chains]);
+    let state = DeviceState::upload(client, &initial_chains);
+    drop(initial_chains);
     log::info!("gpu: upload {:.3} s", t0.elapsed().as_secs_f64());
 
     let mut measurements: Vec<DiagMeasurement> = (0..n_chains)
@@ -378,23 +416,27 @@ pub fn run_device_with_deadline<R: Runtime>(
         })
         .collect();
 
-    let n_segments = total_cycles.div_ceil(cycles_per_launch);
+    let leg_end = match leg_cycles {
+        Some(budget) => total_cycles.min(cycle_start0 + budget),
+        None => total_cycles,
+    };
+    let n_segments = (leg_end - cycle_start0).div_ceil(cycles_per_launch);
     log::info!(
-        "gpu: {n_segments} segments of ≤ {cycles_per_launch} cycles; \
-         the first launch includes the NVRTC JIT"
+        "gpu: cycles {cycle_start0}..{leg_end} of {total_cycles}, {n_segments} segments of \
+         ≤ {cycles_per_launch}; the first launch includes the NVRTC JIT"
     );
     let mut step_secs = 0.0;
     let mut replay_secs = 0.0;
     let mut measured_steps_per_chain = 0u64;
-    let mut cycle_start = 0u64;
+    let mut cycle_start = cycle_start0;
     let mut segment_index = 0u64;
-    while cycle_start < total_cycles {
+    while cycle_start < leg_end {
         if let Some(deadline) = deadline {
             if std::time::Instant::now() >= deadline {
                 break;
             }
         }
-        let n_cycles = cycles_per_launch.min(total_cycles - cycle_start);
+        let n_cycles = cycles_per_launch.min(leg_end - cycle_start);
         let contains_final = cycle_start + n_cycles == total_cycles;
         let t = std::time::Instant::now();
         let segment = launch_segment(
@@ -459,14 +501,21 @@ pub fn run_device_with_deadline<R: Runtime>(
         replay_secs += t.elapsed().as_secs_f64();
         cycle_start += n_cycles;
     }
-    if measured_steps_per_chain < cfg.max_steps {
+    if cycle_start < leg_end {
         log::warn!(
-            "deadline stop: {}/{} measurement steps per chain ({:.1}%); error bars are \
-             honest but larger, and the sample count is wall-clock-dependent",
-            measured_steps_per_chain,
-            cfg.max_steps,
-            100.0 * measured_steps_per_chain as f64 / cfg.max_steps as f64
+            "deadline stop at cycle {cycle_start}/{total_cycles}: {} measurement steps per \
+             chain this leg; error bars are honest but larger, and the sample count is \
+             wall-clock-dependent",
+            measured_steps_per_chain
         );
+    } else if leg_end < total_cycles {
+        log::info!("leg complete: cycles {cycle_start0}..{leg_end} of {total_cycles}");
+    }
+    if measured_steps_per_chain == 0 {
+        return Err(RmcError::InvalidState(format!(
+            "leg produced no measured samples (ended at cycle {cycle_start}, warmup runs to \
+             {warmup_cycles}); increase the leg budget or walltime"
+        )));
     }
 
     let data = measurements
@@ -491,6 +540,7 @@ pub fn run_device_with_deadline<R: Runtime>(
         update_stats,
         chains,
         steps_done,
+        cycles_done: cycle_start,
         step_secs,
         replay_secs,
     })

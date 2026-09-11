@@ -32,6 +32,9 @@ pub struct BatchedRunOutput {
     pub chains: Vec<FlatDiagram>,
     /// Measured MC steps summed over chains.
     pub steps_done: u64,
+    /// Total cycles completed (warmup + measured) — the resume point for
+    /// checkpointed device runs.
+    pub cycles_done: u64,
     /// Wall time inside the step loop only — the kernel-equivalent phase
     /// timer quoted as steps/s.
     pub step_secs: f64,
@@ -137,12 +140,14 @@ pub fn run_batched_with_deadline(
     let mut step_secs = 0.0;
     let mut replay_secs = 0.0;
     let mut measured_steps_per_chain = 0u64;
+    let mut cycles_done = 0u64;
     for cycle in 0..total_cycles {
         if let Some(deadline) = deadline {
             if std::time::Instant::now() >= deadline {
                 break;
             }
         }
+        cycles_done = cycle + 1;
         let measured = cycle >= warmup_cycles;
         let steps = if measured && cycle + 1 == total_cycles {
             final_cycle_steps
@@ -230,6 +235,7 @@ pub fn run_batched_with_deadline(
         update_stats,
         chains,
         steps_done,
+        cycles_done,
         step_secs,
         replay_secs,
     })

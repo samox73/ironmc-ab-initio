@@ -12,7 +12,7 @@ mod common;
 use common::synthetic_model;
 use nalgebra::Vector3;
 use rmc_ab_initio::flat::batched::{run_batched, BatchedRunOutput};
-use rmc_ab_initio::gpu::run::{run_device, run_device_with_deadline};
+use rmc_ab_initio::gpu::run::{run_device, DeviceRunOpts};
 use rmc_ab_initio::gpu::SelectedRuntime;
 use rmc_diagmc::DiagConfig;
 
@@ -126,7 +126,17 @@ fn kernel_matches_flat_driver_on_cpu_runtime() {
         for lanes in [1u32, wide] {
             let client =
                 <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
-            let gpu = run_device(client, &model, &cfg, 0, MAX_ORDER_GPU, lanes).unwrap();
+            let gpu = run_device(
+                client,
+                &model,
+                &cfg,
+                DeviceRunOpts {
+                    max_order_gpu: MAX_ORDER_GPU,
+                    lanes,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             // The CPU runtime's math lowering (exp/log1p) differs from
             // glibc by ~1e-12 relative on single draws; the plan's acceptance
             // bar is 1e-6, accept counts are exact.
@@ -147,9 +157,23 @@ fn device_chain_offset_matches_full_run() {
     full_cfg.chains = 8;
     let client =
         <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
-    let full = run_device(client.clone(), &model, &full_cfg, 0, MAX_ORDER_GPU, 1).unwrap();
-    let lo = run_device(client.clone(), &model, &cfg, 0, MAX_ORDER_GPU, 1).unwrap();
-    let hi = run_device(client, &model, &cfg, 4, MAX_ORDER_GPU, 1).unwrap();
+    let opts = || DeviceRunOpts {
+        max_order_gpu: MAX_ORDER_GPU,
+        lanes: 1,
+        ..Default::default()
+    };
+    let full = run_device(client.clone(), &model, &full_cfg, opts()).unwrap();
+    let lo = run_device(client.clone(), &model, &cfg, opts()).unwrap();
+    let hi = run_device(
+        client,
+        &model,
+        &cfg,
+        DeviceRunOpts {
+            chain_offset: 4,
+            ..opts()
+        },
+    )
+    .unwrap();
     let split: Vec<_> = lo.chains.iter().chain(&hi.chains).collect();
     for (a, b) in full.chains.iter().zip(split) {
         assert_eq!(a, b);
@@ -169,17 +193,14 @@ fn device_deadline_truncates_between_segments() {
     let client =
         <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let out = run_device_with_deadline(
-        client.clone(),
-        &model,
-        &cfg,
-        0,
-        MAX_ORDER_GPU,
-        1,
-        8,
-        Some(deadline),
-    )
-    .unwrap();
+    let opts = |deadline| DeviceRunOpts {
+        max_order_gpu: MAX_ORDER_GPU,
+        lanes: 1,
+        cycles_per_launch: 8,
+        deadline: Some(deadline),
+        ..Default::default()
+    };
+    let out = run_device(client.clone(), &model, &cfg, opts(deadline)).unwrap();
     assert!(out.steps_done > 0, "nothing measured before the deadline");
     assert!(
         out.steps_done < cfg.max_steps * cfg.chains,
@@ -188,8 +209,5 @@ fn device_deadline_truncates_between_segments() {
     assert_eq!(out.report.steps_done, out.steps_done);
 
     let expired = std::time::Instant::now();
-    assert!(
-        run_device_with_deadline(client, &model, &cfg, 0, MAX_ORDER_GPU, 1, 8, Some(expired))
-            .is_err()
-    );
+    assert!(run_device(client, &model, &cfg, opts(expired)).is_err());
 }

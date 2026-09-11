@@ -16,13 +16,14 @@ pub mod weight;
 
 use nalgebra::Vector3;
 use num_complex::Complex64;
+use serde::{Deserialize, Serialize};
 
 use crate::vertex_table::VertexTable;
 use rmc_diagmc::weight::LocalRatio;
 
 pub const NONE: u32 = u32::MAX;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlatDiagram {
     // SoA, τ-sorted, live prefix `len`; slot 0 = head, slot len−1 = tail.
     pub tau: Vec<f64>,

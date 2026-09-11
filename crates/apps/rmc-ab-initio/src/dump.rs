@@ -17,6 +17,9 @@ type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct RankDump {
     pub config: DiagConfig,
     pub rank: u64,
+    /// Checkpoint leg this dump belongs to (0 for single-leg runs). Legs of
+    /// one rank carry disjoint slices of the same chains' trajectories.
+    pub leg: u64,
     pub chains: u64,
     pub electron_energy_pext: f64,
     pub steps_done: u64,
@@ -24,8 +27,14 @@ pub struct RankDump {
 }
 
 impl RankDump {
-    pub fn filename(rank: u64) -> String {
-        format!("batches-rank{rank}.bin")
+    /// Leg 0 keeps the historical name so single-leg workflows and the
+    /// `batches-rank*.bin` globs are unchanged.
+    pub fn filename(rank: u64, leg: u64) -> String {
+        if leg == 0 {
+            format!("batches-rank{rank}.bin")
+        } else {
+            format!("batches-rank{rank}-leg{leg}.bin")
+        }
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
@@ -41,12 +50,12 @@ impl RankDump {
     }
 }
 
-/// Validate, sort by rank, merge in rank order, summarize.
+/// Validate, sort by (rank, leg), merge in that fixed order, summarize.
 pub fn merge_dumps(mut dumps: Vec<RankDump>) -> BoxResult<Report> {
     if dumps.is_empty() {
         return Err("no dumps to merge".into());
     }
-    dumps.sort_by_key(|dump| dump.rank);
+    dumps.sort_by_key(|dump| (dump.rank, dump.leg));
     let first = &dumps[0];
     for dump in &dumps[1..] {
         if dump.config != first.config {
@@ -57,10 +66,10 @@ pub fn merge_dumps(mut dumps: Vec<RankDump>) -> BoxResult<Report> {
         }
     }
     for pair in dumps.windows(2) {
-        if pair[0].rank == pair[1].rank {
-            return Err(format!("duplicate rank {}", pair[0].rank).into());
+        if pair[0].rank == pair[1].rank && pair[0].leg == pair[1].leg {
+            return Err(format!("duplicate rank {} leg {}", pair[0].rank, pair[0].leg).into());
         }
-        if pair[1].rank != pair[0].rank + 1 {
+        if pair[1].rank > pair[0].rank + 1 {
             log::warn!(
                 "rank gap between {} and {} — missing statistics, estimate still valid",
                 pair[0].rank,
@@ -86,4 +95,37 @@ pub fn merge_dumps(mut dumps: Vec<RankDump>) -> BoxResult<Report> {
     )?;
     report.steps_done = steps_done;
     Ok(report)
+}
+
+/// Resume point of a checkpointed device run. Because chain RNG streams are
+/// counter-addressable (keyed by `(seed, chain, step)`), a run resumed from
+/// `(cycles_done, chains)` is bit-identical to one that never stopped — the
+/// checkpoint carries no RNG state at all.
+#[derive(Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub config: DiagConfig,
+    pub chain_offset: u64,
+    /// Total cycles completed so far (warmup + measured).
+    pub cycles_done: u64,
+    /// Legs completed so far (leg k wrote `batches-rank{r}-leg{k}.bin`).
+    pub leg: u64,
+    pub chains: Vec<crate::flat::FlatDiagram>,
+}
+
+impl Checkpoint {
+    pub fn filename(rank: u64) -> String {
+        format!("checkpoint-rank{rank}.bin")
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
+        let file = std::fs::File::create(path)?;
+        bincode::serialize_into(std::io::BufWriter::new(file), self)?;
+        Ok(())
+    }
+
+    pub fn load(path: impl AsRef<Path>) -> BoxResult<Self> {
+        let file = std::fs::File::open(&path)
+            .map_err(|e| format!("cannot open checkpoint '{}': {e}", path.as_ref().display()))?;
+        Ok(bincode::deserialize_from(std::io::BufReader::new(file))?)
+    }
 }

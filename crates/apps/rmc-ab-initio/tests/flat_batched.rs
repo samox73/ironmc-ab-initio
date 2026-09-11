@@ -40,6 +40,7 @@ fn dump(model: &AbInitioModel, cfg: &DiagConfig, rank: u64, output: &rmc_ab_init
     RankDump {
         config: cfg.clone(),
         rank,
+        leg: 0,
         chains: cfg.chains,
         electron_energy_pext: model.electron_energy(cfg.p_ext),
         steps_done: output.steps_done,

@@ -246,7 +246,7 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let wall_secs = started.elapsed().as_secs_f64();
 
     std::fs::create_dir_all(&out_dir)?;
-    let dump_path = out_dir.join(RankDump::filename(rank));
+    let dump_path = out_dir.join(RankDump::filename(rank, 0));
     RankDump {
         electron_energy_pext: model.electron_energy(config.p_ext),
         chains: config.chains,
@@ -254,6 +254,7 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         data: output.data,
         config,
         rank,
+        leg: 0,
     }
     .save(&dump_path)?;
     log::info!("wrote {}", dump_path.display());
@@ -308,9 +309,9 @@ fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 /// same RankDump output (GPU ranks merge with the same `merge`).
 #[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
 fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
-    use rmc_ab_initio::dump::RankDump;
+    use rmc_ab_initio::dump::{Checkpoint, RankDump};
     use rmc_ab_initio::flat::batched::DEFAULT_MAX_ORDER_GPU;
-    use rmc_ab_initio::gpu::run::{run_device_with_deadline, CYCLES_PER_LAUNCH, DEFAULT_LANES};
+    use rmc_ab_initio::gpu::run::{run_device, DeviceRunOpts, CYCLES_PER_LAUNCH, DEFAULT_LANES};
     use rmc_ab_initio::gpu::SelectedRuntime;
 
     let mut options = options(args)?;
@@ -332,6 +333,7 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
     let cycles_per_launch: u64 =
         take(&mut options, "--cycles-per-launch", Some(CYCLES_PER_LAUNCH))?;
+    let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
     let out_dir: PathBuf = take(&mut options, "--out-dir", Some(PathBuf::from(".")))?;
     if let Some(unknown) = options.keys().next() {
         return Err(format!("unknown option {unknown}").into());
@@ -340,33 +342,75 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let table = Arc::new(VertexTable::load(table_path)?);
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
+
+    // Resume when this out-dir already holds our checkpoint (the RNG is
+    // counter-addressable, so the continued trajectory is bit-identical to an
+    // uninterrupted run); otherwise this is leg 0 of a fresh run.
+    std::fs::create_dir_all(&out_dir)?;
+    let checkpoint_path = out_dir.join(Checkpoint::filename(rank));
+    let (resume, leg) = if checkpoint_path.exists() {
+        let checkpoint = Checkpoint::load(&checkpoint_path)?;
+        if checkpoint.config != config {
+            return Err("checkpoint config differs from --config; refusing to resume".into());
+        }
+        if checkpoint.chain_offset != chain_offset {
+            return Err("checkpoint chain offset differs from --rank; refusing to resume".into());
+        }
+        let leg = checkpoint.leg + 1;
+        log::info!(
+            "resuming leg {leg} from cycle {} ({})",
+            checkpoint.cycles_done,
+            checkpoint_path.display()
+        );
+        (Some((checkpoint.cycles_done, checkpoint.chains)), leg)
+    } else {
+        (None, 0)
+    };
+
     let deadline = rmc_diagmc::run::slurm_deadline(config.end_time_margin_secs)?;
     let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
     let started = Instant::now();
-    let output = run_device_with_deadline(
+    let output = run_device(
         client,
         &model,
         &config,
-        chain_offset,
-        max_order_gpu,
-        lanes,
-        cycles_per_launch,
-        deadline,
+        DeviceRunOpts {
+            chain_offset,
+            max_order_gpu,
+            lanes,
+            cycles_per_launch,
+            deadline,
+            resume,
+            leg_cycles: (leg_cycles > 0).then_some(leg_cycles),
+        },
     )?;
     let wall_secs = started.elapsed().as_secs_f64();
 
-    std::fs::create_dir_all(&out_dir)?;
-    let dump_path = out_dir.join(RankDump::filename(rank));
+    let dump_path = out_dir.join(RankDump::filename(rank, leg));
     RankDump {
         electron_energy_pext: model.electron_energy(config.p_ext),
         chains: config.chains,
         steps_done: output.steps_done,
         data: output.data,
-        config,
+        config: config.clone(),
         rank,
+        leg,
     }
     .save(&dump_path)?;
     log::info!("wrote {}", dump_path.display());
+
+    let spc = config.steps_per_cycle.max(1);
+    let total_cycles = config.warmup_steps.div_ceil(spc) + config.max_steps.div_ceil(spc);
+    let complete = output.cycles_done >= total_cycles;
+    Checkpoint {
+        chain_offset,
+        cycles_done: output.cycles_done,
+        leg,
+        chains: output.chains.clone(),
+        config,
+    }
+    .save(&checkpoint_path)?;
+    log::info!("wrote {}", checkpoint_path.display());
 
     println!(
         "{}",
@@ -377,6 +421,10 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
             "replay_secs": output.replay_secs,
             "wall_secs": wall_secs,
             "steps_per_sec_kernel_only": output.steps_done as f64 / output.step_secs,
+            "leg": leg,
+            "cycles_done": output.cycles_done,
+            "total_cycles": total_cycles,
+            "complete": complete,
         }))?
     );
     Ok(())

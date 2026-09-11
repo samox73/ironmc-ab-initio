@@ -45,7 +45,11 @@ export def run [
     --lanes: int = 32
     --max-order-gpu: int = 256
     --cycles-per-launch: int = 256
-    --out-dir: string             # RankDump dir; defaults to results/gpu/<jobid> so jobs never clobber each other
+    --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
+    --out-dir: string             # RankDump/checkpoint dir; defaults to results/gpu/<jobid>.
+                                  # Pass a STABLE dir to resume: a checkpoint there is picked
+                                  # up automatically and the job continues where the last leg
+                                  # stopped (bit-identical to an uninterrupted run).
 ] {
     cuda load
     cd $ROOT
@@ -60,7 +64,7 @@ export def run [
     (cargo run --release -p rmc-ab-initio --features gpu-cuda --
         run-gpu --table $table --config $config_path --rank $rank --chains $chains
         --lanes $lanes --max-order-gpu $max_order_gpu
-        --cycles-per-launch $cycles_per_launch --out-dir $out_dir)
+        --cycles-per-launch $cycles_per_launch --leg-cycles $leg_cycles --out-dir $out_dir)
 }
 
 # Chain-count scaling probe: short runs at increasing populations with
