@@ -50,6 +50,15 @@ impl RankDump {
     }
 }
 
+/// Same physical trajectory: config equality ignoring `max_steps`, the one
+/// field a checkpointed run may legally extend between legs (step keys are
+/// schedule-independent, so a longer schedule is a superset).
+pub fn same_trajectory(a: &DiagConfig, b: &DiagConfig) -> bool {
+    let mut a = a.clone();
+    a.max_steps = b.max_steps;
+    a == *b
+}
+
 /// Validate, sort by (rank, leg), merge in that fixed order, summarize.
 pub fn merge_dumps(mut dumps: Vec<RankDump>) -> BoxResult<Report> {
     if dumps.is_empty() {
@@ -58,7 +67,7 @@ pub fn merge_dumps(mut dumps: Vec<RankDump>) -> BoxResult<Report> {
     dumps.sort_by_key(|dump| (dump.rank, dump.leg));
     let first = &dumps[0];
     for dump in &dumps[1..] {
-        if dump.config != first.config {
+        if !same_trajectory(&dump.config, &first.config) {
             return Err(format!("rank {} config differs from rank {}", dump.rank, first.rank).into());
         }
         if dump.electron_energy_pext != first.electron_energy_pext {

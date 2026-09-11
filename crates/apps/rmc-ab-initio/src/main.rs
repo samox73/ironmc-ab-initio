@@ -309,7 +309,7 @@ fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 /// same RankDump output (GPU ranks merge with the same `merge`).
 #[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
 fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
-    use rmc_ab_initio::dump::{Checkpoint, RankDump};
+    use rmc_ab_initio::dump::{same_trajectory, Checkpoint, RankDump};
     use rmc_ab_initio::flat::batched::DEFAULT_MAX_ORDER_GPU;
     use rmc_ab_initio::gpu::run::{run_device, DeviceRunOpts, CYCLES_PER_LAUNCH, DEFAULT_LANES};
     use rmc_ab_initio::gpu::SelectedRuntime;
@@ -350,11 +350,39 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let checkpoint_path = out_dir.join(Checkpoint::filename(rank));
     let (resume, leg) = if checkpoint_path.exists() {
         let checkpoint = Checkpoint::load(&checkpoint_path)?;
-        if checkpoint.config != config {
-            return Err("checkpoint config differs from --config; refusing to resume".into());
+        // max_steps may grow between legs (extending the schedule is exact:
+        // step keys are absolute); everything else must match.
+        if !same_trajectory(&checkpoint.config, &config) {
+            return Err(
+                "checkpoint config differs from --config (only max_steps may change); \
+                 refusing to resume"
+                    .into(),
+            );
         }
         if checkpoint.chain_offset != chain_offset {
             return Err("checkpoint chain offset differs from --rank; refusing to resume".into());
+        }
+        if checkpoint.config.max_steps != config.max_steps {
+            let spc = config.steps_per_cycle.max(1);
+            let old_total = checkpoint.config.warmup_steps.div_ceil(spc)
+                + checkpoint.config.max_steps.div_ceil(spc);
+            // A completed short final cycle skipped step indices the extended
+            // schedule would run — the one case where extension breaks the
+            // bit-determinism guarantee.
+            if checkpoint.cycles_done >= old_total && checkpoint.config.max_steps % spc != 0 {
+                return Err(format!(
+                    "cannot extend: the previous schedule (max_steps {}) completed on a short \
+                     cycle (not a multiple of steps_per_cycle {spc}), so extension would break \
+                     determinism",
+                    checkpoint.config.max_steps
+                )
+                .into());
+            }
+            log::info!(
+                "extending schedule: max_steps {} → {}",
+                checkpoint.config.max_steps,
+                config.max_steps
+            );
         }
         let leg = checkpoint.leg + 1;
         log::info!(

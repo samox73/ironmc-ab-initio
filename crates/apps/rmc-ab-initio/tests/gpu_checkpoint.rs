@@ -10,7 +10,7 @@ mod common;
 
 use common::synthetic_model;
 use nalgebra::Vector3;
-use rmc_ab_initio::dump::{merge_dumps, RankDump};
+use rmc_ab_initio::dump::{merge_dumps, same_trajectory, RankDump};
 use rmc_ab_initio::flat::batched::BatchedRunOutput;
 use rmc_ab_initio::gpu::run::{run_device, DeviceRunOpts};
 use rmc_ab_initio::gpu::SelectedRuntime;
@@ -147,4 +147,48 @@ fn resumed_legs_match_uninterrupted_run() {
         },
     )
     .is_err());
+}
+
+/// Extending max_steps on a completed run continues bit-identically: a fresh
+/// run with the longer schedule equals complete(short) + resumed extension.
+#[test]
+fn extending_max_steps_matches_fresh_long_run() {
+    let model = synthetic_model(7);
+    let short = config();
+    let mut long = config();
+    long.max_steps = 6000;
+    assert!(same_trajectory(&short, &long));
+
+    let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
+    let fresh = run_device(client.clone(), &model, &long, opts()).unwrap();
+
+    let leg1 = run_device(client.clone(), &model, &short, opts()).unwrap();
+    assert_eq!(leg1.cycles_done, 620); // complete under the short schedule
+    let leg2 = run_device(
+        client,
+        &model,
+        &long,
+        DeviceRunOpts {
+            resume: Some((leg1.cycles_done, leg1.chains.clone())),
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(leg2.cycles_done, 1220);
+    assert_eq!(leg2.chains, fresh.chains);
+    assert_eq!(leg1.steps_done + leg2.steps_done, fresh.steps_done);
+
+    // Legs with different max_steps merge (same trajectory).
+    let merged = merge_dumps(vec![
+        dump(&model, &short, 0, &leg1),
+        dump(&model, &long, 1, &leg2),
+    ])
+    .unwrap();
+    assert_eq!(merged.steps_done, fresh.report.steps_done);
+    assert!(
+        (merged.e0_thermo.mean - fresh.report.e0_thermo.mean).abs() <= 1.0e-12,
+        "{} vs {}",
+        merged.e0_thermo.mean,
+        fresh.report.e0_thermo.mean
+    );
 }
