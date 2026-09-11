@@ -1,10 +1,14 @@
 # Dispatch ironmc targets as slurm jobs on VSC-5.
 #
+#   ironmc slurm targets                               # what can be submitted
 #   ironmc slurm submit ladder run 50 --time 08:00:00
 #   ironmc slurm submit gates dmc --devel              # 10-min devel QoS
+#   ironmc slurm submit gpu run 20 --config ladder-lif-gpu
 #   ironmc slurm submit tables build 50 --dry-run      # inspect, don't submit
-#   (quote the target only if it carries its own flags:
-#    ironmc slurm submit "ladder guard-tau --baseline -0.25")
+#
+# submit is --wrapped: the flags it declares itself (--time, --partition, …)
+# are its own; every other flag passes through to the target unquoted. Tab
+# after a full target name completes the target's flags.
 #
 # submit prebuilds the whole workspace in release mode before calling sbatch
 # (jobs share $DATA, so compiled artifacts carry over and the job never spends
@@ -25,33 +29,74 @@ export const PARTITIONS = [
 
 const DEVEL_WALLTIME = "00:10:00"
 
-# Dispatchable targets = the module's own commands, discovered from scope, so
-# the list stays current automatically. The completer is context-aware and
-# completes ONE word at a time (some nu builds insert multi-word completion
-# values unquoted), so `submit gates <Tab>` offers e2/dmc, etc.
-def target-completions [context: string] {
-    let all = (scope commands
-        | where name =~ '^(ironmc )?(tables|ladder|gates|test|bench|qe|gpu) '
+# Namespaces whose commands can be dispatched as jobs. Ab-initio LiF work is
+# the top-level namespaces; other physics gets its own namespace (frohlich).
+const NAMESPACES = [tables ladder gates test bench qe gpu frohlich]
+
+# Dispatchable targets, discovered from scope with their signatures, so the
+# list stays current automatically.
+def dispatchable [] {
+    let pattern = ('^(ironmc )?(' + ($NAMESPACES | str join "|") + ') ')
+    scope commands
+        | where name =~ $pattern
         | each {|cmd|
             {
                 name: ($cmd.name | str replace "ironmc " "")
                 description: $cmd.description
+                params: ($cmd.signatures | values | get -o 0 | default []
+                    | where {|p| $p.parameter_type not-in ["input", "output"] })
             }
         }
-        | uniq-by name)
+        | uniq-by name
+}
 
-    # Target words already committed after `submit` (the in-progress token is
-    # dropped — nu filters candidates by it — and flags end the target).
+# The dispatchable command whose name is a word-prefix of `words` (longest
+# wins), or null. `words` may continue past the name with positionals/flags.
+def resolve-target [words: list<string>] {
+    let hits = (dispatchable
+        | where {|cmd|
+            let parts = ($cmd.name | split row " ")
+            ($words | length) >= ($parts | length) and (($words | take ($parts | length)) == $parts)
+        }
+        | sort-by name)
+    if ($hits | is-empty) { null } else { $hits | last }
+}
+
+# Context-aware completer: completes the target name ONE word at a time (some
+# nu builds insert multi-word completion values unquoted), and once a full
+# name is committed, completes that target's own flags (submit is --wrapped,
+# so they pass through unquoted).
+def target-completions [context: string] {
+    # Words already committed after `submit` (the in-progress token is
+    # dropped — nu filters candidates by it).
     let tail = ($context | str replace --regex '.*\bsubmit\s*' "")
     mut words = ($tail | split row " " | where {|word| $word != "" })
     if not ($context | str ends-with " ") {
         $words = ($words | drop 1)
     }
-    let words = ($words | take while {|word| not ($word | str starts-with "-") })
-    let prefix = if ($words | is-empty) { "" } else { ($words | str join " ") + " " }
-    let position = ($words | length)
+    let words = $words
+    let name_words = ($words | take while {|word| not ($word | str starts-with "-") })
 
-    $all
+    let target = (resolve-target $name_words)
+    if $target != null {
+        let used = ($words | each {|word| $word | split row "=" | first })
+        return ($target.params
+            | where {|p| $p.parameter_type in ["named", "switch"] }
+            | where {|p| not ($"--($p.parameter_name)" in $used) }
+            | each {|p|
+                {
+                    value: $"--($p.parameter_name)"
+                    description: ([
+                        (if $p.parameter_default != null { $"default: ($p.parameter_default)" })
+                        (if ($p.description | default "" | is-not-empty) { $p.description })
+                    ] | compact | str join " — ")
+                }
+            })
+    }
+
+    let prefix = if ($name_words | is-empty) { "" } else { ($name_words | str join " ") + " " }
+    let position = ($name_words | length)
+    dispatchable
         | where {|cmd| $cmd.name | str starts-with $prefix }
         | each {|cmd|
             let parts = ($cmd.name | split row " ")
@@ -65,11 +110,61 @@ def target-completions [context: string] {
         | uniq-by value
 }
 
+# Every dispatchable target with its arguments and defaults — what `submit`
+# accepts before its own flags take over.
+export def targets [] {
+    dispatchable | each {|cmd|
+        {
+            target: $cmd.name
+            args: ($cmd.params | each {|p|
+                let default = (if $p.parameter_default != null { $"=($p.parameter_default)" } else { "" })
+                match $p.parameter_type {
+                    "positional" => $"<($p.parameter_name)($default)>"
+                    "rest" => $"<($p.parameter_name)...>"
+                    "switch" => $"--($p.parameter_name)"
+                    "named" => $"--($p.parameter_name)($default)"
+                    _ => ""
+                }
+            } | str join " ")
+            description: $cmd.description
+        }
+    }
+}
+
 # Show the encoded queue map.
 export def partitions [] { $PARTITIONS }
 
 # Your queued/running jobs.
 export def queue [] { squeue --me --format "%.18i %.30j %.18P %.24q %.10T %.19S %.10M %R" }
+
+# Finished jobs from slurm accounting, newest first (running/pending live in
+# `queue`). --since takes sacct time syntax: now-2days, 2026-09-01, …
+export def history [
+    --since: string = "now-7days"
+    --all (-a)          # include still-running/pending jobs too
+] {
+    let rows = (sacct -X --noheader --parsable2 --starttime $since
+        --format JobID,JobName,Partition,State,Elapsed,End,ExitCode
+        | lines
+        | where {|line| $line != "" }
+        | each {|line|
+            let cols = ($line | split row "|")
+            {
+                job_id: ($cols | get 0)
+                name: ($cols | get 1)
+                partition: ($cols | get 2)
+                state: ($cols | get 3)
+                elapsed: ($cols | get 4)
+                end: ($cols | get 5)
+                exit_code: ($cols | get 6)
+            }
+        })
+    let rows = if $all { $rows } else {
+        $rows | where {|row| not ($row.state in ["RUNNING", "PENDING"]) }
+    }
+    # sacct returns ascending job order; newest on top reads better.
+    $rows | reverse
+}
 
 def slurm-logdir [] { $env.DATA | path join ironmc slurm }
 
@@ -154,9 +249,10 @@ export def cancel [
     queue
 }
 
-# Submit an ironmc target as a slurm job.
-export def submit [
-    ...target: string@target-completions  # e.g.: ladder run 50 — or quoted if it contains flags: "ladder guard-tau --baseline -0.25"
+# Submit an ironmc target as a slurm job. --wrapped: flags not declared below
+# pass through to the target (e.g. submit gpu run 20 --config ladder-lif-gpu).
+export def --wrapped submit [
+    ...target: string@target-completions  # e.g.: ladder run 50 --node
     --time: string = "04:00:00"    # walltime HH:mm:ss (capped at 10 min with --devel)
     --partition: string = "zen3_0512"
     --qos: string              # defaults to the partition's default QoS
@@ -166,10 +262,34 @@ export def submit [
     --job-name: string         # defaults to the target with dashes
     --dry-run                  # print the batch script instead of submitting
 ] {
-    let target = ($target | str join " ")
+    # --wrapped disables nu's automatic --help (flags must pass through to the
+    # target); answer it from the catalog instead of submitting.
+    if ($target | any {|word| $word in ["--help", "-h"] }) {
+        let prefix = ($target | take while {|word| not ($word | str starts-with "-") } | str join " ")
+        return (targets | where {|row| $row.target | str starts-with $prefix })
+    }
     if ($target | is-empty) {
         error make {msg: "no target given; try `ironmc slurm submit ladder run 20`"}
     }
+    if ($env.DATA? | is-empty) {
+        error make {msg: "submit needs $env.DATA (the VSC-5 shared filesystem) — run it on the cluster"}
+    }
+    # Fail fast on flags the target does not accept — a typo'd flag would
+    # otherwise ride into the queue and die only at runtime.
+    let resolved = (resolve-target $target)
+    if $resolved != null {
+        let accepted = ($resolved.params
+            | where {|p| $p.parameter_type in ["named", "switch"] }
+            | each {|p| $"--($p.parameter_name)" })
+        let bad = ($target
+            | where {|word| $word | str starts-with "--" }
+            | each {|word| $word | split row "=" | first }
+            | where {|flag| not ($flag in $accepted) })
+        if ($bad | is-not-empty) {
+            error make {msg: $"($resolved.name) does not take ($bad | str join ', '); see `ironmc slurm targets`"}
+        }
+    }
+    let target = ($target | str join " ")
     let row = ($PARTITIONS | where partition == $partition)
     if ($row | is-empty) {
         error make {msg: $"unknown partition ($partition); see `ironmc slurm partitions`"}

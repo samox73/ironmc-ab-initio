@@ -105,7 +105,7 @@ against which the vertex scale is checked (Section~\ref{sec:pitfalls}, P8).
     implementation of that trait --- real $\varepsilon(\kv)$, $\omega_{\qv\nu}$, complex
     $g(\kv,\qv,\nu)$, and a $|g|^{2}$-weighted phonon-momentum proposal --- \emph{not} a
     reweighting of the Fr\"ohlich envelope. The Fr\"ohlich model is a second implementation of
-    the same trait, which validates the engine at rung~0 (Section~\ref{sec:validation}).
+    the same trait, which validates the engine at stage~0 (Section~\ref{sec:validation}).
 
   \item[G3 --- Correct polar long range.] Restore the long-range Fr\"ohlich
     $1/q$ divergence that dominates the LiF polaron. \textsc{epw} was run with
@@ -219,7 +219,7 @@ Section~\ref{sec:gpu}) are now \emph{implemented}.
     is $E_{0}\approx-0.122$~eV against a converged target near $-0.4$~eV). The ladder
     $n=20,32,40,50$ with a linear $1/n\to0$ extrapolation
     (Section~\ref{sec:discretization}) is in progress; the GPU backend
-    (Section~\ref{sec:gpu}) reduces one rung from node-hours to minutes.
+    (Section~\ref{sec:gpu}) reduces one grid point from node-hours to minutes.
 
   \item[D2 --- Hole polaron.] The degenerate valence-band-maximum polaron (lifting N1),
     needing a multi-band, degenerate (matrix-product sign-fix) treatment.
@@ -228,12 +228,12 @@ Section~\ref{sec:gpu}) are now \emph{implemented}.
     (lifting N8).
 \end{description}
 
-\section{Validation ladder}
+\section{Validation stages}
 \label{sec:validation}
 
-The goals of Section~\ref{sec:goals} are checked in rungs of increasing physical content:
+The goals of Section~\ref{sec:goals} are checked in stages of increasing physical content:
 \begin{enumerate}
-  \item \textbf{Engine (rung 0).} The analytic Fr\"ohlich model, run through
+  \item \textbf{Engine (stage 0).} The analytic Fr\"ohlich model, run through
     \texttt{rmc-diagmc} and the decay estimator, reproduces Mishchenko \emph{et al.} (2000):
     $E_{0}(\alpha{=}1)=-1.013$ and $E_{0}(\alpha{=}2)=-2.08$ within $3\sigma$, sign
     $\equiv1$. This validates the sampler, estimator, and sign tracking independently of the
@@ -251,7 +251,7 @@ The goals of Section~\ref{sec:goals} are checked in rungs of increasing physical
   \item \textbf{Material comparison.} The grid-ladder formation energy against FEP-DMC
     (Luo, Park, Bernardi, 2025): their $E_{0}(20^{3})=-0.2479$~eV before extrapolation and
     $-0.408$~eV in the $1/n\to0$ limit, with Sio \emph{et al.} (2019) as a secondary
-    reference. The first rung is met: the CPU engine measures
+    reference. The first grid point is met: the CPU engine measures
     $E_{0}(20^{3})=-0.24996\pm0.00026$~eV (fixed-$\tau$ thermodynamic estimator,
     $\tau=60$~eV$^{-1}$, rank-$800$ table), $\sim\!2$~meV inside the $\pm30$~meV checkpoint
     band; the GPU engine reproduces the same Hamiltonian at $-0.24826\pm0.00023$~eV, with
@@ -376,8 +376,8 @@ verified on a $2\times$A100 node ($2\times8192$ chains vs.\ one $16384$-chain ru
 estimator equal to the last bit). Multi-GPU throughput is therefore linear and the merged
 statistics are a pure function of (seed, total chains), independent of packing.
 
-\paragraph{Validation ladder.}
-Correctness is certified in rungs, each mechanical to check: (i) a flat, fixed-capacity
+\paragraph{Validation stages.}
+Correctness is certified in stages, each mechanical to check: (i) a flat, fixed-capacity
 CPU re-implementation of the four updates (the ``executable spec'') agrees with the
 production engine's acceptance ratios to $10^{-10}$ on imported random diagrams; (ii) the
 CUDA kernel, run at one lane per chain on CubeCL's CPU runtime, reproduces the flat driver
@@ -385,12 +385,12 @@ CUDA kernel, run at one lane per chain on CubeCL's CPU runtime, reproduces the f
 same kernel passes exact accept-count parity on real hardware at 32 lanes; (iv) the
 physics anchor: the full $20^{3}$ ladder configuration on one A100 gives
 $E_{0}=-0.24826\pm0.00023$~eV against FEP-DMC's $-0.2479$~eV. All floating-point
-association in the kernel mirrors the CPU code term by term, so rung (ii) is exact rather
+association in the kernel mirrors the CPU code term by term, so stage (ii) is exact rather
 than statistical.
 
 \paragraph{Throughput at matched physics.}
 At $20^{3}$, rank $800$, $\langle n\rangle\approx16$, fixed $\tau=60$~eV$^{-1}$: one A100
-sustains $8.79\times10^{6}$ steps/s (kernel-only; a full production-statistics rung-1 run
+sustains $8.79\times10^{6}$ steps/s (kernel-only; a full production-statistics $20^{3}$ ladder run
 is $151$~s wall), versus $2.83\times10^{6}$ steps/s measured for the production CPU engine
 on a 128-core Zen3 node with the same configuration --- $3.1\times$ per GPU, $6.2\times$
 per two-GPU node. This is the CPU's \emph{best} case: the $20^{3}$ table ($0.34$~GB) fits
@@ -684,6 +684,6 @@ In multiband mode the segment propagators, vertices, and the $\hat H$-insertion 
 
 \paragraph{Why it replaced the decay fit.}
 
-Relative to the decay fit of P9, Eq.~\eqref{eq:estimator} removes the $\tau_{\max}$ window arbitrariness (the whole $[0,\beta]$ worldline is used), lowers variance (it time-averages rather than reading one slope), and has a systematic error controlled by $\beta$ (excited-state contamination $\sim e^{-\Delta\beta}$). The single-band form accumulates the three sums of Eq.~\eqref{eq:estimator} per sample, dividing by $\beta$ and $\langle s\rangle$ --- no environment matrices are needed until the multiband (hole/degenerate) work of D2. It has been cross-validated against the Fr\"ohlich $\alpha=1,2$ Mishchenko values (rung~0), where it agrees with the decay estimator, and against the exactly solvable dispersionless lattice model noted above; all production numbers (Section~\ref{sec:discretization}) use it.
+Relative to the decay fit of P9, Eq.~\eqref{eq:estimator} removes the $\tau_{\max}$ window arbitrariness (the whole $[0,\beta]$ worldline is used), lowers variance (it time-averages rather than reading one slope), and has a systematic error controlled by $\beta$ (excited-state contamination $\sim e^{-\Delta\beta}$). The single-band form accumulates the three sums of Eq.~\eqref{eq:estimator} per sample, dividing by $\beta$ and $\langle s\rangle$ --- no environment matrices are needed until the multiband (hole/degenerate) work of D2. It has been cross-validated against the Fr\"ohlich $\alpha=1,2$ Mishchenko values (stage~0), where it agrees with the decay estimator, and against the exactly solvable dispersionless lattice model noted above; all production numbers (Section~\ref{sec:discretization}) use it.
 
 \end{document}

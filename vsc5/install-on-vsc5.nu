@@ -18,7 +18,7 @@ let remote_repo = $"($remote_data)/ironmc"
 let bin_dir = $"($remote_home)/.local/bin"
 ^ssh -p $port -S $control $host mkdir -p $remote_repo $bin_dir
 
-let excludes = ["--exclude=.git" "--exclude=target" "--exclude=profile" "--exclude=results" "--exclude=results-rung1" "--exclude=slurm"]
+let excludes = ["--exclude=.git" "--exclude=target" "--exclude=profile" "--exclude=results" "--exclude=results-stage1" "--exclude=slurm"]
 print "Transferring files with rsync"
 ^rsync --archive --info=progress2 --rsh $"ssh -p ($port) -S ($control)" ...$excludes $"($repo)/" $"($host):($remote_repo)/"
 

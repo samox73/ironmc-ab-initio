@@ -41,7 +41,7 @@ run:
 sync: sync-replica sync-vsc
 
 sync-vsc:
-	@data="$$(ssh -S none -p $(VSC_PORT) $(VSC_HOST) printenv DATA)" && test -n "$$data" && rsync -avP -e 'ssh -S none -p $(VSC_PORT)' --exclude=/.git/ --exclude=/target/ --exclude=/profile/ --exclude=/results/ --exclude=/results-rung1/ --exclude=/slurm/ ./ "$(VSC_HOST):$$data/ironmc/"
+	@data="$$(ssh -S none -p $(VSC_PORT) $(VSC_HOST) printenv DATA)" && test -n "$$data" && rsync -avP -e 'ssh -S none -p $(VSC_PORT)' --exclude=/.git/ --exclude=/target/ --exclude=/profile/ --exclude=/results/ --exclude=/results-stage1/ --exclude=/slurm/ ./ "$(VSC_HOST):$$data/ironmc/"
 
 sync-replica:
 	rsync -avP --exclude=/target/ --exclude=/results/ --exclude=/slurm/ ./ recker@replica.mpi.univie.ac.at:~/ironmc/

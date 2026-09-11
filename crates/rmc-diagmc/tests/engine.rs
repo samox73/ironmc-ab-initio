@@ -185,7 +185,7 @@ fn assert_within_3sigma(name: &str, estimate: rmc_diagmc::Estimate, target: f64)
 
 #[test]
 #[ignore = "10M-step statistical correctness run; run explicitly in release mode"]
-fn frohlich_mishchenko_rung_zero() {
+fn frohlich_mishchenko_stage_zero() {
     for (alpha, target) in [(1.0, -1.013), (2.0, -2.08)] {
         let cfg = DiagConfig {
             mu: target - 0.2,

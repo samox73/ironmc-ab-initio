@@ -14,7 +14,7 @@
 //!   `R ≡ 1` and the run is bit-for-bit the Fröhlich engine.
 //! - [`radial_from_model`] — the real LiF tensor `|g_ab(|q|)|²` (spherically
 //!   averaged), normalized at small `q` to the material Fröhlich coupling
-//!   [`frohlich_alpha`]. Its physical validation is the rung-2 run (a USER
+//!   [`frohlich_alpha`]. Its physical validation is the stage-2 run (a USER
 //!   CHECKPOINT — see `plan-rmc-ab-initio.md`).
 
 use std::collections::BTreeMap;
@@ -144,7 +144,7 @@ fn interp_clamped(nodes: &[f64], r: &[f64], x: f64) -> f64 {
 /// ponytail: `|q|` uses the cubic-isotropic map `|k| = (2π/alat)·|q_frac|` and a
 /// spherical average — matches the prototype's near-isotropic `g(k,q)≈g(Γ,q)`
 /// scope. Full FCC reciprocal geometry + anisotropic (3-D) `R(q)` is the deferred
-/// upgrade; physical accuracy is the rung-2 checkpoint.
+/// upgrade; physical accuracy is the stage-2 checkpoint.
 pub fn radial_from_model(
     reduced: &ReducedModel,
     material: &Material,

@@ -1,4 +1,4 @@
-//! Rung 0 (plan validation ladder): with an identity reweight the ab-initio
+//! Stage 0 (plan validation stages): with an identity reweight the ab-initio
 //! consumer *is* the Fröhlich engine. Same seed, same update order/weights, the
 //! reweight multiplies every arc-`q` move by exactly 1.0 ⇒ the two runs must be
 //! **bit-for-bit** identical (and land on E≈-1.016, Z≈0.59). This is the guard

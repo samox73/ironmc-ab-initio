@@ -1,9 +1,9 @@
 # Phase B run configs (LiF)
 
-Two validation rungs. Run from the repo root, e.g.
+Two validation stages. Run from the repo root, e.g.
 
 ```bash
-cargo run --release -p rmc-ab-initio -- configs/rung1-frohlich-lif.json results-rung1
+cargo run --release -p rmc-ab-initio -- configs/stage1-frohlich-lif.json results-stage1
 ```
 
 ## The energy estimator needs manual calibration for α ≳ 1
@@ -32,18 +32,18 @@ huge) and you calibrate three coupled knobs by hand:
 3. **Bisect `energy_estimate`** to the fixed point where `E ≈ energy_estimate`
    (~3–4 reruns). Use **`chains > 1`** for honest error bars.
 
-`rung1` ships near the α=4.76 fixed point (`mu=-5.4`, `max_tau=12`,
+`stage1` ships near the α=4.76 fixed point (`mu=-5.4`, `max_tau=12`,
 `energy_estimate=-5.2`). Note a residual `max_tau`-dependence remains at strong
 coupling, so a publication-grade `E₀(α_LiF)` still needs a small `max_tau→∞`
 convergence study — the machinery itself is cleanly validated at α=2 below.
 
-## Rung 1 — Fröhlich limit at α_LiF (vs Mishchenko 2000)
+## Stage 1 — Fröhlich limit at α_LiF (vs Mishchenko 2000)
 
 `|g|² ∝ α/q²` at α_LiF = 4.76 (envelope = target ⇒ reweight ≡ 1, i.e. the pure
 Fröhlich engine). Verified fixed point **E₀ ≈ −5.2 … −5.3 ħω_LO ≈ −405 meV**,
 consistent with Mishchenko's ≈ −5.2. (Sanity: α=2 → −2.09 vs literature −2.08.)
 
-## Rung 2 — real LiF tensor (vs Sio–Giustino 2019)
+## Stage 2 — real LiF tensor (vs Sio–Giustino 2019)
 
 First build the reduced-model cache once (needs `datasets/LiF/out/LiF.epmatwp`):
 
@@ -51,7 +51,7 @@ First build the reduced-model cache once (needs `datasets/LiF/out/LiF.epmatwp`):
 cargo run --release -p rmc-ab-initio -- model datasets/LiF datasets/LiF/reduced-model.json 8
 ```
 
-then run `rung2-tensor-lif.json` and calibrate `energy_estimate` the same way.
+then run `stage2-tensor-lif.json` and calibrate `energy_estimate` the same way.
 Its E₀ is the polaron formation energy to compare against Sio–Giustino. Note
 `material.mass_eff` (0.9) is an estimate — set it to your DFT CBM `m*/m_e`; it
 fixes both α_LiF and the q-unit bridge.

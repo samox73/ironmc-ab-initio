@@ -16,9 +16,9 @@ type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VertexSpec {
     /// Analytic Fröhlich `|g|² ∝ α/q²` at coupling `alpha` (the Fröhlich-limit
-    /// validation, rungs 0–1). Reweight is the constant `alpha/α_engine`.
+    /// validation, stages 0–1). Reweight is the constant `alpha/α_engine`.
     Frohlich { alpha: f64 },
-    /// The real LiF tensor, from a cached [`ReducedModel`] JSON (rung 2). Reweight
+    /// The real LiF tensor, from a cached [`ReducedModel`] JSON (stage 2). Reweight
     /// is the radial `R(|q|)` from [`radial_from_model`].
     Tensor { model_path: String },
 }
@@ -40,7 +40,7 @@ fn default_table_max_bytes() -> u64 {
 
 impl Default for AbInitioConfig {
     fn default() -> Self {
-        // Rung 0: pure Fröhlich at α=1 → E≈-1.016, Z≈0.59.
+        // Stage 0: pure Fröhlich at α=1 → E≈-1.016, Z≈0.59.
         Self {
             run: RunConfig::default(),
             material: Material {

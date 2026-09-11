@@ -7,9 +7,3 @@ export def vertex [] {
     cd $ROOT
     cargo run --release --example vertex_bench -p rmc-ab-initio
 }
-
-# Engine steps/sec on the Fröhlich model (Plan C7 fixture).
-export def dmc [] {
-    cd $ROOT
-    cargo run --release --example dmc_bench -p rmc-diagmc
-}

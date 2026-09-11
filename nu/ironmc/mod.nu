@@ -9,7 +9,7 @@
 #   ironmc test lif                     # dataset validation ladder
 #   ironmc gates e2; ironmc gates dmc   # compression gates
 #   ironmc tables ladder                # build missing production tables
-#   ironmc ladder checkpoint            # 20³ vs FEP-DMC (rung 2)
+#   ironmc ladder checkpoint            # 20³ vs FEP-DMC (stage 2)
 #   ironmc ladder guard-tau --baseline <e0>
 #   ironmc ladder guard-rank --baseline <e0>
 #   ironmc ladder sweep | ironmc ladder fit
@@ -24,6 +24,7 @@ export use qe.nu
 export use slurm.nu
 export use cuda.nu
 export use gpu.nu
+export use frohlich.nu
 
 # One-screen overview: built tables and the latest journal entries.
 export def status [] {

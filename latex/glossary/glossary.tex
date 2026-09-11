@@ -42,7 +42,7 @@ reference; this file only defines the words.
 \term{Fr\"ohlich model} The textbook continuum polaron: parabolic electron band, one
   dispersionless LO phonon, vertex $|g(\qv)|^{2}\propto\alpha/q^{2}$. Serves two roles
   here: the analytic limit LiF is close to (so an analytic cross-check exists), and the
-  engine-validation model (see \emph{rung}, Section~\ref{sec:swe-validation}).
+  engine-validation model (see \emph{stage}, Section~\ref{sec:swe-validation}).
 
 \term{Coupling constant $\alpha$} The dimensionless Fr\"ohlich electron--phonon
   coupling. $\alpha_{\mathrm{LiF}}\approx4.76$ (intermediate-to-strong coupling),
@@ -173,9 +173,9 @@ reference; this file only defines the words.
   (excited-state contamination $\sim e^{-\Delta\beta}$), checked by $\tau$-doubling
   (guard~A).
 
-\term{Exp-reweighted estimator, \texttt{energy\_estimate}} The older rung-1/rung-2
+\term{Exp-reweighted estimator, \texttt{energy\_estimate}} The older stage-1/stage-2
   estimator $\langle-\exp((E_{\mathrm{est}}-\mu)\tau)\rangle$ whose self-consistent
-  update diverges for $\alpha\gtrsim1$ (fixed-point slope $\approx-2.2$); the rung
+  update diverges for $\alpha\gtrsim1$ (fixed-point slope $\approx-2.2$); the stage
   configs freeze \texttt{energy\_estimate} and it is bisected by hand to the fixed
   point $E\approx E_{\mathrm{est}}$.
 
@@ -288,7 +288,7 @@ reference; this file only defines the words.
 
 \term{Reduced model} The single-band, $\Gamma$-slice scalar reduction
   $|g(\Gamma,\qv,\nu)|^{2}$ cached to \texttt{reduced-model.json} for the early
-  rung-2 runs; superseded by the full-$\kv$ tabulated model but still built by the
+  stage-2 runs; superseded by the full-$\kv$ tabulated model but still built by the
   \texttt{model} subcommand.
 \end{description}
 
@@ -333,39 +333,38 @@ reference; this file only defines the words.
 \label{sec:swe-validation}
 
 \begin{description}
-\term{Validation ladder} The general pattern: correctness is certified in ordered
-  \emph{rungs} of increasing physical content (or increasing hardware realism, for
-  the GPU port), each rung mechanical to check, so a failure localizes to the first
-  rung that breaks. The main ladder: engine on analytic Fr\"ohlich $\to$ vertex scale
-  $\to$ compression convergence $\to$ material comparison. The GPU ladder:
+\term{Validation stages} The general pattern: correctness is certified in ordered
+  stages of increasing physical content (or increasing hardware realism, for the
+  GPU port), each stage mechanical to check, so a failure localizes to the first
+  stage that breaks. The main sequence: engine on analytic Fr\"ohlich $\to$ vertex
+  scale $\to$ compression convergence $\to$ material comparison. The GPU sequence:
   executable spec $\to$ CPU-runtime bit parity $\to$ hardware accept-count parity
   $\to$ physics anchor.
 
-\term{Rung} One level of a validation ladder. Concretely, in run configs and the
+\term{Stage} One level of a validation sequence. Concretely, in run configs and the
   journal:
-  \textbf{rung 1} $=$ the engine validated on the analytic Fr\"ohlich model at
+  \textbf{stage 1} $=$ the engine validated on the analytic Fr\"ohlich model at
   $\alpha_{\mathrm{LiF}}=4.76$ against Mishchenko \emph{et al.}\ (2000)
-  (\texttt{configs/rung1-frohlich-lif.json}; sanity anchors $E_{0}(\alpha{=}1)=-1.013$,
+  (\texttt{configs/stage1-frohlich-lif.json}; sanity anchors $E_{0}(\alpha{=}1)=-1.013$,
   $E_{0}(\alpha{=}2)=-2.08$);
-  \textbf{rung 2} $=$ the same engine driven by the \emph{real} LiF tensor, validated
+  \textbf{stage 2} $=$ the same engine driven by the \emph{real} LiF tensor, validated
   against literature ab-initio numbers
-  (\texttt{configs/rung2-tensor-lif.json}; Sio--Giustino 2019, and concretely the
-  FEP-DMC $20^{3}$ anchor). ``Rung-2-grade number'' means: good enough to survive the
-  rung-2 checkpoint, i.e.\ quotable physics. Beware the second sense of the word ---
-  a grid-ladder rung (below and Section~\ref{sec:overloaded}).
+  (\texttt{configs/stage2-tensor-lif.json}; Sio--Giustino 2019, and concretely the
+  FEP-DMC $20^{3}$ anchor). ``Stage-2-grade number'' means: good enough to survive the
+  stage-2 checkpoint, i.e.\ quotable physics.
 
-\term{Rung-2 checkpoint} The concrete pass/fail criterion of rung 2:
+\term{Stage-2 checkpoint} The concrete pass/fail criterion of stage 2:
   $|E_{0}(20^{3})-(-0.2479~\mathrm{eV})|<30$~meV against FEP-DMC
   (\texttt{ironmc ladder checkpoint}). Current status: CPU
   $-0.24996\pm0.00026$~eV passes at $\sim2$~meV; the first GPU point sat $1.7$~meV
-  shallow from under-warmup and is not yet rung-2-grade.
+  shallow from under-warmup and is not yet stage-2-grade.
 
 \term{Grid ladder} The D1/D7 production campaign: the sequence of grids
   $n=20,32,40,50$ whose $E_{0}(n)$ feed the $1/n\to0$ extrapolation. Each grid is one
-  \emph{rung} of this ladder (so ``rung-1 run'' in GPU/throughput contexts means the
-  $n=20$ ladder point, \emph{not} the Fr\"ohlich validation rung).
+  \emph{point} of the ladder (``the $20^{3}$ point''); a repo-wide rename retired the
+  earlier word for this, see \emph{rung} in Section~\ref{sec:overloaded}.
 
-\term{Ladder run} One production DMC run at a single grid-ladder rung:
+\term{Ladder run} One production DMC run at a single grid point of the ladder:
   \texttt{ironmc ladder run <n> [--rank 800] [--tau120] [--node]} loads the prebuilt
   \texttt{.rmcvtab} table for $n^{3}$, runs the fixed-$\tau$ thermodynamic-estimator
   config, and returns a structured record
@@ -387,11 +386,11 @@ reference; this file only defines the words.
   $\tau_{\max}$ $60\to120$ at $20^{3}$ and requires the $E_{0}$ shift $<2\sigma$
   (finite-$\beta$ systematic under control); \textbf{guard B}
   (\texttt{ladder guard-rank}) re-measures $\Delta_{\mathrm{rank}}(800)$ on the
-  production grid with tolerance $\max(2\sigma,3~\mathrm{meV})$. The remaining rungs
+  production grid with tolerance $\max(2\sigma,3~\mathrm{meV})$. The remaining points
   (\texttt{ladder sweep}) run only after both guards pass.
 
 \term{Checkpoint} A comparison of a computed number against an external reference
-  with a stated tolerance band (e.g.\ the rung-2 $\pm30$~meV band). Unlike a gate it
+  with a stated tolerance band (e.g.\ the stage-2 $\pm30$~meV band). Unlike a gate it
   references literature, not an internal baseline.
 
 \term{Smoke test} A deliberately tiny end-to-end run whose only job is to prove the
@@ -420,7 +419,8 @@ reference; this file only defines the words.
 
 \term{Executable spec} A deliberately flat, fixed-capacity CPU re-implementation of
   the four sampler updates, simple enough to audit line-by-line, used as the
-  reference the GPU kernel must match bit-for-bit (rung (i)--(ii) of the GPU ladder).
+  reference the GPU kernel must match bit-for-bit (stages (i)--(ii) of the GPU
+  validation sequence).
 
 \term{Parity} Agreement between two implementations at a stated strictness:
   \emph{bit parity} (identical reports to the last bit --- GPU kernel on the CubeCL
@@ -434,7 +434,7 @@ reference; this file only defines the words.
   statistics) to decide. Gates default to scout size and take an environment override
   for certification.
 
-\term{Anchor} An external reference number a validation rung lands on (Mishchenko
+\term{Anchor} An external reference number a validation stage lands on (Mishchenko
   $\alpha=1,2$; FEP-DMC $-0.2479$~eV at $20^{3}$).
 \end{description}
 
@@ -467,8 +467,8 @@ reference; this file only defines the words.
 \term{Config (\texttt{configs/*.json})} A run definition: sampler knobs
   (\texttt{mu}, \texttt{max\_tau}, \texttt{chains}, \texttt{max\_steps},
   \texttt{warmup\_steps}, \texttt{n\_batches}, \texttt{seed},
-  \texttt{fixed\_tau}, \dots). Naming: \texttt{rung1-*}/\texttt{rung2-*} for the
-  validation rungs; \texttt{ladder-lif*} for grid-ladder production
+  \texttt{fixed\_tau}, \dots). Naming: \texttt{stage1-*}/\texttt{stage2-*} for the
+  validation stages; \texttt{ladder-lif*} for grid-ladder production
   (\texttt{-node} $=$ full-node chain count, \texttt{-tau120} $=$ guard-A variant,
   \texttt{-gpu} $=$ GPU population, \texttt{-smoke} $=$ smoke-sized).
 
@@ -506,7 +506,7 @@ reference; this file only defines the words.
 
 \begin{description}
 \term{CubeCL} The Rust GPU compute framework used for the CUDA backend; its CPU
-  runtime executes the same kernel on the host, enabling the bit-parity rung.
+  runtime executes the same kernel on the host, enabling the bit-parity stage.
 
 \term{Warp-per-chain / redundant lanes} The kernel's parallel mapping: one chain per
   $32$-lane warp, every lane redundantly executing the chain's update logic
@@ -602,16 +602,20 @@ reference; this file only defines the words.
   (2) SLURM/MPI rank --- one process, one GPU, in multi-device jobs (\texttt{RankDump},
   ``two-rank job''). Table names use sense (1); results directories use sense (2).
 
-\term{rung} (1) A validation-ladder level: rung 1 $=$ Fr\"ohlich engine check, rung 2
-  $=$ real-tensor material check (the rung-2 checkpoint). (2) One grid of the
-  D1/D7 grid ladder ($n=20$ is its first rung, so ``rung-1 run'' in throughput
-  contexts $=$ the $20^{3}$ production run). Validation rungs are about
-  \emph{correctness}; grid rungs are about \emph{convergence}.
+\term{rung (retired)} Historical term, removed from the working tree on 2026-09-11
+  but surviving in git history and commit messages. It entered via the
+  \texttt{plan-rmc-ab-initio.md} ``validation ladder'' metaphor and ended up carrying
+  two senses at once --- a validation \emph{stage} (``rung 1'' $=$ Fr\"ohlich engine
+  check, ``rung 2'' $=$ real-tensor check, ``rung-2 checkpoint'') and a grid-ladder
+  \emph{point} (``rung-1 run'' in throughput contexts $=$ the $20^{3}$ production
+  run) --- which is why it was retired. Reading old history: validation contexts
+  $\to$ \emph{stage}, grid contexts $\to$ \emph{point}.
 
-\term{ladder} (1) The validation ladder (correctness rungs). (2) The grid ladder
-  ($1/n$ extrapolation campaign; the \texttt{ironmc ladder} command family). (3) In
-  ponytail/agent instructions, an unrelated decision ladder --- ignore in physics
-  contexts.
+\term{ladder} Means the grid ladder only (the $1/n$ extrapolation campaign; the
+  \texttt{ironmc ladder} command family). Pre-rename documents also said
+  ``validation ladder'' for what is now \emph{validation stages}. For external
+  writing, prefer ``grid-convergence sequence'': in many-body theory ``ladder
+  diagrams'' and the ladder approximation are established, unrelated terms.
 
 \term{vertex} (1) The e--ph matrix element $g(\kv,\qv,\nu)$ (``vertex evaluation'',
   ``vertex cache''). (2) A diagrammatic interaction event on the worldline (``vertex
