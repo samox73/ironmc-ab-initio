@@ -332,11 +332,16 @@ export def --wrapped submit [
         error make {msg: "cargo not found in PATH at submit time — load/install the rust toolchain first"}
     }
 
-    if $gpu_ranks > $row.gpus and $gpu_ranks > 1 {
-        error make {msg: $"($partition) has ($row.gpus) GPUs per node; --gpu-ranks ($gpu_ranks) does not fit"}
+    if $gpu_ranks > 1 and $row.gpus == 0 {
+        error make {msg: $"--gpu-ranks needs a GPU partition"}
     }
+    if $gpu_ranks > $row.gpus and $gpu_ranks mod $row.gpus != 0 {
+        error make {msg: $"($partition) has ($row.gpus) GPUs per node; --gpu-ranks must be ≤ ($row.gpus) or a multiple of it"}
+    }
+    let nodes = if $gpu_ranks > $row.gpus { $gpu_ranks // $row.gpus } else { 1 }
+    let ranks_per_node = if $gpu_ranks > 1 { ($gpu_ranks // $nodes) } else { 1 }
     let ntasks = if $gpu_ranks > 1 { $gpu_ranks } else { 1 }
-    let cpus_per_task = if $gpu_ranks > 1 { $cpus // $gpu_ranks } else { $cpus }
+    let cpus_per_task = if $gpu_ranks > 1 { $cpus // $ranks_per_node } else { $cpus }
     # The GPU count is a per-partition constant (queue map above). VSC-5's
     # submit filter would default to all node GPUs anyway, but it only parses
     # --gres=gpu:N — never use --gpus-per-task (jobs pend forever); the
@@ -353,7 +358,7 @@ export def --wrapped submit [
         $"#SBATCH --partition=($partition)"
         $"#SBATCH --qos=($qos)"
         $"#SBATCH --time=($time)"
-        "#SBATCH --nodes=1"
+        $"#SBATCH --nodes=($nodes)"
         $"#SBATCH --ntasks=($ntasks)"
         $"#SBATCH --cpus-per-task=($cpus_per_task)"
     ] | append $gpu_directives
@@ -389,7 +394,17 @@ export def --wrapped submit [
             $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
             "echo; echo \"=== result rank ${SLURM_PROCID} \(GPU $CUDA_VISIBLE_DEVICES\) ===\"; cat \"$RESULT\""
         ] | str join "\n" | save -f $task_script
-        ($lines | drop 3 | append [$"srun bash '($task_script)'"])
+        # After all ranks finish, merge their RankDumps into one report —
+        # `gpu run` writes them to results/gpu/$SLURM_JOB_ID (a no-op for
+        # targets that produce no dumps).
+        ($lines | drop 3 | append [
+            $"srun bash '($task_script)'"
+            $"DUMPS=\"($root)/results/gpu/${SLURM_JOB_ID}\""
+            "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
+            $"    '($root)/target/release/rmc-ab-initio' merge --out \"($jobdir)/merged-${SLURM_JOB_ID}.json\" \"$DUMPS\"/batches-rank*.bin"
+            $"    echo; echo '=== merged report ==='; cat \"($jobdir)/merged-${SLURM_JOB_ID}.json\""
+            "fi"
+        ])
     } else {
         $lines
     }
