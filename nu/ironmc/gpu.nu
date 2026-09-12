@@ -53,8 +53,17 @@ export def run [
     }
     cuda load
     cd $ROOT
+    # Code runs from $ROOT (a pinned worktree under `slurm submit
+    # --commit-hash`); data — tables, run dirs — always lives in the main
+    # repo, which pinned jobs pass via $IRONMC_DATA_ROOT.
+    let data_root = ($env.IRONMC_DATA_ROOT? | default ($ROOT | path expand))
     let rank = ($rank | default ($env.SLURM_PROCID? | default 0 | into int))
-    let table = (table-path $grid $rank_table)
+    let table = ($data_root | path join datasets LiF $"table-n($grid)-r($rank_table)-f32.rmcvtab")
+    let out_dir = if ($out_dir | str starts-with "/") {
+        $out_dir
+    } else {
+        $data_root | path join $out_dir
+    }
     let config_path = if ($config | path exists) {
         $config
     } else {

@@ -13,6 +13,36 @@ use serde::{Deserialize, Serialize};
 
 type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+// Versioned file headers (the VertexTable::save idiom): adding fields to
+// these bincode payloads is a version bump, not silent data orphaning.
+const DUMP_MAGIC: &[u8; 8] = b"RMCDUMP\0";
+const CKPT_MAGIC: &[u8; 8] = b"RMCCKPT\0";
+const FORMAT_VERSION: u32 = 1;
+
+fn write_header(writer: &mut impl std::io::Write, magic: &[u8; 8]) -> BoxResult<()> {
+    writer.write_all(magic)?;
+    writer.write_all(&FORMAT_VERSION.to_le_bytes())?;
+    Ok(())
+}
+
+fn check_header(reader: &mut impl std::io::Read, magic: &[u8; 8], what: &str) -> BoxResult<()> {
+    let mut file_magic = [0u8; 8];
+    let mut version = [0u8; 4];
+    reader.read_exact(&mut file_magic)?;
+    reader.read_exact(&mut version)?;
+    if &file_magic != magic {
+        return Err(format!("not a {what} file (bad magic); regenerate").into());
+    }
+    let version = u32::from_le_bytes(version);
+    if version != FORMAT_VERSION {
+        return Err(format!(
+            "{what} format version {version} is unsupported (expected {FORMAT_VERSION}); regenerate"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct RankDump {
     pub config: DiagConfig,
@@ -20,6 +50,8 @@ pub struct RankDump {
     /// Checkpoint leg this dump belongs to (0 for single-leg runs). Legs of
     /// one rank carry disjoint slices of the same chains' trajectories.
     pub leg: u64,
+    /// Build provenance of the producing binary (`crate::code_version()`).
+    pub code: String,
     pub chains: u64,
     pub electron_energy_pext: f64,
     pub steps_done: u64,
@@ -38,15 +70,18 @@ impl RankDump {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
-        let file = std::fs::File::create(path)?;
-        bincode::serialize_into(std::io::BufWriter::new(file), self)?;
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
+        write_header(&mut writer, DUMP_MAGIC)?;
+        bincode::serialize_into(&mut writer, self)?;
         Ok(())
     }
 
     pub fn load(path: impl AsRef<Path>) -> BoxResult<Self> {
         let file = std::fs::File::open(&path)
             .map_err(|e| format!("cannot open dump '{}': {e}", path.as_ref().display()))?;
-        Ok(bincode::deserialize_from(std::io::BufReader::new(file))?)
+        let mut reader = std::io::BufReader::new(file);
+        check_header(&mut reader, DUMP_MAGIC, "RankDump")?;
+        Ok(bincode::deserialize_from(&mut reader)?)
     }
 }
 
@@ -118,6 +153,9 @@ pub struct Checkpoint {
     pub cycles_done: u64,
     /// Legs completed so far (leg k wrote `batches-rank{r}-leg{k}.bin`).
     pub leg: u64,
+    /// Build provenance of the producing binary; resume refuses on drift
+    /// (legs of one trajectory must run the same code) unless overridden.
+    pub code: String,
     pub chains: Vec<crate::flat::FlatDiagram>,
 }
 
@@ -127,14 +165,17 @@ impl Checkpoint {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
-        let file = std::fs::File::create(path)?;
-        bincode::serialize_into(std::io::BufWriter::new(file), self)?;
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
+        write_header(&mut writer, CKPT_MAGIC)?;
+        bincode::serialize_into(&mut writer, self)?;
         Ok(())
     }
 
     pub fn load(path: impl AsRef<Path>) -> BoxResult<Self> {
         let file = std::fs::File::open(&path)
             .map_err(|e| format!("cannot open checkpoint '{}': {e}", path.as_ref().display()))?;
-        Ok(bincode::deserialize_from(std::io::BufReader::new(file))?)
+        let mut reader = std::io::BufReader::new(file);
+        check_header(&mut reader, CKPT_MAGIC, "Checkpoint")?;
+        Ok(bincode::deserialize_from(&mut reader)?)
     }
 }

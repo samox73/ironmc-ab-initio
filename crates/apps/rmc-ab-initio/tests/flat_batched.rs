@@ -45,6 +45,7 @@ fn dump(model: &AbInitioModel, cfg: &DiagConfig, rank: u64, output: &rmc_ab_init
         electron_energy_pext: model.electron_energy(cfg.p_ext),
         steps_done: output.steps_done,
         data: output.data.clone(),
+        code: "test".to_string(),
     }
 }
 

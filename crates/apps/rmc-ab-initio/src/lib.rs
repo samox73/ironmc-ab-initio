@@ -23,3 +23,9 @@ pub mod updates;
 pub mod vertex;
 pub mod vertex_direct;
 pub mod vertex_table;
+
+/// Git provenance of this build (`<short-hash>` or `<short-hash>-dirty`),
+/// embedded at compile time; recorded in dumps, checkpoints, and reports.
+pub fn code_version() -> &'static str {
+    env!("IRONMC_GIT_HASH")
+}

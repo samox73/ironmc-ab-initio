@@ -5,3 +5,4 @@ raw_stats.json
 results/
 /slurm/
 /plans/
+/.worktrees/

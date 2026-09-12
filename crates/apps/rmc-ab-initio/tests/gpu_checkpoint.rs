@@ -56,6 +56,7 @@ fn dump(model: &AbInitioModel, cfg: &DiagConfig, leg: u64, output: &BatchedRunOu
         electron_energy_pext: model.electron_energy(cfg.p_ext),
         steps_done: output.steps_done,
         data: output.data.clone(),
+        code: "test".to_string(),
     }
 }
 

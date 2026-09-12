@@ -215,6 +215,18 @@ fn load_config(path: impl AsRef<Path>) -> BoxResult<AbInitioConfig> {
     Ok(config)
 }
 
+/// One-line human summary of a report — job logs carry log lines, not data.
+fn report_summary(report: &rmc_diagmc::Report) -> String {
+    format!(
+        "e0_thermo {:.5} ± {:.5} eV, order {:.2}, sign {:.4}, {:.3e} steps",
+        report.e0_thermo.mean,
+        report.e0_thermo.stderr,
+        report.mean_order.mean,
+        report.sign.mean,
+        report.steps_done as f64
+    )
+}
+
 /// Phase A3 batched flat-engine run (plan `gpu-abinitio`): one rank of
 /// lockstep chains, RankDump output for the offline `merge`.
 fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
@@ -255,6 +267,7 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         config,
         rank,
         leg: 0,
+        code: rmc_ab_initio::code_version().to_string(),
     }
     .save(&dump_path)?;
     log::info!("wrote {}", dump_path.display());
@@ -296,12 +309,14 @@ fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         .map(RankDump::load)
         .collect::<Result<Vec<_>, _>>()?;
     let report = merge_dumps(dumps)?;
-    let json = serde_json::to_string_pretty(&report)?;
-    if let Some(out) = out {
-        std::fs::write(&out, &json)?;
-        log::info!("wrote {}", out.display());
+    match out {
+        Some(out) => {
+            // Data to the file, one summary line to the log.
+            std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+            println!("merged {} dumps: {} [{}]", paths.len(), report_summary(&report), out.display());
+        }
+        None => println!("{}", serde_json::to_string_pretty(&report)?),
     }
-    println!("{json}");
     Ok(())
 }
 
@@ -334,6 +349,7 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let cycles_per_launch: u64 =
         take(&mut options, "--cycles-per-launch", Some(CYCLES_PER_LAUNCH))?;
     let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
+    let allow_code_drift: bool = take(&mut options, "--allow-code-drift", Some(false))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed,
     // merged, or told apart from an accidental identical resubmission.
     let out_dir: PathBuf = take(&mut options, "--out-dir", None)?;
@@ -363,6 +379,25 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         }
         if checkpoint.chain_offset != chain_offset {
             return Err("checkpoint chain offset differs from --rank; refusing to resume".into());
+        }
+        // Legs of one trajectory must run the same code — the bit-determinism
+        // guarantee assumes it.
+        if checkpoint.code != rmc_ab_initio::code_version() {
+            if allow_code_drift {
+                log::warn!(
+                    "code drift: checkpoint from {}, this binary is {} (--allow-code-drift)",
+                    checkpoint.code,
+                    rmc_ab_initio::code_version()
+                );
+            } else {
+                return Err(format!(
+                    "checkpoint was produced by code {}, this binary is {}; rebuild at that \
+                     commit or pass --allow-code-drift true",
+                    checkpoint.code,
+                    rmc_ab_initio::code_version()
+                )
+                .into());
+            }
         }
         if checkpoint.config.max_steps != config.max_steps {
             // Extension is exact: whole-cycle schedules only (validated by the
@@ -412,6 +447,7 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         config: config.clone(),
         rank,
         leg,
+        code: rmc_ab_initio::code_version().to_string(),
     }
     .save(&dump_path)?;
     log::info!("wrote {}", dump_path.display());
@@ -425,12 +461,15 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         leg,
         chains: output.chains.clone(),
         config,
+        code: rmc_ab_initio::code_version().to_string(),
     }
     .save(&checkpoint_path)?;
     log::info!("wrote {}", checkpoint_path.display());
 
-    println!(
-        "{}",
+    // Data goes to the run dir; stdout carries only the closing summary line.
+    let result_path = out_dir.join(format!("result-rank{rank}-leg{leg}.json"));
+    std::fs::write(
+        &result_path,
         serde_json::to_string_pretty(&serde_json::json!({
             "report": output.report,
             "update_stats": output.update_stats,
@@ -443,7 +482,17 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
             "total_cycles": total_cycles,
             "complete": complete,
             "out_dir": out_dir,
-        }))?
+            "code": rmc_ab_initio::code_version(),
+        }))?,
+    )?;
+    println!(
+        "rank {rank} leg {leg}: {}, cycles {}/{total_cycles}{}, {:.3e} steps/s kernel-only \
+         [{}]",
+        report_summary(&output.report),
+        output.cycles_done,
+        if complete { ", complete" } else { "" },
+        output.steps_done as f64 / output.step_secs,
+        result_path.display()
     );
     Ok(())
 }
