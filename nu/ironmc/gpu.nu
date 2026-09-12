@@ -44,15 +44,16 @@ export def run [
     --max-order-gpu: int = 256
     --cycles-per-launch: int = 256
     --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
-    --out-dir: string             # RankDump/checkpoint dir; defaults to results/gpu/<jobid>.
-                                  # Pass a STABLE dir to resume: a checkpoint there is picked
-                                  # up automatically and the job continues where the last leg
-                                  # stopped (bit-identical to an uninterrupted run).
+    --out-dir: string             # REQUIRED run directory (e.g. results/gpu/n50-prod): holds
+                                  # dumps + checkpoints; resubmitting with the same dir resumes
+                                  # the run (bit-identical to an uninterrupted one).
 ] {
+    if $out_dir == null {
+        error make {msg: "every run must be named: pass --out-dir results/gpu/<run-name>"}
+    }
     cuda load
     cd $ROOT
     let rank = ($rank | default ($env.SLURM_PROCID? | default 0 | into int))
-    let out_dir = ($out_dir | default $"results/gpu/($env.SLURM_JOB_ID? | default 'local')")
     let table = (table-path $grid $rank_table)
     let config_path = if ($config | path exists) {
         $config

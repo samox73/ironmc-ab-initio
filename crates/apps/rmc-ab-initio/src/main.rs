@@ -334,7 +334,9 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let cycles_per_launch: u64 =
         take(&mut options, "--cycles-per-launch", Some(CYCLES_PER_LAUNCH))?;
     let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
-    let out_dir: PathBuf = take(&mut options, "--out-dir", Some(PathBuf::from(".")))?;
+    // Mandatory: every run is named. An anonymous run cannot be resumed,
+    // merged, or told apart from an accidental identical resubmission.
+    let out_dir: PathBuf = take(&mut options, "--out-dir", None)?;
     if let Some(unknown) = options.keys().next() {
         return Err(format!("unknown option {unknown}").into());
     }
@@ -440,6 +442,7 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
             "cycles_done": output.cycles_done,
             "total_cycles": total_cycles,
             "complete": complete,
+            "out_dir": out_dir,
         }))?
     );
     Ok(())
