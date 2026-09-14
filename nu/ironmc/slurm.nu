@@ -1,18 +1,22 @@
 # Dispatch ironmc targets as slurm jobs on VSC-5.
 #
-#   ironmc slurm targets                               # what can be submitted
-#   ironmc slurm submit ladder run 50 --time 08:00:00
-#   ironmc slurm submit gates dmc --devel              # 10-min devel QoS
-#   ironmc slurm submit gpu run 20 --config ladder-lif-gpu
-#   ironmc slurm submit tables build 50 --dry-run      # inspect, don't submit
+#   ironmc slurm targets                               # job catalog
+#   ironmc slurm submit { ironmc ladder run 50 --node } --time 08:00:00
+#   ironmc slurm submit { ironmc gates dmc } --devel   # 10-min devel QoS
+#   ironmc slurm submit { ironmc gpu run 20 --config ladder-lif-gpu }
+#   ironmc slurm submit { ironmc tables build 50 } --dry-run
 #
-# submit is --wrapped: the flags it declares itself (--time, --partition, …)
-# are its own; every other flag passes through to the target unquoted. Tab
-# after a full target name completes the target's flags.
+# The job is a closure: inside the braces the full nu toolchain applies —
+# tab completion of commands AND their flags, parse-time flag/type checking.
+# It is serialized via `view source` and replayed inside sbatch, so keep it
+# self-contained: captured variables (`let n = 20; submit { ladder run $n }`)
+# do not exist in-job. Any pipeline works: { ladder sweep --node | ladder fit }.
 #
-# submit prebuilds the whole workspace in release mode before calling sbatch
-# (jobs share $DATA, so compiled artifacts carry over and the job never spends
-# walltime compiling). --dry-run skips the build.
+# submit prebuilds in release mode before calling sbatch (jobs share $DATA, so
+# compiled artifacts carry over and the job never spends walltime compiling). On
+# GPU partitions it builds only the gpu-cuda feature set — never a plain
+# no-feature workspace build too, or the two would thrash cargo's cache on every
+# submit. --dry-run skips the build.
 
 use common.nu [ROOT]
 use cuda.nu
@@ -28,6 +32,19 @@ export const PARTITIONS = [
 ]
 
 const DEVEL_WALLTIME = "00:10:00"
+
+# Partition names from the queue map, with their properties as menu hints.
+def partition-completions [] {
+    $PARTITIONS | each {|row|
+        {
+            value: $row.partition
+            description: ([
+                $row.description
+                (if $row.devel_qos != null { "devel QoS" })
+            ] | compact | str join " — ")
+        }
+    }
+}
 
 # Namespaces whose commands can be dispatched as jobs. Ab-initio LiF work is
 # the top-level namespaces; other physics gets its own namespace (frohlich).
@@ -50,68 +67,8 @@ def dispatchable [] {
         | uniq-by name
 }
 
-# The dispatchable command whose name is a word-prefix of `words` (longest
-# wins), or null. `words` may continue past the name with positionals/flags.
-def resolve-target [words: list<string>] {
-    let hits = (dispatchable
-        | where {|cmd|
-            let parts = ($cmd.name | split row " ")
-            ($words | length) >= ($parts | length) and (($words | take ($parts | length)) == $parts)
-        }
-        | sort-by name)
-    if ($hits | is-empty) { null } else { $hits | last }
-}
-
-# Context-aware completer: completes the target name ONE word at a time (some
-# nu builds insert multi-word completion values unquoted), and once a full
-# name is committed, completes that target's own flags (submit is --wrapped,
-# so they pass through unquoted).
-def target-completions [context: string] {
-    # Words already committed after `submit` (the in-progress token is
-    # dropped — nu filters candidates by it).
-    let tail = ($context | str replace --regex '.*\bsubmit\s*' "")
-    mut words = ($tail | split row " " | where {|word| $word != "" })
-    if not ($context | str ends-with " ") {
-        $words = ($words | drop 1)
-    }
-    let words = $words
-    let name_words = ($words | take while {|word| not ($word | str starts-with "-") })
-
-    let target = (resolve-target $name_words)
-    if $target != null {
-        let used = ($words | each {|word| $word | split row "=" | first })
-        return ($target.params
-            | where {|p| $p.parameter_type in ["named", "switch"] }
-            | where {|p| not ($"--($p.parameter_name)" in $used) }
-            | each {|p|
-                {
-                    value: $"--($p.parameter_name)"
-                    description: ([
-                        (if $p.parameter_default != null { $"default: ($p.parameter_default)" })
-                        (if ($p.description | default "" | is-not-empty) { $p.description })
-                    ] | compact | str join " — ")
-                }
-            })
-    }
-
-    let prefix = if ($name_words | is-empty) { "" } else { ($name_words | str join " ") + " " }
-    let position = ($name_words | length)
-    dispatchable
-        | where {|cmd| $cmd.name | str starts-with $prefix }
-        | each {|cmd|
-            let parts = ($cmd.name | split row " ")
-            {
-                value: ($parts | get $position)
-                description: (
-                    if ($parts | length) == ($position + 1) { $cmd.description } else { "…" }
-                )
-            }
-        }
-        | uniq-by value
-}
-
-# Every dispatchable target with its arguments and defaults — what `submit`
-# accepts before its own flags take over.
+# Every dispatchable target with its arguments and defaults — the catalog of
+# what's worth putting inside a `submit { … }` closure.
 export def targets [] {
     dispatchable | each {|cmd|
         {
@@ -249,59 +206,52 @@ export def cancel [
     queue
 }
 
-# Submit an ironmc target as a slurm job. --wrapped: flags not declared below
-# pass through to the target (e.g. submit gpu run 20 --config ladder-lif-gpu).
-export def --wrapped submit [
-    ...target: string@target-completions  # e.g.: ladder run 50 --node
+# Submit a job as a slurm batch. Everything inside the closure braces is the
+# job (with native tab completion and parse-time checking); submit's own flags
+# shape the allocation. The closure is serialized as text and replayed in-job,
+# so it must be self-contained — no captured variables.
+export def submit [
+    job: closure               # e.g. { ironmc ladder run 50 --node }
     --time: string = "04:00:00"    # walltime HH:mm:ss (capped at 10 min with --devel)
-    --partition: string = "zen3_0512"
-    --qos: string              # defaults to the partition's default QoS
+    --partition: string@partition-completions = "zen3_0512"
     --devel                    # devel QoS: fixed 10-minute walltime
     --cpus: int = 128          # zen3 nodes have 128 cores
     --gpu-ranks: int = 1       # >1: srun that many tasks, one GPU each; the target reads $SLURM_PROCID (gpu run does)
-    --job-name: string         # defaults to the target with dashes
+    --job-name: string         # defaults to the job text with dashes
+    --commit-hash: string      # pin the job's code: build in a detached worktree of this
+                               # commit; the job runs that tree's code (data paths stay in the
+                               # main repo via $IRONMC_DATA_ROOT) and removes the worktree when
+                               # it finishes
     --dry-run                  # print the batch script instead of submitting
 ] {
-    # --wrapped disables nu's automatic --help (flags must pass through to the
-    # target); answer it from the catalog instead of submitting.
-    if ($target | any {|word| $word in ["--help", "-h"] }) {
-        let prefix = ($target | take while {|word| not ($word | str starts-with "-") } | str join " ")
-        return (targets | where {|row| $row.target | str starts-with $prefix })
+    let body = (view source $job
+        | str trim
+        | str replace --regex '^\{\s*' ''
+        | str replace --regex '\s*\}$' ''
+        | str trim)
+    if ($body | is-empty) {
+        error make {msg: "empty job; try `ironmc slurm submit { ironmc ladder run 20 }`"}
     }
-    if ($target | is-empty) {
-        error make {msg: "no target given; try `ironmc slurm submit ladder run 20`"}
+    if ($body | str starts-with "|") {
+        error make {msg: "the job closure must not take parameters — flags go after the braces"}
     }
     if ($env.DATA? | is-empty) {
         error make {msg: "submit needs $env.DATA (the VSC-5 shared filesystem) — run it on the cluster"}
     }
-    # Fail fast on flags the target does not accept — a typo'd flag would
-    # otherwise ride into the queue and die only at runtime.
-    let resolved = (resolve-target $target)
-    if $resolved != null {
-        let accepted = ($resolved.params
-            | where {|p| $p.parameter_type in ["named", "switch"] }
-            | each {|p| $"--($p.parameter_name)" })
-        let bad = ($target
-            | where {|word| $word | str starts-with "--" }
-            | each {|word| $word | split row "=" | first }
-            | where {|flag| not ($flag in $accepted) })
-        if ($bad | is-not-empty) {
-            error make {msg: $"($resolved.name) does not take ($bad | str join ', '); see `ironmc slurm targets`"}
-        }
-    }
-    let target = ($target | str join " ")
     let row = ($PARTITIONS | where partition == $partition)
     if ($row | is-empty) {
         error make {msg: $"unknown partition ($partition); see `ironmc slurm partitions`"}
     }
     let row = ($row | first)
 
+    # VSC-5 QoS is partition-determined (default QoS = partition name), so
+    # there is no separate --qos knob; --devel picks the devel variant.
     let qos = if $devel {
         if $row.devel_qos == null {
-            error make {msg: $"partition ($partition) has no devel QoS (only zen3_0512 and zen3_0512_a100x2 do)"}
+            error make {msg: $"partition ($partition) has no devel QoS — only zen3_0512 and zen3_0512_a100x2 do"}
         }
         $row.devel_qos
-    } else if $qos == null { $row.default_qos } else { $qos }
+    } else { $row.default_qos }
 
     if not ($time =~ '^\d{1,3}:\d{2}:\d{2}$') {
         error make {msg: $"walltime ($time) is not HH:mm:ss"}
@@ -313,7 +263,11 @@ export def --wrapped submit [
     let walltime_secs = if $capped { 600 } else { $requested_secs }
     let time = if $capped { $DEVEL_WALLTIME } else { $time }
 
-    let name = ($job_name | default ($target | str replace --all " " "-"))
+    let name = ($job_name | default (
+        $body | str replace --regex '^ironmc\s+' ''
+              | str replace --all --regex '[^A-Za-z0-9._]+' '-'
+              | str trim --char "-"
+    ))
     let stamp = (date now | format date "%Y%m%d-%H%M%S")
     let root = ($env.DATA | path join ironmc)
     # One directory per job, prefixed by the submission stamp: lexicographic
@@ -323,7 +277,15 @@ export def --wrapped submit [
     let jobdir = ($env.DATA | path join ironmc slurm $"($stamp)-($name)")
     mkdir $jobdir
     let script = ($jobdir | path join "job.sh")
-    let modpath = ($root | path join nu ironmc)
+    # Pinned jobs run the code of a detached worktree (unique per submission,
+    # so cleanup by one job can never yank another's tree); data paths keep
+    # resolving into the main repo through $IRONMC_DATA_ROOT.
+    let pinned = if $commit_hash != null {
+        let hash = (git -C $root rev-parse --verify --short=9 $commit_hash | str trim)
+        $root | path join ".worktrees" $"($hash)-($stamp)"
+    } else { null }
+    let code_root = ($pinned | default $root)
+    let modpath = ($code_root | path join nu ironmc)
     let nu_exe = $nu.current-exe
     # Resolve cargo NOW and embed its directory: the batch shell on the compute
     # node does not reliably inherit the login PATH (fail here, not in-queue).
@@ -335,10 +297,10 @@ export def --wrapped submit [
     if $gpu_ranks > 1 and $row.gpus == 0 {
         error make {msg: $"--gpu-ranks needs a GPU partition"}
     }
-    if $gpu_ranks > $row.gpus and $gpu_ranks mod $row.gpus != 0 {
+    if $row.gpus > 0 and $gpu_ranks > $row.gpus and $gpu_ranks mod $row.gpus != 0 {
         error make {msg: $"($partition) has ($row.gpus) GPUs per node; --gpu-ranks must be ≤ ($row.gpus) or a multiple of it"}
     }
-    let nodes = if $gpu_ranks > $row.gpus { $gpu_ranks // $row.gpus } else { 1 }
+    let nodes = if $row.gpus > 0 and $gpu_ranks > $row.gpus { $gpu_ranks // $row.gpus } else { 1 }
     let ranks_per_node = if $gpu_ranks > 1 { ($gpu_ranks // $nodes) } else { 1 }
     let ntasks = if $gpu_ranks > 1 { $gpu_ranks } else { 1 }
     let cpus_per_task = if $gpu_ranks > 1 { $cpus // $ranks_per_node } else { $cpus }
@@ -368,17 +330,42 @@ export def --wrapped submit [
         $"export PATH=\"($cargo_dir):$HOME/.cargo/bin:$PATH\""
         "# Explicit rayon pool size; falls back to cgroup autodetection otherwise."
         "export RAYON_NUM_THREADS=\"${SLURM_CPUS_PER_TASK:-128}\""
+        $"export IRONMC_DATA_ROOT=\"($root)\""
         "# VSC-5's slurm does not export the job end time; synthesize it from"
         "# start time + walltime so the in-run deadline stop arms either way."
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
-        $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}.json\""
-        # `save` picks the format from the extension: structured results become
-        # real JSON, plain-text targets (external stdout) are written raw
-        # instead of one escaped JSON string full of literal \n.
-        $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
-        "echo; echo '=== result ==='; cat \"$RESULT\""
     ])
+    # gpu run writes its own result files into the run dir, so its stdout is
+    # purely a log; every other target's return value is captured into the
+    # job dir (`save` picks the format from the .json extension). Import both
+    # prefixed and flat so the body works however the module was loaded.
+    let invoke_lines = if ($body =~ '\bgpu run\b') {
+        [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"]
+    } else {
+        [
+            $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}.json\""
+            $"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\) | save -f '\"$RESULT\""
+            "echo; echo '=== result ==='; cat \"$RESULT\""
+        ]
+    }
+    let lines = ($lines | append $invoke_lines)
+    # `gpu run` targets carry a mandatory --out-dir (the run's data dir);
+    # parse it so the job can merge the run's cumulative dumps at the end.
+    let run_dir = ($body | parse --regex '--out-dir\s+(?<dir>\S+)' | get -o 0.dir)
+    if ($body =~ '\bgpu run\b') and $run_dir == null {
+        error make {msg: "gpu run needs --out-dir <run dir> (e.g. results/gpu/n50-prod) inside the job closure"}
+    }
+    let merge_lines = if $run_dir != null {
+        let dumps = if ($run_dir | str starts-with "/") { $run_dir } else { $root | path join $run_dir }
+        [
+            $"DUMPS=\"($dumps)\""
+            "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
+            $"    '($code_root)/target/release/rmc-ab-initio' merge --out \"$DUMPS/merged.json\" \"$DUMPS\"/batches-rank*.bin"
+            "    echo; echo '=== merged report (all ranks, all legs) ==='; cat \"$DUMPS/merged.json\""
+            "fi"
+        ]
+    } else { [] }
     # Multi-rank GPU jobs: each srun task runs the target with its own GPU and
     # result file; rank-aware targets (gpu run) read $SLURM_PROCID themselves.
     let lines = if $gpu_ranks > 1 {
@@ -390,24 +377,24 @@ export def --wrapped submit [
             "if [ -z \"${CUDA_VISIBLE_DEVICES:-}\" ] || [[ \"$CUDA_VISIBLE_DEVICES\" == *,* ]]; then"
             "    export CUDA_VISIBLE_DEVICES=${SLURM_LOCALID:-0}"
             "fi"
-            $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
-            $"'($nu_exe)' -c 'use ($modpath); ironmc ($target) | save -f '\"$RESULT\""
-            "echo; echo \"=== result rank ${SLURM_PROCID} \(GPU $CUDA_VISIBLE_DEVICES\) ===\"; cat \"$RESULT\""
-        ] | str join "\n" | save -f $task_script
-        # After all ranks finish, merge their RankDumps into one report —
-        # `gpu run` writes them to results/gpu/$SLURM_JOB_ID (a no-op for
-        # targets that produce no dumps).
-        ($lines | drop 3 | append [
-            $"srun bash '($task_script)'"
-            $"DUMPS=\"($root)/results/gpu/${SLURM_JOB_ID}\""
-            "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
-            $"    '($root)/target/release/rmc-ab-initio' merge --out \"($jobdir)/merged-${SLURM_JOB_ID}.json\" \"$DUMPS\"/batches-rank*.bin"
-            $"    echo; echo '=== merged report ==='; cat \"($jobdir)/merged-${SLURM_JOB_ID}.json\""
-            "fi"
-        ])
+        ] | append (if ($body =~ '\bgpu run\b') {
+            [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"]
+        } else {
+            [
+                $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
+                $"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\) | save -f '\"$RESULT\""
+                "echo; echo \"=== result rank ${SLURM_PROCID} \(GPU $CUDA_VISIBLE_DEVICES\) ===\"; cat \"$RESULT\""
+            ]
+        }) | str join "\n" | save -f $task_script
+        ($lines | drop ($invoke_lines | length) | append [$"srun bash '($task_script)'"] | append $merge_lines)
     } else {
-        $lines
+        ($lines | append $merge_lines)
     }
+    # A pinned job removes its private worktree when it finishes, so target/
+    # dirs don't accumulate (a killed job leaves one; `git worktree remove`).
+    let lines = if $pinned != null {
+        ($lines | append [$"git -C '($root)' worktree remove --force '($pinned)' || true"])
+    } else { $lines }
     $lines | str join "\n" | save -f $script
 
     if $dry_run {
@@ -416,10 +403,20 @@ export def --wrapped submit [
     }
     # Build everything the target might run, so `cargo run` inside the job is
     # a no-op exec instead of eating walltime (a failed build aborts here,
-    # before anything is queued).
-    cd $ROOT
-    cargo build --release --workspace
+    # before anything is queued). A pinned job builds in its own detached
+    # worktree; the main checkout is untouched.
+    if $pinned != null {
+        git -C $root worktree add --detach $pinned $commit_hash
+    }
+    cd $code_root
     if $row.gpus > 0 {
+        # GPU jobs run the gpu-cuda binary (`cargo run --features gpu-cuda`), so
+        # build exactly that feature set — and ONLY it. A plain `--workspace`
+        # build compiles cubecl/rmc-ab-initio *without* gpu-cuda; the lines below
+        # then build them *with* it. Cargo keeps one feature variant per target
+        # dir, so having both toggles the `cubecl/cuda` feature off then on and
+        # recompiles cubecl + rmc-ab-initio + rmc-frohlich on every submit.
+        # Building only the gpu-cuda set keeps the cache warm across submits.
         # cudarc pins the CUDA version via CUDA_PATH at build time; match the
         # toolkit the in-job `ironmc cuda load` will point at.
         cuda load
@@ -427,6 +424,8 @@ export def --wrapped submit [
         cargo build --release -p rmc-frohlich --features gpu-cuda
         # `gpu parity` runs cargo test in-job; precompile the test binaries.
         cargo test --release -p rmc-ab-initio --features gpu-cuda --no-run
+    } else {
+        cargo build --release --workspace
     }
     let out = (sbatch $script | str trim)
     print $out

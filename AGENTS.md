@@ -47,3 +47,4 @@ cargo bench-compare -p rmc-frohlich --bin rmc-frohlich --reps 5 --metric-regex '
 - Prefer existing `type: summary` commit subjects such as `chore:`, `refactor:`, and `fix:`.
 - Document implementation chunks in journal.md and physics notes and methodology in ./latex/ab-initio-diagmc/ab-initio-diagmc.tex
 - Project terminology is defined in ./latex/glossary/glossary.tex — keep it current when new terms appear.
+- Do not put plan checkpoint names (A1, B3, etc.) anywhere else. Plan files are ephemeral and may not exist at a later point.

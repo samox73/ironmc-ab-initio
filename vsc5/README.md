@@ -10,7 +10,7 @@ Then log in and dispatch jobs through the ironmc module:
 
 ```nu
 ssh samuel_soap@vsc5.vsc.ac.at
-nu -c 'use ($env.DATA)/ironmc/nu/ironmc; ironmc slurm submit "ladder run 20 --node" --devel'
+nu -c 'use ($env.DATA)/ironmc/nu/ironmc; ironmc slurm submit { ironmc ladder run 20 --node } --devel'
 ```
 
 Monitor and inspect jobs:

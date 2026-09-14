@@ -47,4 +47,4 @@ for tool in $tools {
 ^ssh -p $port -S $control -O exit $host
 
 print $"Installed ironmc in ($remote_repo)"
-print "Dispatch jobs on VSC5 with: ironmc slurm submit <target> (load module with: use $env.DATA/ironmc/nu/ironmc)"
+print "Dispatch jobs on VSC5 with: ironmc slurm submit { ironmc <target> } (load module with: use $env.DATA/ironmc/nu/ironmc)"

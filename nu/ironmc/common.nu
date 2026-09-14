@@ -8,3 +8,10 @@ export const CONFIGS = ($ROOT | path join crates apps rmc-ab-initio configs)
 export def table-path [grid: int, rank: int = 800, precision: string = "f32"] {
     $DATASET | path join $"table-n($grid)-r($rank)-($precision).rmcvtab"
 }
+
+# Config names from the rmc-ab-initio configs dir, for `--config: string@config-names`.
+export def config-names [] {
+    ls $CONFIGS | get name | path basename
+        | where {|file| $file | str ends-with ".json" }
+        | each {|file| $file | str replace ".json" "" }
+}
