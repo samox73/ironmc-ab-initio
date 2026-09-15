@@ -20,4 +20,4 @@ squeue --me
 seff JOB_ID
 ```
 
-Batch scripts, logs, and result JSONs land in `$DATA/ironmc/slurm/`, named `<job-name>-<job-id>.{sh,out,json}`.
+Each submission gets its own job dir with `job.sh`, `job-<job-id>.out`, and (for non-run targets) `result-<job-id>.json`: `$DATA/ironmc/<out-dir>/jobs/<stamp>-<name>/` when submitting with `--out-dir runs/...` (the run's cumulative dumps sit beside it in `<out-dir>/results/`), else the legacy flat `$DATA/ironmc/slurm/<stamp>-<name>/`.

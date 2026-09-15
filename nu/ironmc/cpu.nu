@@ -1,8 +1,8 @@
 # CPU (slotmap engine, rayon) targets — the fast CPU production path and the
 # CPU twin of `gpu run`.
 #
-#   ironmc cpu run 20 --out-dir results/cpu/n20-prod
-#   ironmc slurm submit { ironmc cpu run 50 --out-dir results/cpu/n50-prod } --partition zen3_0512 --devel --ranks 5
+#   ironmc cpu run 20 --out-dir results/cpu/n20-prod          # direct, local
+#   ironmc slurm submit { ironmc cpu run 50 } --partition zen3_0512 --devel --ranks 5 --out-dir runs/e0-fit/n50
 #
 # Same RankDump/Checkpoint/merge machinery as `gpu run`: resubmitting with the
 # same --out-dir resumes the run bit-identically, and independent --rank ranks
@@ -23,10 +23,12 @@ export def run [
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID (multi-rank srun)
     --chains: int = 0             # override the config's chain count (0 = keep config; must be pinned for multi-rank)
     --rank-table: int = 800       # table rank in the artifact filename
-    --out-dir: string             # REQUIRED run directory (e.g. results/cpu/n50-prod): holds
-                                  # dumps + checkpoints; resubmitting with the same dir resumes
-                                  # the run (bit-identical to an uninterrupted one).
+    --out-dir: string             # run directory (e.g. results/cpu/n50-prod): holds dumps +
+                                  # checkpoints; resubmitting with the same dir resumes the run
+                                  # (bit-identical to an uninterrupted one). Defaults to
+                                  # $IRONMC_OUT_DIR (set by `slurm submit --out-dir`); REQUIRED otherwise.
 ] {
+    let out_dir = ($out_dir | default $env.IRONMC_OUT_DIR?)
     if $out_dir == null {
         error make {msg: "every run must be named: pass --out-dir results/cpu/<run-name>"}
     }
@@ -65,8 +67,10 @@ export def flat [
     --group: int = 1              # update-selection group size (1 = per-chain)
     --max-order-gpu: int = 256    # FlatDiagram capacity = 2·N+2
     --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
-    --out-dir: string             # REQUIRED run directory (holds dumps + a batched checkpoint)
+    --out-dir: string             # run directory (holds dumps + a batched checkpoint); defaults
+                                  # to $IRONMC_OUT_DIR (set by `slurm submit --out-dir`)
 ] {
+    let out_dir = ($out_dir | default $env.IRONMC_OUT_DIR?)
     if $out_dir == null {
         error make {msg: "every run must be named: pass --out-dir results/cpu/<run-name>"}
     }

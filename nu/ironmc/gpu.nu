@@ -44,10 +44,12 @@ export def run [
     --max-order-gpu: int = 256
     --cycles-per-launch: int = 256
     --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
-    --out-dir: string             # REQUIRED run directory (e.g. results/gpu/n50-prod): holds
-                                  # dumps + checkpoints; resubmitting with the same dir resumes
-                                  # the run (bit-identical to an uninterrupted one).
+    --out-dir: string             # run directory (e.g. results/gpu/n50-prod): holds dumps +
+                                  # checkpoints; resubmitting with the same dir resumes the run
+                                  # (bit-identical to an uninterrupted one). Defaults to
+                                  # $IRONMC_OUT_DIR (set by `slurm submit --out-dir`); REQUIRED otherwise.
 ] {
+    let out_dir = ($out_dir | default $env.IRONMC_OUT_DIR?)
     if $out_dir == null {
         error make {msg: "every run must be named: pass --out-dir results/gpu/<run-name>"}
     }

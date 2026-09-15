@@ -3,8 +3,8 @@
 #   ironmc slurm targets                               # job catalog
 #   ironmc slurm submit { ironmc ladder run 50 --node } --time 08:00:00
 #   ironmc slurm submit { ironmc gates dmc } --devel   # 10-min devel QoS
-#   ironmc slurm submit { ironmc gpu run 20 --config ladder-lif-gpu }
-#   ironmc slurm submit { ironmc cpu run 50 --out-dir results/cpu/n50 } --devel --ranks 5
+#   ironmc slurm submit { ironmc gpu run 20 --config ladder-lif-gpu } --out-dir runs/gpu/n20
+#   ironmc slurm submit { ironmc cpu run 50 } --devel --ranks 5 --out-dir runs/e0-fit/n50
 #   ironmc slurm submit { ironmc tables build 50 } --dry-run
 #
 # The job is a closure: inside the braces the full nu toolchain applies —
@@ -150,6 +150,16 @@ export def history [
 
 def slurm-logdir [] { $env.DATA | path join ironmc slurm }
 
+# Job dirs live in two trees: the legacy flat slurm/<stamp>-*/ and, for named
+# runs, runs/**/jobs/<stamp>-*/ (see `submit --out-dir`). Search both for a
+# job's .out file(s). `filename` is a glob (e.g. job-123.out, *.out).
+def job-log-search [filename: string] {
+    [
+        (slurm-logdir | path join "*" $filename)
+        ($env.DATA | path join ironmc runs "**" jobs "*" $filename)
+    ] | each {|p| try { ls ($p | into glob) } catch { [] } } | flatten
+}
+
 # Newest job id in your queue (by submission time), or null when nothing is queued.
 def newest-job-id [] {
     if (which squeue | is-empty) { return null }
@@ -165,9 +175,9 @@ def stdout-path [job_id: string] {
         let parsed = ($info.stdout | parse -r 'StdOut=(?<path>\S+)')
         if ($parsed | is-not-empty) { return ($parsed | first | get path) }
     }
-    let hits = (try { ls (slurm-logdir | path join "*" $"job-($job_id).out" | into glob) } catch { [] })
+    let hits = (job-log-search $"job-($job_id).out")
     if ($hits | is-empty) {
-        error make {msg: $"cannot resolve stdout of job ($job_id): not in scontrol, no match in (slurm-logdir)"}
+        error make {msg: $"cannot resolve stdout of job ($job_id): not in scontrol, no match under (slurm-logdir) or runs/"}
     }
     $hits | first | get name
 }
@@ -201,9 +211,9 @@ export def logs [
     let path = if $id != null {
         stdout-path $id
     } else {
-        let logs = (try { ls (slurm-logdir | path join "*" "*.out" | into glob) | sort-by modified } catch { [] })
+        let logs = (job-log-search "*.out" | sort-by modified)
         if ($logs | is-empty) {
-            error make {msg: $"no job id given, queue is empty, and no logs in (slurm-logdir)"}
+            error make {msg: $"no job id given, queue is empty, and no logs under (slurm-logdir) or runs/"}
         }
         $logs | last | get name
     }
@@ -247,6 +257,13 @@ export def submit [
                                # commit; the job runs that tree's code (data paths stay in the
                                # main repo via $IRONMC_DATA_ROOT) and removes the worktree when
                                # it finishes
+    --out-dir: string          # experiment dir under runs/ (e.g. runs/e0-fit/n20): this
+                               # submission's scripts/logs land in <out-dir>/jobs/<stamp>-<name>,
+                               # and the job sees $IRONMC_OUT_DIR = <out-dir>/results, which run
+                               # targets take as their --out-dir default (cumulative dumps).
+                               # Resubmit with the same --out-dir to resume the checkpointed run —
+                               # the N submissions that build one result set sit beside it in
+                               # jobs/. Omit for the legacy flat slurm/<stamp>-<name> layout.
     --dry-run                  # print the batch script instead of submitting
 ] {
     let body = (view source $job
@@ -293,14 +310,58 @@ export def submit [
               | str replace --all --regex '[^A-Za-z0-9._]+' '-'
               | str trim --char "-"
     ))
+    # Fold the experiment into the default name: distinct experiments submitting
+    # the same closure must stay tellable-apart in squeue/history/completions,
+    # and the still-queued guard below matches jobs by name.
+    let name = if $out_dir != null and $job_name == null {
+        $"($name)-($out_dir | str replace --regex '^runs/' '' | str replace --all --regex '[^A-Za-z0-9._]+' '-')"
+    } else { $name }
     let stamp = (date now | format date "%Y%m%d-%H%M%S")
     let root = ($env.DATA | path join ironmc)
-    # One directory per job, prefixed by the submission stamp: lexicographic
-    # listing/tab order = submission order = job-id order (ids are monotone in
-    # time), and — unlike a job-id prefix — the name is known before sbatch,
-    # so scripts, output, and results are born in their final place.
-    let jobdir = ($env.DATA | path join ironmc slurm $"($stamp)-($name)")
-    mkdir $jobdir
+    # Run targets (cpu/gpu run|flat) accumulate dumps in a run dir and resume
+    # from a checkpoint there; every other target just returns a value.
+    # ponytail: run-ness is sniffed from the body text — a new run-like target
+    # must be added to this regex. Misclassification is benign with --out-dir
+    # ($IRONMC_OUT_DIR is exported either way; only merge/stdout capture differ);
+    # declare it per-target in `dispatchable` if the target list grows.
+    let is_run = ($body =~ '\b(gpu|cpu) (run|flat)\b')
+    let body_has_outdir = ($body =~ '--out-dir[=\s]+\S+')
+    # Two layouts. With --out-dir: one experiment dir holds jobs/ (this and every
+    # resubmission's scripts/logs) beside results/ (the single dump set they
+    # build), so the 1-to-N job→result relationship is explicit and co-located;
+    # the run dir reaches the job as $IRONMC_OUT_DIR (run targets read it as
+    # their --out-dir default) — never by editing the closure text, so any body
+    # shape works. Without it: the legacy flat slurm/<stamp>-<name> dir, dumps
+    # wherever the closure's own --out-dir points. The stamp prefix makes
+    # lexicographic order = submission order = job-id order (ids are monotone in
+    # time), and the dir name is known before sbatch, so scripts, output, and
+    # results are born in their final place.
+    let jobdir = if $out_dir != null {
+        # Constrained under runs/ so job-log-search and the Makefile sync/mount
+        # targets find everything by construction; the charset keeps the path
+        # safe to embed unquoted in job.sh and #SBATCH directives.
+        if (not ($out_dir =~ '^runs/[A-Za-z0-9._/-]+$')) or ($out_dir =~ '\.\.') {
+            error make {msg: $"--out-dir must be a relative dir under runs/, using only [A-Za-z0-9._/-] — e.g. runs/e0-fit/n50; got: ($out_dir)"}
+        }
+        if $body_has_outdir {
+            error make {msg: "--out-dir is a `slurm submit` flag now — drop it from the job closure"}
+        }
+        $root | path join $out_dir jobs $"($stamp)-($name)"
+    } else {
+        if $is_run and not $body_has_outdir {
+            error make {msg: "cpu run / gpu run needs a run dir: pass --out-dir to `slurm submit` (recommended) or inside the closure"}
+        }
+        slurm-logdir | path join $"($stamp)-($name)"
+    }
+    # Where a run target's cumulative dumps land (absolute): exported as
+    # $IRONMC_OUT_DIR and merged all-ranks/all-legs at the end of the job.
+    let run_dir = if $out_dir != null {
+        $root | path join $out_dir results
+    } else if $is_run {
+        let d = ($body | parse --regex "--out-dir[=\\s]+(?<dir>\"[^\"]*\"|'[^']*'|\\S+)"
+            | get 0.dir | str trim --char '"' | str trim --char "'")
+        if ($d | str starts-with "/") { $d } else { $root | path join $d }
+    } else { null }
     let script = ($jobdir | path join "job.sh")
     # Pinned jobs run the code of a detached worktree (unique per submission,
     # so cleanup by one job can never yank another's tree); data paths keep
@@ -368,12 +429,14 @@ export def submit [
         "# start time + walltime so the in-run deadline stop arms either way."
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
-    ])
+    ] | append (if $out_dir != null {
+        [$"export IRONMC_OUT_DIR=\"($run_dir)\""]
+    } else { [] }))
     # `cpu run`/`gpu run` write their own result files into the run dir, so their
     # stdout is purely a log; every other target's return value is captured into
     # the job dir (`save` picks the format from the .json extension). Import both
     # prefixed and flat so the body works however the module was loaded.
-    let invoke_lines = if ($body =~ '\b(gpu|cpu) (run|flat)\b') {
+    let invoke_lines = if $is_run {
         [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"]
     } else {
         [
@@ -383,16 +446,11 @@ export def submit [
         ]
     }
     let lines = ($lines | append $invoke_lines)
-    # `cpu run`/`gpu run` targets carry a mandatory --out-dir (the run's data
-    # dir); parse it so the job can merge the run's cumulative dumps at the end.
-    let run_dir = ($body | parse --regex '--out-dir\s+(?<dir>\S+)' | get -o 0.dir)
-    if ($body =~ '\b(gpu|cpu) (run|flat)\b') and $run_dir == null {
-        error make {msg: "cpu run / gpu run needs --out-dir <run dir> (e.g. results/cpu/n50-prod) inside the job closure"}
-    }
+    # `run_dir` (already absolute, set above) is where a run target's cumulative
+    # dumps land; merge them all-ranks/all-legs at the end of the job.
     let merge_lines = if $run_dir != null {
-        let dumps = if ($run_dir | str starts-with "/") { $run_dir } else { $root | path join $run_dir }
         [
-            $"DUMPS=\"($dumps)\""
+            $"DUMPS=\"($run_dir)\""
             "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
             $"    '($code_root)/target/release/rmc-ab-initio' merge --out \"$DUMPS/merged.json\" \"$DUMPS\"/batches-rank*.bin"
             "    echo; echo '=== merged report (all ranks, all legs) ==='; cat \"$DUMPS/merged.json\""
@@ -402,8 +460,8 @@ export def submit [
     # Multi-rank jobs: each srun task runs the target with its own $SLURM_PROCID
     # (rank) and result file. GPU tasks bind one device each; CPU tasks take a
     # whole node. Rank-aware targets (cpu run / gpu run) read $SLURM_PROCID.
-    let lines = if $ranks > 1 {
-        let task_script = ($jobdir | path join "task.sh")
+    let task_script = ($jobdir | path join "task.sh")
+    let task_text = if $ranks > 1 {
         let cuda_bind = if $row.gpus > 0 {
             [
                 "# One GPU per task: bind by node-local task id unless slurm already"
@@ -413,7 +471,7 @@ export def submit [
                 "fi"
             ]
         } else { [] }
-        let task_body = if ($body =~ '\b(gpu|cpu) (run|flat)\b') {
+        let task_body = if $is_run {
             [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"]
         } else {
             [
@@ -425,7 +483,9 @@ export def submit [
         # Print each task's actual core count — the first thing to check if a CPU
         # multi-rank run is slow (rayon can only use what srun binds to the task).
         let diag = ["echo \"rank ${SLURM_PROCID}: nproc=$(nproc) cpus-per-task=${SLURM_CPUS_PER_TASK} rayon=${RAYON_NUM_THREADS}\""]
-        (["#!/bin/bash"] | append $cuda_bind | append $diag | append $task_body | str join "\n" | save -f $task_script)
+        (["#!/bin/bash"] | append $cuda_bind | append $diag | append $task_body | str join "\n")
+    } else { null }
+    let lines = if $ranks > 1 {
         # srun (slurm ≥ 22.05) no longer inherits --cpus-per-task from the batch
         # allocation, so each task would be pinned to a single CPU and rayon would
         # run on a ~1-core cpuset (measured: ~25× slowdown). Pass it explicitly so
@@ -439,12 +499,28 @@ export def submit [
     let lines = if $pinned != null {
         ($lines | append [$"git -C '($root)' worktree remove --force '($pinned)' || true"])
     } else { $lines }
-    $lines | str join "\n" | save -f $script
+    let script_text = ($lines | str join "\n")
 
     if $dry_run {
-        print (open --raw $script)
-        return {script: $script, submitted: false}
+        # Nothing is written on a dry run — no stray <stamp> dirs in the tree.
+        print $script_text
+        if $task_text != null { print $"\n# --- task.sh ---\n($task_text)" }
+        return {script: null, submitted: false}
     }
+    # A second leg writing the same <out-dir>/results mid-run corrupts the
+    # checkpointed resume, so refuse while a same-named job is still in the
+    # queue (the default name folds in the experiment dir, so name ≙ run).
+    if $out_dir != null and (which squeue | is-not-empty) {
+        # --Format with an explicit width: the default %j column truncates
+        # long names, and ours carry the whole body + experiment path.
+        let queued = (squeue --me --noheader --Format "Name:256" | lines | str trim)
+        if $name in $queued {
+            error make {msg: $"($name) is already queued/running — wait or `ironmc slurm cancel` it before resubmitting into ($run_dir)"}
+        }
+    }
+    mkdir $jobdir
+    $script_text | save -f $script
+    if $task_text != null { $task_text | save -f $task_script }
     # Build everything the target might run, so `cargo run` inside the job is
     # a no-op exec instead of eating walltime (a failed build aborts here,
     # before anything is queued). A pinned job builds in its own detached
@@ -483,7 +559,10 @@ export def submit [
     let id = ($out | parse "Submitted batch job {id}" | get -o 0.id)
     {
         jobdir: $jobdir
-        result: (if $id != null { $jobdir | path join $"result-($id).json" } else { null })
+        run_dir: $run_dir
+        # Only single-rank non-run targets save a return value; a run target's
+        # data is run_dir, multi-rank results are result-<id>-rank<r>.json.
+        result: (if $id != null and not $is_run and $ranks == 1 { $jobdir | path join $"result-($id).json" } else { null })
         job_id: $id
         partition: $partition
         qos: $qos

@@ -41,22 +41,26 @@ run:
 sync: sync-replica sync-vsc
 
 sync-vsc:
-	@data="$$(ssh -S none -p $(VSC_PORT) $(VSC_HOST) printenv DATA)" && test -n "$$data" && rsync -avP -e 'ssh -S none -p $(VSC_PORT)' --exclude=/.git/ --exclude=/target/ --exclude=/profile/ --exclude=/results/ --exclude=/results-stage1/ --exclude=/slurm/ ./ "$(VSC_HOST):$$data/ironmc/" && rsync -avP -e 'ssh -S none -p $(VSC_PORT)' "$(VSC_HOST):$$data/ironmc/runs" ./
+	@data="$$(ssh -S none -p $(VSC_PORT) $(VSC_HOST) printenv DATA)" && test -n "$$data" && rsync -avP -e 'ssh -S none -p $(VSC_PORT)' --exclude=/.git/ --exclude=/target/ --exclude=/profile/ --exclude=/results/ --exclude=/results-stage1/ --exclude=/slurm/ --exclude=/runs/ ./ "$(VSC_HOST):$$data/ironmc/" && rsync -avP -e 'ssh -S none -p $(VSC_PORT)' "$(VSC_HOST):$$data/ironmc/runs" ./
 
 sync-replica:
-	rsync -avP --exclude=/target/ --exclude=/results/ --exclude=/slurm/ ./ recker@replica.mpi.univie.ac.at:~/ironmc/
+	rsync -avP --exclude=/target/ --exclude=/results/ --exclude=/slurm/ --exclude=/runs/ ./ recker@replica.mpi.univie.ac.at:~/ironmc/
 
+# runs/ mounts at ./runs-vsc, not ./runs: sync-vsc rsyncs into ./runs, and a
+# pull into a live sshfs mount would write straight back to the cluster.
 mount-vsc:
 	@data="$$(ssh -p $(VSC_PORT) $(VSC_HOST) printenv DATA)" && \
 		test -n "$$data" && \
-		mkdir -p "$(CURDIR)/slurm" "$(CURDIR)/results" && \
-		ssh -p $(VSC_PORT) $(VSC_HOST) mkdir -p "$$data/ironmc/slurm" "$$data/ironmc/results" && \
+		mkdir -p "$(CURDIR)/slurm" "$(CURDIR)/results" "$(CURDIR)/runs-vsc" && \
+		ssh -p $(VSC_PORT) $(VSC_HOST) mkdir -p "$$data/ironmc/slurm" "$$data/ironmc/results" "$$data/ironmc/runs" && \
 		{ mountpoint -q "$(CURDIR)/slurm" || sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) "$(VSC_HOST):$$data/ironmc/slurm" "$(CURDIR)/slurm"; } && \
-		{ mountpoint -q "$(CURDIR)/results" || sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) "$(VSC_HOST):$$data/ironmc/results" "$(CURDIR)/results"; }
+		{ mountpoint -q "$(CURDIR)/results" || sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) "$(VSC_HOST):$$data/ironmc/results" "$(CURDIR)/results"; } && \
+		{ mountpoint -q "$(CURDIR)/runs-vsc" || sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) "$(VSC_HOST):$$data/ironmc/runs" "$(CURDIR)/runs-vsc"; }
 
 unmount-vsc:
 	@if mountpoint -q "$(CURDIR)/slurm"; then fusermount3 -u "$(CURDIR)/slurm"; fi
 	@if mountpoint -q "$(CURDIR)/results"; then fusermount3 -u "$(CURDIR)/results"; fi
+	@if mountpoint -q "$(CURDIR)/runs-vsc"; then fusermount3 -u "$(CURDIR)/runs-vsc"; fi
 
 bench: bench-core bench-minimal bench-frohlich
 

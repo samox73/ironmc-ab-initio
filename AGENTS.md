@@ -3,10 +3,14 @@
 ## Repo Map
 
 - `crates/rmc-core` - engine: updates, kernels, update sets, runner, seeding.
-- `crates/rmc-{stats,grids,numeric,io}` - opt-in batteries.
+- `crates/rmc-{stats,grids,numeric,io,diagmc}` - opt-in batteries.
 - `crates/rmc` - facade crate, feature-gated re-exports.
 - `crates/apps/rmc-minimal` - hot-path benchmark fixture.
 - `crates/apps/rmc-frohlich` - full polaron engine and perf fixture.
+- `crates/apps/rmc-ab-initio` - ab-initio LiF engine (CPU slotmap + GPU); configs in `configs/`.
+- `nu/ironmc` - nushell CLI: run targets (`cpu`/`gpu run`) and VSC-5 slurm dispatch (`slurm submit`).
+- `datasets/` - vertex tables and other versioned inputs.
+- `runs/` - experiment dirs from `slurm submit --out-dir runs/<experiment>`: `jobs/<stamp>-<name>/` (scripts + logs, one per submission) beside `results/` (the run's cumulative dumps; resubmitting the same --out-dir resumes the checkpointed run). Run targets read the run dir from `$IRONMC_OUT_DIR`, which submit exports. `slurm/` is the legacy flat job-dir tree.
 
 ## Build & Test
 
