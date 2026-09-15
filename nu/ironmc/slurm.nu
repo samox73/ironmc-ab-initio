@@ -4,6 +4,7 @@
 #   ironmc slurm submit { ironmc ladder run 50 --node } --time 08:00:00
 #   ironmc slurm submit { ironmc gates dmc } --devel   # 10-min devel QoS
 #   ironmc slurm submit { ironmc gpu run 20 --config ladder-lif-gpu }
+#   ironmc slurm submit { ironmc cpu run 50 --out-dir results/cpu/n50 } --devel --ranks 5
 #   ironmc slurm submit { ironmc tables build 50 } --dry-run
 #
 # The job is a closure: inside the braces the full nu toolchain applies —
@@ -48,7 +49,7 @@ def partition-completions [] {
 
 # Namespaces whose commands can be dispatched as jobs. Ab-initio LiF work is
 # the top-level namespaces; other physics gets its own namespace (frohlich).
-const NAMESPACES = [tables ladder gates test bench qe gpu frohlich]
+const NAMESPACES = [tables ladder gates test bench qe cpu gpu frohlich]
 
 # Dispatchable targets, discovered from scope with their signatures, so the
 # list stays current automatically.
@@ -65,6 +66,30 @@ def dispatchable [] {
             }
         }
         | uniq-by name
+}
+
+# Resolve the config file a job body will run with, for provenance: an explicit
+# `--config <name>` in the body, else the target command's `--config` default
+# read from its signature. Returns an existing path (a name maps to
+# configs/<name>.json under `code_root`; a literal path is used as-is) or null
+# when the target takes no config.
+def config-for-body [body: string, code_root: string] {
+    let explicit = ($body | parse --regex '--config\s+(?<c>\S+)' | get -o 0.c)
+    let name = if $explicit != null { $explicit } else {
+        let words = ($body | str replace --regex '^ironmc\s+' '' | split row " " | where {|w| $w != "" })
+        let hits = (dispatchable | where {|cmd|
+            let parts = ($cmd.name | split row " ")
+            ($words | length) >= ($parts | length) and (($words | take ($parts | length)) == $parts)
+        })
+        if ($hits | is-empty) { null } else {
+            $hits | sort-by {|c| $c.name | str length} | last
+                | get params | where parameter_name == "config" | get -o 0.parameter_default
+        }
+    }
+    if $name == null { return null }
+    if ($name | path exists) { return $name }
+    let p = ($code_root | path join crates apps rmc-ab-initio configs $"($name).json")
+    if ($p | path exists) { $p } else { null }
 }
 
 # Every dispatchable target with its arguments and defaults — the catalog of
@@ -216,7 +241,7 @@ export def submit [
     --partition: string@partition-completions = "zen3_0512"
     --devel                    # devel QoS: fixed 10-minute walltime
     --cpus: int = 128          # zen3 nodes have 128 cores
-    --gpu-ranks: int = 1       # >1: srun that many tasks, one GPU each; the target reads $SLURM_PROCID (gpu run does)
+    --ranks: int = 1           # independent MC ranks (each reads $SLURM_PROCID): GPU partitions pack one per GPU, CPU partitions give each a whole node
     --job-name: string         # defaults to the job text with dashes
     --commit-hash: string      # pin the job's code: build in a detached worktree of this
                                # commit; the job runs that tree's code (data paths stay in the
@@ -294,16 +319,24 @@ export def submit [
         error make {msg: "cargo not found in PATH at submit time — load/install the rust toolchain first"}
     }
 
-    if $gpu_ranks > 1 and $row.gpus == 0 {
-        error make {msg: $"--gpu-ranks needs a GPU partition"}
+    # --ranks = independent MC ranks (each its own $SLURM_PROCID + RankDump). A
+    # GPU partition packs ranks onto GPUs (≤ gpus/node, or a multiple → several
+    # nodes); a CPU partition gives each rank a whole node (1 rank/node, all
+    # cores) — this is how the devel QoS's 5 zen3 nodes become one 640-core run.
+    if $ranks < 1 {
+        error make {msg: "--ranks must be ≥ 1"}
     }
-    if $row.gpus > 0 and $gpu_ranks > $row.gpus and $gpu_ranks mod $row.gpus != 0 {
-        error make {msg: $"($partition) has ($row.gpus) GPUs per node; --gpu-ranks must be ≤ ($row.gpus) or a multiple of it"}
+    if $row.gpus > 0 and $ranks > $row.gpus and $ranks mod $row.gpus != 0 {
+        error make {msg: $"($partition) has ($row.gpus) GPUs per node; --ranks must be ≤ ($row.gpus) or a multiple of it"}
     }
-    let nodes = if $row.gpus > 0 and $gpu_ranks > $row.gpus { $gpu_ranks // $row.gpus } else { 1 }
-    let ranks_per_node = if $gpu_ranks > 1 { ($gpu_ranks // $nodes) } else { 1 }
-    let ntasks = if $gpu_ranks > 1 { $gpu_ranks } else { 1 }
-    let cpus_per_task = if $gpu_ranks > 1 { $cpus // $ranks_per_node } else { $cpus }
+    let nodes = if $row.gpus > 0 {
+        if $ranks > $row.gpus { $ranks // $row.gpus } else { 1 }
+    } else {
+        $ranks
+    }
+    let ranks_per_node = if $ranks > 1 { ($ranks // $nodes) } else { 1 }
+    let ntasks = $ranks
+    let cpus_per_task = if $row.gpus > 0 and $ranks > 1 { $cpus // $ranks_per_node } else { $cpus }
     # The GPU count is a per-partition constant (queue map above). VSC-5's
     # submit filter would default to all node GPUs anyway, but it only parses
     # --gres=gpu:N — never use --gpus-per-task (jobs pend forever); the
@@ -336,11 +369,11 @@ export def submit [
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
     ])
-    # gpu run writes its own result files into the run dir, so its stdout is
-    # purely a log; every other target's return value is captured into the
-    # job dir (`save` picks the format from the .json extension). Import both
+    # `cpu run`/`gpu run` write their own result files into the run dir, so their
+    # stdout is purely a log; every other target's return value is captured into
+    # the job dir (`save` picks the format from the .json extension). Import both
     # prefixed and flat so the body works however the module was loaded.
-    let invoke_lines = if ($body =~ '\bgpu run\b') {
+    let invoke_lines = if ($body =~ '\b(gpu|cpu) (run|flat)\b') {
         [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"]
     } else {
         [
@@ -350,11 +383,11 @@ export def submit [
         ]
     }
     let lines = ($lines | append $invoke_lines)
-    # `gpu run` targets carry a mandatory --out-dir (the run's data dir);
-    # parse it so the job can merge the run's cumulative dumps at the end.
+    # `cpu run`/`gpu run` targets carry a mandatory --out-dir (the run's data
+    # dir); parse it so the job can merge the run's cumulative dumps at the end.
     let run_dir = ($body | parse --regex '--out-dir\s+(?<dir>\S+)' | get -o 0.dir)
-    if ($body =~ '\bgpu run\b') and $run_dir == null {
-        error make {msg: "gpu run needs --out-dir <run dir> (e.g. results/gpu/n50-prod) inside the job closure"}
+    if ($body =~ '\b(gpu|cpu) (run|flat)\b') and $run_dir == null {
+        error make {msg: "cpu run / gpu run needs --out-dir <run dir> (e.g. results/cpu/n50-prod) inside the job closure"}
     }
     let merge_lines = if $run_dir != null {
         let dumps = if ($run_dir | str starts-with "/") { $run_dir } else { $root | path join $run_dir }
@@ -366,27 +399,38 @@ export def submit [
             "fi"
         ]
     } else { [] }
-    # Multi-rank GPU jobs: each srun task runs the target with its own GPU and
-    # result file; rank-aware targets (gpu run) read $SLURM_PROCID themselves.
-    let lines = if $gpu_ranks > 1 {
+    # Multi-rank jobs: each srun task runs the target with its own $SLURM_PROCID
+    # (rank) and result file. GPU tasks bind one device each; CPU tasks take a
+    # whole node. Rank-aware targets (cpu run / gpu run) read $SLURM_PROCID.
+    let lines = if $ranks > 1 {
         let task_script = ($jobdir | path join "task.sh")
-        [
-            "#!/bin/bash"
-            "# One GPU per task: bind by node-local task id unless slurm already"
-            "# restricted this task to a single device."
-            "if [ -z \"${CUDA_VISIBLE_DEVICES:-}\" ] || [[ \"$CUDA_VISIBLE_DEVICES\" == *,* ]]; then"
-            "    export CUDA_VISIBLE_DEVICES=${SLURM_LOCALID:-0}"
-            "fi"
-        ] | append (if ($body =~ '\bgpu run\b') {
+        let cuda_bind = if $row.gpus > 0 {
+            [
+                "# One GPU per task: bind by node-local task id unless slurm already"
+                "# restricted this task to a single device."
+                "if [ -z \"${CUDA_VISIBLE_DEVICES:-}\" ] || [[ \"$CUDA_VISIBLE_DEVICES\" == *,* ]]; then"
+                "    export CUDA_VISIBLE_DEVICES=${SLURM_LOCALID:-0}"
+                "fi"
+            ]
+        } else { [] }
+        let task_body = if ($body =~ '\b(gpu|cpu) (run|flat)\b') {
             [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"]
         } else {
             [
                 $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
                 $"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\) | save -f '\"$RESULT\""
-                "echo; echo \"=== result rank ${SLURM_PROCID} \(GPU $CUDA_VISIBLE_DEVICES\) ===\"; cat \"$RESULT\""
+                "echo; echo \"=== result rank ${SLURM_PROCID} ===\"; cat \"$RESULT\""
             ]
-        }) | str join "\n" | save -f $task_script
-        ($lines | drop ($invoke_lines | length) | append [$"srun bash '($task_script)'"] | append $merge_lines)
+        }
+        # Print each task's actual core count — the first thing to check if a CPU
+        # multi-rank run is slow (rayon can only use what srun binds to the task).
+        let diag = ["echo \"rank ${SLURM_PROCID}: nproc=$(nproc) cpus-per-task=${SLURM_CPUS_PER_TASK} rayon=${RAYON_NUM_THREADS}\""]
+        (["#!/bin/bash"] | append $cuda_bind | append $diag | append $task_body | str join "\n" | save -f $task_script)
+        # srun (slurm ≥ 22.05) no longer inherits --cpus-per-task from the batch
+        # allocation, so each task would be pinned to a single CPU and rayon would
+        # run on a ~1-core cpuset (measured: ~25× slowdown). Pass it explicitly so
+        # every task gets its full node's cores.
+        ($lines | drop ($invoke_lines | length) | append [$"srun --cpus-per-task=($cpus_per_task) bash '($task_script)'"] | append $merge_lines)
     } else {
         ($lines | append $merge_lines)
     }
@@ -409,6 +453,13 @@ export def submit [
         git -C $root worktree add --detach $pinned $commit_hash
     }
     cd $code_root
+    # Copy the run's config into the job dir for provenance: job.sh records the
+    # target text, but not the config's *contents* (which may change later). Read
+    # from $code_root so a pinned job captures that commit's config.
+    let cfg_src = (config-for-body $body $code_root)
+    if $cfg_src != null {
+        cp $cfg_src ($jobdir | path join ($cfg_src | path basename))
+    }
     if $row.gpus > 0 {
         # GPU jobs run the gpu-cuda binary (`cargo run --features gpu-cuda`), so
         # build exactly that feature set — and ONLY it. A plain `--workspace`

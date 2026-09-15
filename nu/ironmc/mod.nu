@@ -23,6 +23,7 @@ export use bench.nu
 export use qe.nu
 export use slurm.nu
 export use cuda.nu
+export use cpu.nu
 export use gpu.nu
 export use frohlich.nu
 

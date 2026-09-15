@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use rayon::prelude::*;
 use rmc_core::{Merge, Result, RmcError};
 use rmc_diagmc::measure::{summarize, DiagMeasurement, MeasurementData};
 use rmc_diagmc::{DiagConfig, Model, Report};
@@ -53,9 +54,21 @@ pub fn run_batched(
     max_order_gpu: usize,
 ) -> Result<BatchedRunOutput> {
     let deadline = rmc_diagmc::run::slurm_deadline(cfg.end_time_margin_secs)?;
-    run_batched_with_deadline(model, cfg, chain_offset, group_size, max_order_gpu, deadline)
+    run_batched_opts(
+        model,
+        cfg,
+        BatchedRunOpts {
+            chain_offset,
+            group_size,
+            max_order_gpu,
+            deadline,
+            resume: None,
+            leg_cycles: None,
+        },
+    )
 }
 
+/// As [`run_batched`] but with an explicit, already-computed deadline.
 pub fn run_batched_with_deadline(
     model: &Arc<AbInitioModel>,
     cfg: &DiagConfig,
@@ -64,6 +77,68 @@ pub fn run_batched_with_deadline(
     max_order_gpu: usize,
     deadline: Option<std::time::Instant>,
 ) -> Result<BatchedRunOutput> {
+    run_batched_opts(
+        model,
+        cfg,
+        BatchedRunOpts {
+            chain_offset,
+            group_size,
+            max_order_gpu,
+            deadline,
+            resume: None,
+            leg_cycles: None,
+        },
+    )
+}
+
+/// Knobs for one batched CPU run (or one leg of a checkpointed run) — the CPU
+/// twin of [`crate::gpu::run::DeviceRunOpts`].
+pub struct BatchedRunOpts {
+    pub chain_offset: u64,
+    pub group_size: usize,
+    pub max_order_gpu: usize,
+    /// Stop between cycles once past this instant (see `slurm_deadline`).
+    pub deadline: Option<std::time::Instant>,
+    /// Resume from a checkpoint: (total cycles already done, final chain
+    /// states). Counter-addressable RNG makes the resumed trajectory
+    /// bit-identical to an uninterrupted run.
+    pub resume: Option<(u64, Vec<FlatDiagram>)>,
+    /// Cap this leg at N cycles (deterministic legs; the deadline still
+    /// applies on top).
+    pub leg_cycles: Option<u64>,
+}
+
+impl Default for BatchedRunOpts {
+    fn default() -> Self {
+        Self {
+            chain_offset: 0,
+            group_size: DEFAULT_GROUP_SIZE,
+            max_order_gpu: DEFAULT_MAX_ORDER_GPU,
+            deadline: None,
+            resume: None,
+            leg_cycles: None,
+        }
+    }
+}
+
+/// The batched driver with the full option set: rank offset, deadline,
+/// checkpoint resume, and per-leg cycle caps. Chains step in lockstep groups
+/// (group-uniform update selection) but never interact, so rayon runs the
+/// groups in parallel — the counter-addressable RNG and the fixed global-chain
+/// merge order keep the result bit-identical to a single-threaded run.
+pub fn run_batched_opts(
+    model: &Arc<AbInitioModel>,
+    cfg: &DiagConfig,
+    opts: BatchedRunOpts,
+) -> Result<BatchedRunOutput> {
+    let BatchedRunOpts {
+        chain_offset,
+        group_size,
+        max_order_gpu,
+        deadline,
+        resume,
+        leg_cycles,
+    } = opts;
     if cfg.chains == 0 {
         return Err(RmcError::InvalidArgument(
             "batched runs must pin `chains` explicitly (auto-sizing would break \
@@ -109,8 +184,33 @@ pub fn run_batched_with_deadline(
         );
     }
 
-    let template = build_chain(model, cfg, max_order_gpu)?;
-    let mut chains: Vec<FlatDiagram> = vec![template; n_chains];
+    // Fresh run builds one template per chain; a resumed leg continues from the
+    // checkpoint's final chain states (validated against the config).
+    let (cycle_start0, mut chains): (u64, Vec<FlatDiagram>) = match resume {
+        Some((cycles_done, chains)) => {
+            if chains.len() != n_chains {
+                return Err(RmcError::InvalidArgument(format!(
+                    "checkpoint has {} chains, config wants {n_chains}",
+                    chains.len()
+                )));
+            }
+            if chains[0].capacity() != 2 * max_order_gpu + 2 {
+                return Err(RmcError::InvalidArgument(
+                    "checkpoint capacity differs from --max-order-gpu".to_string(),
+                ));
+            }
+            if cycles_done >= total_cycles {
+                return Err(RmcError::InvalidState(format!(
+                    "run already complete ({cycles_done}/{total_cycles} cycles)"
+                )));
+            }
+            (cycles_done, chains)
+        }
+        None => {
+            let template = build_chain(model, cfg, max_order_gpu)?;
+            (0, vec![template; n_chains])
+        }
+    };
     let mut updates = (0..n_chains)
         .map(|_| {
             if cfg.fixed_tau {
@@ -144,67 +244,92 @@ pub fn run_batched_with_deadline(
         })
         .collect();
 
-    let mut step_secs = 0.0;
-    let mut replay_secs = 0.0;
-    let mut measured_steps_per_chain = 0u64;
-    let mut cycles_done = 0u64;
-    for cycle in 0..total_cycles {
+    let leg_end = match leg_cycles {
+        Some(budget) => total_cycles.min(cycle_start0 + budget),
+        None => total_cycles,
+    };
+    // Parallelize over CHAINS, each running a whole CHUNK of cycles per rayon
+    // task (stepping + measuring fused) — coarse-grained, like the slotmap
+    // runner. The natural GPU shape (fork-join per cycle) is a disaster on CPU:
+    // it pays a rayon barrier every cycle over tiny tasks and bounces each
+    // chain's (multi-KB) state between cores, so ~all wall time goes to overhead
+    // (measured: ~36 ms/cycle of which the MC work is µs). Chains never interact,
+    // so this is bit-identical; the deadline is checked between chunks, so all
+    // chains stay in lockstep at chunk boundaries and `cycles_done` is a single
+    // consistent resume point.
+    const CYCLES_PER_CHUNK: u64 = 256;
+    let compute_start = std::time::Instant::now();
+    let mut cycles_done = cycle_start0;
+    while cycles_done < leg_end {
         if let Some(deadline) = deadline {
             if std::time::Instant::now() >= deadline {
                 break;
             }
         }
-        cycles_done = cycle + 1;
-        let measured = cycle >= warmup_cycles;
-        let t0 = std::time::Instant::now();
-        for s in 0..steps_per_cycle {
-            let step = cycle * steps_per_cycle + s;
-            for (local_group, (chain_group, update_group)) in chains
-                .chunks_mut(group_size)
-                .zip(updates.chunks_mut(group_size))
-                .enumerate()
-            {
-                let group_id = chain_offset / group_size as u64 + local_group as u64;
-                let update_index =
-                    (keyed_draw(cfg.seed, group_id, step, u32::MAX)[0] as usize) % n_updates;
-                for (offset, (chain, updates)) in
-                    chain_group.iter_mut().zip(update_group).enumerate()
-                {
-                    let chain_id = chain_offset + (local_group * group_size + offset) as u64;
-                    let mut rng = PhiloxRng::new(cfg.seed, chain_id, step);
-                    let (accepted, impossible) =
-                        step_selected(chain, updates, update_index, &mut rng);
-                    let counter = &mut update_stats[update_index];
-                    counter.proposed += 1;
-                    counter.impossible += u64::from(impossible);
-                    counter.accepted += u64::from(accepted);
+        let chunk_lo = cycles_done;
+        let chunk_hi = leg_end.min(chunk_lo + CYCLES_PER_CHUNK);
+        let chunk_stats: Vec<Vec<(u64, u64, u64)>> = chains
+            .par_iter_mut()
+            .zip(updates.par_iter_mut())
+            .zip(measurements.par_iter_mut())
+            .enumerate()
+            .map(|(local_chain, ((chain, chain_updates), measurement))| {
+                let chain_id = chain_offset + local_chain as u64;
+                // Group-uniform update selection is keyed by group id; each chain
+                // recomputes its own group's draw (identical within a group), so
+                // per-chain parallelism reproduces any group_size exactly.
+                let group_id = chain_id / group_size as u64;
+                let mut local = vec![(0u64, 0u64, 0u64); n_updates];
+                for cycle in chunk_lo..chunk_hi {
+                    for s in 0..steps_per_cycle {
+                        let step = cycle * steps_per_cycle + s;
+                        let update_index =
+                            (keyed_draw(cfg.seed, group_id, step, u32::MAX)[0] as usize) % n_updates;
+                        let mut rng = PhiloxRng::new(cfg.seed, chain_id, step);
+                        let (accepted, impossible) =
+                            step_selected(chain, chain_updates, update_index, &mut rng);
+                        let counter = &mut local[update_index];
+                        counter.0 += 1;
+                        counter.1 += u64::from(impossible);
+                        counter.2 += u64::from(accepted);
+                    }
+                    if cycle >= warmup_cycles {
+                        measurement.measure_sample(
+                            chain.tau_ext(),
+                            chain.order,
+                            chain.phase,
+                            weight::local_energy(chain, model),
+                        );
+                    }
                 }
+                local
+            })
+            .collect();
+        for counters in &chunk_stats {
+            for (index, (proposed, impossible, accepted)) in counters.iter().enumerate() {
+                update_stats[index].proposed += proposed;
+                update_stats[index].impossible += impossible;
+                update_stats[index].accepted += accepted;
             }
         }
-        step_secs += t0.elapsed().as_secs_f64();
-
-        if measured {
-            measured_steps_per_chain += steps_per_cycle;
-            let t0 = std::time::Instant::now();
-            for (chain, measurement) in chains.iter().zip(&mut measurements) {
-                measurement.measure_sample(
-                    chain.tau_ext(),
-                    chain.order,
-                    chain.phase,
-                    weight::local_energy(chain, model),
-                );
-            }
-            replay_secs += t0.elapsed().as_secs_f64();
-        }
+        cycles_done = chunk_hi;
     }
-    if measured_steps_per_chain < cfg.max_steps {
+    // Stepping and measurement are fused into one parallel pass, so the whole
+    // compute phase is one timer (the old per-cycle step/replay split only made
+    // sense when they were separate rayon passes).
+    let step_secs = compute_start.elapsed().as_secs_f64();
+    let replay_secs = 0.0;
+    // Measured steps THIS leg = cycles in [cycle_start0, cycles_done) past warmup.
+    let measured_steps_per_chain =
+        cycles_done.saturating_sub(cycle_start0.max(warmup_cycles)) * steps_per_cycle;
+    if cycles_done < leg_end {
         log::warn!(
-            "deadline stop: {}/{} measurement steps per chain ({:.1}%); error bars are \
-             honest but larger, and the sample count is wall-clock-dependent",
-            measured_steps_per_chain,
-            cfg.max_steps,
-            100.0 * measured_steps_per_chain as f64 / cfg.max_steps as f64
+            "deadline stop at cycle {cycles_done}/{total_cycles}: {measured_steps_per_chain} \
+             measurement steps per chain this leg; error bars are honest but larger, and the \
+             sample count is wall-clock-dependent"
         );
+    } else if leg_end < total_cycles {
+        log::info!("leg complete: cycles {cycle_start0}..{leg_end} of {total_cycles}");
     }
     for counter in &mut update_stats {
         counter.acc_ratio = if counter.proposed == 0 {

@@ -8,12 +8,12 @@ use rmc_core::mc::{
     default_progress_style, IndicatifProgress, Kernel, MetropolisKernel, Runner, SimulationParams,
     StepOutcome, WithDeadline,
 };
-use rmc_core::random::{ChainId, SeedSource};
+use rmc_core::random::{ChainId, DefaultRng, SeedSource};
 use rmc_core::{Result, RmcError};
 use serde::{Deserialize, Serialize};
 
 use crate::diagram::Diagram;
-use crate::measure::{summarize, DiagMeasurement, Report};
+use crate::measure::{summarize, DiagMeasurement, MeasurementData, Report};
 use crate::model::Model;
 use crate::updates::{update_set, update_set_fixed_tau};
 use crate::weight;
@@ -134,7 +134,35 @@ pub fn slurm_deadline(margin_secs: f64) -> Result<Option<Instant>> {
     Ok(Some(Instant::now() + Duration::from_secs_f64(remaining)))
 }
 
+/// One leg of a checkpointed / multi-rank slotmap run — the CPU-fast engine.
+/// `data` is this leg's raw measurements (for a `RankDump`); `chains` is every
+/// chain's final `(Diagram, rng)`, which a checkpoint saves so the next leg
+/// continues bit-identically.
+pub struct SlotmapLeg {
+    pub report: Report,
+    pub data: MeasurementData,
+    pub steps_done: u64,
+    pub chains: Vec<(Diagram, DefaultRng)>,
+    /// This leg ran its full `max_steps` per chain (i.e. the deadline did not
+    /// truncate it).
+    pub complete: bool,
+}
+
 pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
+    Ok(run_leg(model, cfg, 0, None)?.report)
+}
+
+/// The slotmap run parameterized for multi-node (chain-id `chain_offset`) and
+/// checkpoint resume (`resume` = each chain's saved `(Diagram, rng)`; when
+/// `Some`, warmup is skipped and the chains continue from where they stopped).
+/// Rank `r` passes `chain_offset = r * cfg.chains`; the resulting `N * chains`
+/// streams are all distinct, so merging the ranks equals one big run.
+pub fn run_leg(
+    model: Arc<dyn Model>,
+    cfg: DiagConfig,
+    chain_offset: u64,
+    resume: Option<Vec<(Diagram, DefaultRng)>>,
+) -> Result<SlotmapLeg> {
     cfg.validate()?;
     let deadline = slurm_deadline(cfg.end_time_margin_secs)?;
     if model.n_branches() == 0 {
@@ -144,12 +172,30 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
     }
 
     let chains = if cfg.chains == 0 {
+        // `chain_offset = rank * chains` would collide across ranks if chains
+        // auto-sized per node, and a resumed run must match its checkpoint's
+        // chain count — both require an explicit, node-count-independent pin.
+        if chain_offset != 0 || resume.is_some() {
+            return Err(RmcError::InvalidArgument(
+                "multi-rank or resumed runs must pin `chains` explicitly \
+                 (chains = 0 auto-sizing would break chain-id offsets)"
+                    .to_string(),
+            ));
+        }
         let auto = rayon::current_num_threads() as u64;
         log::info!("chains = 0 → auto-sized to {auto} (one chain per rayon thread)");
         auto
     } else {
         cfg.chains
     };
+    if let Some(resume) = &resume {
+        if resume.len() != chains as usize {
+            return Err(RmcError::InvalidArgument(format!(
+                "checkpoint has {} chains, config wants {chains}",
+                resume.len()
+            )));
+        }
+    }
 
     let expected_samples = cfg.max_steps.div_ceil(cfg.steps_per_cycle) as usize;
     let build_cfg = cfg.clone();
@@ -188,6 +234,7 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
         (diagram, kernel, measurement)
     })
     .chains(chains)
+    .chain_offset(chain_offset)
     .warmup(SimulationParams {
         max_steps: cfg.warmup_steps,
         steps_per_cycle: cfg.steps_per_cycle,
@@ -219,15 +266,19 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
             deadline,
         });
 
-    let output = runner.run(SimulationParams {
-        max_steps: cfg.max_steps,
-        steps_per_cycle: cfg.steps_per_cycle,
-        // 4096 cycles between deadline checks matches the drift-check cadence;
-        // 0 keeps the loop check-free when no deadline is set.
-        cycles_per_check: if deadline.is_some() { 4096 } else { 0 },
-    })?;
+    let output = runner.run_resumable(
+        SimulationParams {
+            max_steps: cfg.max_steps,
+            steps_per_cycle: cfg.steps_per_cycle,
+            // 4096 cycles between deadline checks matches the drift-check cadence;
+            // 0 keeps the loop check-free when no deadline is set.
+            cycles_per_check: if deadline.is_some() { 4096 } else { 0 },
+        },
+        resume,
+    )?;
     let total_steps = chains * cfg.max_steps;
-    if output.stats.steps_done < total_steps {
+    let complete = output.stats.steps_done >= total_steps;
+    if !complete {
         log::warn!(
             "deadline stop: {}/{} measurement steps completed ({:.1}%); \
              error bars are honest but larger, and the sample count is \
@@ -237,8 +288,9 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
             100.0 * output.stats.steps_done as f64 / total_steps as f64
         );
     }
+    let data = output.output;
     let mut report = summarize(
-        output.output,
+        data.clone(),
         model.electron_energy(cfg.p_ext),
         cfg.mu,
         cfg.max_tau,
@@ -246,7 +298,15 @@ pub fn run(model: Arc<dyn Model>, cfg: DiagConfig) -> Result<Report> {
         cfg.fixed_tau,
     )?;
     report.steps_done = output.stats.steps_done;
-    Ok(report)
+    let chain_states: Vec<(Diagram, DefaultRng)> =
+        output.states.into_iter().zip(output.rngs).collect();
+    Ok(SlotmapLeg {
+        report,
+        data,
+        steps_done: output.stats.steps_done,
+        chains: chain_states,
+        complete,
+    })
 }
 
 struct DriftCheckedKernel<S> {

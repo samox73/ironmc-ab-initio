@@ -6,9 +6,10 @@
 
 use std::path::Path;
 
+use rmc_core::random::DefaultRng;
 use rmc_core::Merge;
 use rmc_diagmc::measure::{summarize, MeasurementData};
-use rmc_diagmc::{DiagConfig, Report};
+use rmc_diagmc::{DiagConfig, Diagram, Report};
 use serde::{Deserialize, Serialize};
 
 type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -17,6 +18,7 @@ type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 // these bincode payloads is a version bump, not silent data orphaning.
 const DUMP_MAGIC: &[u8; 8] = b"RMCDUMP\0";
 const CKPT_MAGIC: &[u8; 8] = b"RMCCKPT\0";
+const SLOT_CKPT_MAGIC: &[u8; 8] = b"RMCSCKP\0";
 const FORMAT_VERSION: u32 = 1;
 
 fn write_header(writer: &mut impl std::io::Write, magic: &[u8; 8]) -> BoxResult<()> {
@@ -176,6 +178,44 @@ impl Checkpoint {
             .map_err(|e| format!("cannot open checkpoint '{}': {e}", path.as_ref().display()))?;
         let mut reader = std::io::BufReader::new(file);
         check_header(&mut reader, CKPT_MAGIC, "Checkpoint")?;
+        Ok(bincode::deserialize_from(&mut reader)?)
+    }
+}
+
+/// Resume point of a checkpointed *slotmap* run — the CPU-fast engine behind
+/// `run-cpu`. Unlike the device engine's counter-addressable Philox RNG, the
+/// slotmap engine's `Xoshiro256PlusPlus` is stateful, so the checkpoint stores
+/// each chain's `(Diagram, rng)` in full; restoring both continues the exact
+/// trajectory. Chains are async (each stops at its own step when the deadline
+/// hits), so there is no single `cycles_done` — legs accumulate via `merge`.
+#[derive(Serialize, Deserialize)]
+pub struct SlotmapCheckpoint {
+    pub config: DiagConfig,
+    pub chain_offset: u64,
+    /// Legs completed so far (leg k wrote `batches-rank{r}-leg{k}.bin`).
+    pub leg: u64,
+    /// Build provenance of the producing binary; resume refuses on drift.
+    pub code: String,
+    pub chains: Vec<(Diagram, DefaultRng)>,
+}
+
+impl SlotmapCheckpoint {
+    pub fn filename(rank: u64) -> String {
+        format!("checkpoint-rank{rank}.bin")
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
+        write_header(&mut writer, SLOT_CKPT_MAGIC)?;
+        bincode::serialize_into(&mut writer, self)?;
+        Ok(())
+    }
+
+    pub fn load(path: impl AsRef<Path>) -> BoxResult<Self> {
+        let file = std::fs::File::open(&path)
+            .map_err(|e| format!("cannot open checkpoint '{}': {e}", path.as_ref().display()))?;
+        let mut reader = std::io::BufReader::new(file);
+        check_header(&mut reader, SLOT_CKPT_MAGIC, "SlotmapCheckpoint")?;
         Ok(bincode::deserialize_from(&mut reader)?)
     }
 }

@@ -24,7 +24,7 @@ type Cf = Complex64;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub const DEFAULT_PHFREQ_CUTOFF_EV: f64 = 1.0e-3;
-pub const DEFAULT_MAX_BYTES: u64 = 8 * 1024_u64.pow(3);
+pub const DEFAULT_MAX_BYTES: u64 = 16 * 1024_u64.pow(3);
 
 const CACHE_MAGIC: &[u8; 8] = b"RMCVTAB\0";
 const CACHE_VERSION: u32 = 1;
