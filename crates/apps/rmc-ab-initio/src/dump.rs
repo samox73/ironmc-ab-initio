@@ -27,6 +27,23 @@ fn write_header(writer: &mut impl std::io::Write, magic: &[u8; 8]) -> BoxResult<
     Ok(())
 }
 
+/// Header + payload to `<path>.tmp`, fsync, rename over `path`: a kill
+/// mid-write (OOM, node failure — the very cases checkpoints exist for) must
+/// never truncate the previous good file, which for a checkpoint is the run's
+/// only resume point.
+fn save_atomic(path: &Path, magic: &[u8; 8], value: &impl Serialize) -> BoxResult<()> {
+    let tmp = path.with_extension("bin.tmp");
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    write_header(&mut writer, magic)?;
+    bincode::serialize_into(&mut writer, value)?;
+    writer
+        .into_inner()
+        .map_err(std::io::IntoInnerError::into_error)?
+        .sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 fn check_header(reader: &mut impl std::io::Read, magic: &[u8; 8], what: &str) -> BoxResult<()> {
     let mut file_magic = [0u8; 8];
     let mut version = [0u8; 4];
@@ -72,10 +89,7 @@ impl RankDump {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
-        let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
-        write_header(&mut writer, DUMP_MAGIC)?;
-        bincode::serialize_into(&mut writer, self)?;
-        Ok(())
+        save_atomic(path.as_ref(), DUMP_MAGIC, self)
     }
 
     pub fn load(path: impl AsRef<Path>) -> BoxResult<Self> {
@@ -155,8 +169,8 @@ pub struct Checkpoint {
     pub cycles_done: u64,
     /// Legs completed so far (leg k wrote `batches-rank{r}-leg{k}.bin`).
     pub leg: u64,
-    /// Build provenance of the producing binary; resume refuses on drift
-    /// (legs of one trajectory must run the same code) unless overridden.
+    /// Build provenance of the producing binary — recorded so a run's results
+    /// can be reproduced by rebuilding at this hash (resume warns on drift).
     pub code: String,
     pub chains: Vec<crate::flat::FlatDiagram>,
 }
@@ -167,10 +181,7 @@ impl Checkpoint {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
-        let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
-        write_header(&mut writer, CKPT_MAGIC)?;
-        bincode::serialize_into(&mut writer, self)?;
-        Ok(())
+        save_atomic(path.as_ref(), CKPT_MAGIC, self)
     }
 
     pub fn load(path: impl AsRef<Path>) -> BoxResult<Self> {
@@ -188,13 +199,21 @@ impl Checkpoint {
 /// each chain's `(Diagram, rng)` in full; restoring both continues the exact
 /// trajectory. Chains are async (each stops at its own step when the deadline
 /// hits), so there is no single `cycles_done` — legs accumulate via `merge`.
+///
+/// Bit-identity caveat: the drift-check resync (exact weight recompute every
+/// 4096 cycles) counts from *leg start*, so legs long enough for it to fire
+/// resync at different absolute steps than an uninterrupted run — the cached
+/// weight's low bits can then differ and later accept decisions may flip.
+/// Estimates stay exact either way; only bit-level replay of a *split* run is
+/// conditional on no resync firing.
 #[derive(Serialize, Deserialize)]
 pub struct SlotmapCheckpoint {
     pub config: DiagConfig,
     pub chain_offset: u64,
     /// Legs completed so far (leg k wrote `batches-rank{r}-leg{k}.bin`).
     pub leg: u64,
-    /// Build provenance of the producing binary; resume refuses on drift.
+    /// Build provenance of the producing binary — recorded so a run's results
+    /// can be reproduced by rebuilding at this hash (resume warns on drift).
     pub code: String,
     pub chains: Vec<(Diagram, DefaultRng)>,
 }
@@ -205,10 +224,7 @@ impl SlotmapCheckpoint {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> BoxResult<()> {
-        let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
-        write_header(&mut writer, SLOT_CKPT_MAGIC)?;
-        bincode::serialize_into(&mut writer, self)?;
-        Ok(())
+        save_atomic(path.as_ref(), SLOT_CKPT_MAGIC, self)
     }
 
     pub fn load(path: impl AsRef<Path>) -> BoxResult<Self> {

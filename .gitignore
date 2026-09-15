@@ -6,3 +6,4 @@ results/
 /slurm/
 /plans/
 /.worktrees/
+.ipynb_checkpoints/

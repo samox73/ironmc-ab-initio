@@ -64,7 +64,8 @@ export def flat [
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID
     --chains: int = 0             # override the config's chain count (0 = keep config)
     --rank-table: int = 800       # table rank in the artifact filename
-    --group: int = 1              # update-selection group size (1 = per-chain)
+    --group: int = 1              # update-selection group size (1 = per-chain); not in the
+                                  # checkpoint — must be identical across legs of one run
     --max-order-gpu: int = 256    # FlatDiagram capacity = 2·N+2
     --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
     --out-dir: string             # run directory (holds dumps + a batched checkpoint); defaults
@@ -102,6 +103,9 @@ export def merge [
     --out: string                 # merged report path (default <dir>/merged.json)
 ] {
     cd $ROOT
+    # Same dir resolution as run/flat: relative run dirs live in the data root.
+    let data_root = ($env.IRONMC_DATA_ROOT? | default ($ROOT | path expand))
+    let dir = if ($dir | str starts-with "/") { $dir } else { $data_root | path join $dir }
     let dumps = (glob ($dir | path join "batches-rank*.bin"))
     if ($dumps | is-empty) {
         error make {msg: $"no batches-rank*.bin in ($dir)"}

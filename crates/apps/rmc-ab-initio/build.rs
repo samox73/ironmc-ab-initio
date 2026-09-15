@@ -17,20 +17,27 @@ fn main() {
     let code = if dirty { format!("{hash}-dirty") } else { hash };
     println!("cargo:rustc-env=IRONMC_GIT_HASH={code}");
 
-    // Recompile the provenance only when HEAD actually moves (a commit/checkout),
-    // watching HEAD's RESOLVED path. Two hazards this avoids, both of which force
-    // an in-job recompile that — under multi-rank `srun` — makes N cargo
-    // processes race on the shared target/ and corrupt the .rlib:
-    //   * `.git/index` (the old trigger) is rewritten by `git status` above,
-    //     especially on a dirty tree, so watching it makes build.rs invalidate
-    //     itself on essentially every build. Never watch it.
+    // Recompile the provenance only when HEAD actually moves, watching the HEAD
+    // *reflog*: appended on every commit/checkout/reset, untouched by `git
+    // status`/staging, so its mtime is stable between a login-node prebuild and
+    // the compute-node job. Hazards this dodges, each of which forces an in-job
+    // recompile that — under multi-rank `srun` — makes N cargo processes race on
+    // the shared target/ and corrupt the .rlib:
+    //   * `.git/index` is rewritten by `git status` above, especially on a dirty
+    //     tree, so watching it invalidates build.rs on essentially every build.
+    //   * `.git/HEAD` alone misses same-branch commits (they move the branch
+    //     ref, not HEAD — its mtime provably doesn't change), freezing the hash
+    //     at the last checkout. Only the fallback when the reflog is disabled.
     //   * In a detached `git worktree` (the `--commit-hash` path) `.git` is a
-    //     *file*, so the old relative `../../../.git/HEAD` did not exist — cargo
-    //     treats a missing watched path as always-changed and rebuilds every
-    //     time. `--absolute-git-dir` resolves the worktree's real gitdir.
-    // HEAD itself is not rewritten by `git status`/staging, so its mtime is
-    // stable between a login-node prebuild and the compute-node job.
+    //     *file*; cargo treats a missing watched path as always-changed.
+    //     `--absolute-git-dir` resolves the worktree's real gitdir, which has
+    //     its own logs/HEAD.
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
-        println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        let reflog = format!("{git_dir}/logs/HEAD");
+        if std::path::Path::new(&reflog).exists() {
+            println!("cargo:rerun-if-changed={reflog}");
+        } else {
+            println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        }
     }
 }

@@ -277,6 +277,11 @@ export def submit [
     if ($body | str starts-with "|") {
         error make {msg: "the job closure must not take parameters — flags go after the braces"}
     }
+    # job.sh replays the body inside a single-quoted bash string; a ' in the
+    # body would end that string early and run the rest as shell.
+    if ($body | str contains "'") {
+        error make {msg: "the job closure must not contain single quotes — nu string literals can use double quotes instead"}
+    }
     if ($env.DATA? | is-empty) {
         error make {msg: "submit needs $env.DATA (the VSC-5 shared filesystem) — run it on the cluster"}
     }

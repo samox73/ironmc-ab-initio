@@ -241,7 +241,6 @@ fn load_resume(
     rank: u64,
     config: &DiagConfig,
     chain_offset: u64,
-    allow_code_drift: bool,
 ) -> BoxResult<(Option<(u64, Vec<FlatDiagram>)>, u64)> {
     use rmc_ab_initio::dump::{same_trajectory, Checkpoint};
 
@@ -262,24 +261,14 @@ fn load_resume(
     if checkpoint.chain_offset != chain_offset {
         return Err("checkpoint chain offset differs from --rank; refusing to resume".into());
     }
-    // Legs of one trajectory must run the same code — the bit-determinism
-    // guarantee assumes it.
+    // Provenance note, not a guard: reproducing a run means rebuilding at the
+    // recorded hash (`slurm submit --commit-hash`); mixed-code legs are allowed.
     if checkpoint.code != rmc_ab_initio::code_version() {
-        if allow_code_drift {
-            log::warn!(
-                "code drift: checkpoint from {}, this binary is {} (--allow-code-drift)",
-                checkpoint.code,
-                rmc_ab_initio::code_version()
-            );
-        } else {
-            return Err(format!(
-                "checkpoint was produced by code {}, this binary is {}; rebuild at that \
-                 commit or pass --allow-code-drift true",
-                checkpoint.code,
-                rmc_ab_initio::code_version()
-            )
-            .into());
-        }
+        log::warn!(
+            "code drift: checkpoint from {}, this binary is {}",
+            checkpoint.code,
+            rmc_ab_initio::code_version()
+        );
     }
     if checkpoint.config.max_steps != config.max_steps {
         log::info!(
@@ -415,11 +404,13 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     // group_size = 1 by default: per-chain update selection, no GPU-style
     // lockstep waste (group-uniform selection is a device concession).
+    // NOT recorded in the checkpoint — every leg of a run must pass the same
+    // --group, or the resumed trajectory silently diverges from an
+    // uninterrupted run (still valid MC, but no longer bit-reproducible).
     let group: usize = take(&mut options, "--group", Some(1))?;
     let max_order_gpu: usize =
         take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
     let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
-    let allow_code_drift: bool = take(&mut options, "--allow-code-drift", Some(false))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed,
     // merged, or told apart from an accidental identical resubmission.
     let out_dir: PathBuf = take(&mut options, "--out-dir", None)?;
@@ -433,7 +424,7 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 
     // Resume when this out-dir already holds our checkpoint; otherwise leg 0.
     std::fs::create_dir_all(&out_dir)?;
-    let (resume, leg) = load_resume(&out_dir, rank, &config, chain_offset, allow_code_drift)?;
+    let (resume, leg) = load_resume(&out_dir, rank, &config, chain_offset)?;
 
     let deadline = rmc_diagmc::run::slurm_deadline(config.end_time_margin_secs)?;
     let started = Instant::now();
@@ -468,15 +459,14 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 }
 
 /// Load a rank's `SlotmapCheckpoint` from `out_dir` if present, validating it
-/// against the current config (only `max_steps` may change between legs) + code
-/// drift. Returns each chain's saved `(Diagram, rng)` and the new leg index, or
+/// against the current config (only `max_steps` may change between legs).
+/// Returns each chain's saved `(Diagram, rng)` and the new leg index, or
 /// `(None, 0)` for a fresh run. The slotmap analog of [`load_resume`].
 fn load_slotmap_resume(
     out_dir: &Path,
     rank: u64,
     config: &DiagConfig,
     chain_offset: u64,
-    allow_code_drift: bool,
 ) -> BoxResult<(Option<Vec<(Diagram, DefaultRng)>>, u64)> {
     use rmc_ab_initio::dump::{same_trajectory, SlotmapCheckpoint};
 
@@ -495,22 +485,14 @@ fn load_slotmap_resume(
     if checkpoint.chain_offset != chain_offset {
         return Err("checkpoint chain offset differs from --rank; refusing to resume".into());
     }
+    // Provenance note, not a guard: reproducing a run means rebuilding at the
+    // recorded hash (`slurm submit --commit-hash`); mixed-code legs are allowed.
     if checkpoint.code != rmc_ab_initio::code_version() {
-        if allow_code_drift {
-            log::warn!(
-                "code drift: checkpoint from {}, this binary is {} (--allow-code-drift)",
-                checkpoint.code,
-                rmc_ab_initio::code_version()
-            );
-        } else {
-            return Err(format!(
-                "checkpoint was produced by code {}, this binary is {}; rebuild at that \
-                 commit or pass --allow-code-drift true",
-                checkpoint.code,
-                rmc_ab_initio::code_version()
-            )
-            .into());
-        }
+        log::warn!(
+            "code drift: checkpoint from {}, this binary is {}",
+            checkpoint.code,
+            rmc_ab_initio::code_version()
+        );
     }
     let leg = checkpoint.leg + 1;
     log::info!(
@@ -524,9 +506,10 @@ fn load_slotmap_resume(
 /// `run-cpu`: the slotmap CPU engine — the fast production path (O(1) diagram
 /// updates, ~20× the per-core throughput of `run-flat`). Checkpoint + multi-node
 /// like `run-gpu`: resuming from a `SlotmapCheckpoint` in `--out-dir` continues
-/// bit-identically, and independent `--rank`s across nodes merge offline. Each
-/// invocation runs one leg (up to `max_steps`/chain or until the deadline); legs
-/// accumulate via `merge`.
+/// each chain's exact trajectory (bit-identical up to the drift-check resync,
+/// whose cadence restarts per leg — see `SlotmapCheckpoint`), and independent
+/// `--rank`s across nodes merge offline. Each invocation runs one leg (up to
+/// `max_steps`/chain or until the deadline); legs accumulate via `merge`.
 fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     use rmc_ab_initio::dump::SlotmapCheckpoint;
 
@@ -544,7 +527,6 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         }
     }
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
-    let allow_code_drift: bool = take(&mut options, "--allow-code-drift", Some(false))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed, merged,
     // or told apart from an accidental identical resubmission.
     let out_dir: PathBuf = take(&mut options, "--out-dir", None)?;
@@ -557,8 +539,7 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let chain_offset = rank * config.chains;
 
     std::fs::create_dir_all(&out_dir)?;
-    let (resume, leg) =
-        load_slotmap_resume(&out_dir, rank, &config, chain_offset, allow_code_drift)?;
+    let (resume, leg) = load_slotmap_resume(&out_dir, rank, &config, chain_offset)?;
 
     let started = Instant::now();
     let leg_out = rmc_diagmc::run_leg(model.clone(), config.clone(), chain_offset, resume)?;
@@ -662,7 +643,6 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     let cycles_per_launch: u64 =
         take(&mut options, "--cycles-per-launch", Some(CYCLES_PER_LAUNCH))?;
     let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
-    let allow_code_drift: bool = take(&mut options, "--allow-code-drift", Some(false))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed,
     // merged, or told apart from an accidental identical resubmission.
     let out_dir: PathBuf = take(&mut options, "--out-dir", None)?;
@@ -678,7 +658,7 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     // counter-addressable, so the continued trajectory is bit-identical to an
     // uninterrupted run); otherwise this is leg 0 of a fresh run.
     std::fs::create_dir_all(&out_dir)?;
-    let (resume, leg) = load_resume(&out_dir, rank, &config, chain_offset, allow_code_drift)?;
+    let (resume, leg) = load_resume(&out_dir, rank, &config, chain_offset)?;
 
     let deadline = rmc_diagmc::run::slurm_deadline(config.end_time_margin_secs)?;
     let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
