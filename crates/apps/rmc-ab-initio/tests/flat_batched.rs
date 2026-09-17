@@ -54,7 +54,8 @@ fn offset_split_runs_merge_bit_identically() {
     let model = synthetic_model(7);
     let full_cfg = test_config(4);
     let full = run_batched(&model, &full_cfg, 0, 2, 24).unwrap();
-    assert!(full.report.mean_order.mean > 0.05, "walk never left order 0");
+    let full_report = full.report.as_ref().unwrap();
+    assert!(full_report.mean_order.mean > 0.05, "walk never left order 0");
 
     let half_cfg = test_config(2);
     let rank0 = run_batched(&model, &half_cfg, 0, 2, 24).unwrap();
@@ -69,7 +70,7 @@ fn offset_split_runs_merge_bit_identically() {
     let merged = merge_dumps(dumps).unwrap();
     // Debug-string equality: bit-identical floats (shortest-roundtrip) while
     // treating the NaN placeholders in empty green_energy bins as equal.
-    assert_eq!(format!("{merged:?}"), format!("{:?}", full.report));
+    assert_eq!(format!("{merged:?}"), format!("{full_report:?}"));
 
     // Input order must not matter (merge sorts by rank).
     let dumps = vec![
@@ -78,7 +79,7 @@ fn offset_split_runs_merge_bit_identically() {
     ];
     assert_eq!(
         format!("{:?}", merge_dumps(dumps).unwrap()),
-        format!("{:?}", full.report)
+        format!("{full_report:?}")
     );
 }
 
@@ -139,33 +140,32 @@ fn batched_driver_agrees_with_slotmap_runner() {
         end_time_margin_secs: 60.0,
     };
     let batched = run_batched(&model, &cfg, 0, 4, 24).unwrap();
+    let batched_report = batched.report.as_ref().unwrap();
     let slotmap = rmc_diagmc::run(model.clone() as Arc<dyn Model>, cfg).unwrap();
 
-    let difference = (batched.report.e0_thermo.mean - slotmap.e0_thermo.mean).abs();
-    let sigma = batched
-        .report
+    let difference = (batched_report.e0_thermo.mean - slotmap.e0_thermo.mean).abs();
+    let sigma = batched_report
         .e0_thermo
         .stderr
         .hypot(slotmap.e0_thermo.stderr);
     assert!(
         difference < 5.0 * sigma.max(1.0e-12),
         "e0_thermo disagree: batched {} ± {} vs slotmap {} ± {}",
-        batched.report.e0_thermo.mean,
-        batched.report.e0_thermo.stderr,
+        batched_report.e0_thermo.mean,
+        batched_report.e0_thermo.stderr,
         slotmap.e0_thermo.mean,
         slotmap.e0_thermo.stderr
     );
 
-    let order_difference = (batched.report.mean_order.mean - slotmap.mean_order.mean).abs();
-    let order_sigma = batched
-        .report
+    let order_difference = (batched_report.mean_order.mean - slotmap.mean_order.mean).abs();
+    let order_sigma = batched_report
         .mean_order
         .stderr
         .hypot(slotmap.mean_order.stderr);
     assert!(
         order_difference < 5.0 * order_sigma.max(1.0e-12),
         "mean order disagrees: {} vs {}",
-        batched.report.mean_order.mean,
+        batched_report.mean_order.mean,
         slotmap.mean_order.mean
     );
 }
@@ -185,11 +185,15 @@ fn deadline_truncates_but_reports_honestly() {
         out.steps_done < cfg.max_steps * cfg.chains,
         "run was not truncated"
     );
-    assert_eq!(out.report.steps_done, out.steps_done);
-    assert!(out.report.mean_order.mean.is_finite());
+    let out_report = out.report.as_ref().unwrap();
+    assert_eq!(out_report.steps_done, out.steps_done);
+    assert!(out_report.mean_order.mean.is_finite());
 
-    // An already-expired deadline measures nothing and fails loudly instead
-    // of writing an empty report.
+    // An already-expired deadline measures nothing: no report to summarize,
+    // but chains + cycles_done still come back so the caller can checkpoint
+    // warmup progress instead of losing the leg.
     let expired = std::time::Instant::now();
-    assert!(run_batched_with_deadline(&model, &cfg, 0, 2, 24, Some(expired)).is_err());
+    let warmup_only = run_batched_with_deadline(&model, &cfg, 0, 2, 24, Some(expired)).unwrap();
+    assert!(warmup_only.report.is_none());
+    assert_eq!(warmup_only.steps_done, 0);
 }

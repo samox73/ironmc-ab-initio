@@ -1,3 +1,9 @@
+# Run configs (LiF)
+
+Production DiagConfigs are named `lif-<engine>[-tauN].json`: `lif-slotmap` (CPU, `cpu run`), `lif-flat` (batched CPU parity engine, kept identical to slotmap), `lif-gpu` (`gpu run`), `lif-gpu-smoke` (short scaling probe). No τ suffix means the production default max_tau = 240 eV⁻¹ (≈ FEP-DMC's effective 1/k_BT at 50 K); `-tau60`/`-tau120` variants keep the shorter windows for guards and comparisons. `ironmc configs list` tabulates the knobs side by side.
+
+`metadata-only.json` is not a run config: `max_steps: 0` (invalid as a sampling schedule) switches the run-* subcommands into metadata-only mode — write `run-metadata.json` for an existing run dir and exit, reading only the table head, never touching dumps. Every other field in it is a placeholder; that is harmless because run-metadata.json records only what no other run artifact stores (table grid/rank/filename and the engine) — the config and code provenance live in the checkpoint, the job dir's config copy, and the per-leg result JSONs. Use it to annotate runs that predate the binary writing metadata, e.g. `ironmc cpu run 40 --config metadata-only --out-dir runs/e0-fit/tau60/n40/results`.
+
 # Phase B run configs (LiF)
 
 Two validation stages. Run from the repo root, e.g.

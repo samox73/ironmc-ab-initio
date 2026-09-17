@@ -5,5 +5,7 @@ raw_stats.json
 results/
 /slurm/
 /plans/
+/runs/
+/runs-vsc/
 /.worktrees/
 .ipynb_checkpoints/

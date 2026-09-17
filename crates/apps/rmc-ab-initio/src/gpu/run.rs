@@ -502,28 +502,26 @@ pub fn run_device<R: Runtime>(
     } else if leg_end < total_cycles {
         log::info!("leg complete: cycles {cycle_start0}..{leg_end} of {total_cycles}");
     }
-    if measured_steps_per_chain == 0 {
-        return Err(RmcError::InvalidState(format!(
-            "leg produced no measured samples (ended at cycle {cycle_start}, warmup runs to \
-             {warmup_cycles}); increase the leg budget or walltime"
-        )));
-    }
-
     let data = measurements
         .into_iter()
         .map(DiagMeasurement::into_output)
         .reduce(Merge::merge)
         .expect("chains > 0");
-    let mut report = summarize(
-        data.clone(),
-        model.electron_energy(cfg.p_ext),
-        cfg.mu,
-        cfg.max_tau,
-        cfg.tau_fit,
-        cfg.fixed_tau,
-    )?;
     let steps_done = measured_steps_per_chain * n_chains as u64;
-    report.steps_done = steps_done;
+    let report = if steps_done == 0 {
+        None
+    } else {
+        let mut report = summarize(
+            data.clone(),
+            model.electron_energy(cfg.p_ext),
+            cfg.mu,
+            cfg.max_tau,
+            cfg.tau_fit,
+            cfg.fixed_tau,
+        )?;
+        report.steps_done = steps_done;
+        Some(report)
+    };
     let chains = state.download();
     Ok(BatchedRunOutput {
         report,

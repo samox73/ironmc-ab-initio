@@ -367,6 +367,33 @@ the CPU engine one-to-one); one lane applies accepted mutations between barriers
 are stored planar (separate re/im f32), $\tau$ and all weight arithmetic are f64, and
 momenta are exact integer grid indices, as on the CPU.
 
+\paragraph{Why lockstep execution is mandatory, and why it does not bias the sampling.}
+The warp-uniformity above is a hardware \emph{correctness} requirement, not a tuning
+choice. The cooperative reduce synchronizes the warp with block-wide barriers, and the
+hardware pairs barrier arrivals by \emph{dynamic count}, not by source location: had lanes
+diverged, either some would wait at a barrier the others never reach (deadlock), or the
+counts would happen to match at \emph{different} program points and lanes in unrelated
+phases would race through the one shared scratch buffer (silent bit-level corruption).
+Since the number of barriers a step executes depends on the update type, the proposal
+draws, and the diagram state, control flow must agree across lanes over the \emph{entire
+dynamic trace} --- which redundant execution of identical draws guarantees bit-for-bit.
+The statistical side is equally clean. The update-\emph{type} schedule is drawn from a
+dedicated counter-based stream keyed by (seed, chain, step) --- never by the state --- and
+may even be \emph{shared} by a group of chains (group-uniform selection, the variant used
+when several chains share a warp). Because the schedule is independent of the state and of
+every chain's private proposal/acceptance stream, each chain's \emph{marginal} law is
+exactly that of the standard random-scan chain driven by the mixture kernel
+$n_{\mathrm{upd}}^{-1}\sum_{u}P_{u}$, and the $1/n_{\mathrm{upd}}$ selection probabilities
+of paired moves (phonon insertion $\leftrightarrow$ removal) cancel in the acceptance
+ratio exactly as in per-chain selection. Sharing the schedule alters only the \emph{joint}
+law: chains attempting the same move class simultaneously are weakly correlated, which can
+only inflate the variance --- a chain average is linear, so its expectation is untouched.
+The load-bearing invariant is that selection stays state-independent: an ``impossible''
+proposal (e.g.\ a removal at order zero) counts as proposed-and-rejected and is never
+redrawn, since resampling until a possible move would make the effective selection
+distribution state-dependent and break the cancellation --- a genuine bias, not a
+determinism nit.
+
 \paragraph{Determinism and multi-GPU scaling.}
 Because chain streams are keyed by \emph{global} chain ids, a population split across
 ranks (one rank per GPU, chain offset $=\text{rank}\times C$) is a pure repacking of a
@@ -590,6 +617,60 @@ local energy $E_{\mathrm{loc}}=\tau^{-1}\bigl[\sum_{\mathrm{seg}}\varepsilon\,\D
 sign. It is validated against an exactly solvable dispersionless (Lang--Firsov) lattice
 model, $E_{0}=-\bar{g}^{2}/\omega$ at all couplings, and against the Fr\"ohlich
 $\alpha=1,2$ benchmarks, where it agrees with the decay fit at lower variance.
+
+\paragraph{Free-$\tau$ vs.\ fixed-$\tau$ ensembles.}
+Both estimators sample diagrams of the zero-temperature imaginary-time Green's function
+\begin{equation}
+  G(\mathbf{p},\tau) \;=\;
+  \langle 0|\,c_{\mathbf{p}}\,e^{-\tau(\hat H-\mu)}\,c_{\mathbf{p}}^{\dagger}\,|0\rangle
+  \;\xrightarrow{\ \tau\to\infty\ }\; Z\,e^{-(E_{0}-\mu)\tau},
+  \label{eq:green}
+\end{equation}
+a diagram being one electron backbone of external length $\tau$ dressed by phonon arcs
+with internal vertex times and momenta. The two modes differ in whether that
+\emph{external} $\tau$ is itself a sampled variable. In the \emph{free-$\tau$} ensemble
+(\texttt{fixed\_tau: false}) the Markov chain updates $\tau\in(0,\tau_{\max})$ alongside
+the internal degrees of freedom; histogramming the signed weights over $\tau$
+(normalized through the analytically integrable order-zero sector) yields the whole
+curve $G(\tau)$ in one run, from which the decay fit extracts both $E_{0}$ and the
+quasiparticle weight $Z$, with the per-bin local-energy curve $E(\tau)$ as a built-in
+convergence check. Its costs are those of Section~\ref{sec:pitfalls}, P9: statistics
+diluted over the $\tau$ bins with only the large-$\tau$ tail informative, a genuine
+fit-window systematic, and a load-bearing $\mu$ --- the weight carries $e^{\mu\tau}$,
+which shapes the sampled $\tau$ distribution. In the \emph{fixed-$\tau$} ensemble
+(\texttt{fixed\_tau: true}, FEP-DMC's \texttt{zeroTMC}; all production runs) the
+external time is pinned at $\tau_{\max}$ and only internal degrees of freedom are
+sampled: $e^{\mu\tau}$ is a constant that cancels in every ratio, so $\mu$ drops out
+entirely, and all statistics sit at the single $\tau$ that matters. The energy then
+follows from the internal-time rescaling identity: a diagram of $N$ arcs has $2N$
+internal vertex times, so rescaling them by $\tau$ exposes the explicit
+$\tau$-dependence $\tau^{2N}e^{-\sum\varepsilon\,\Delta\tau-\sum\omega\,\Delta\tau}$ of
+each configuration's weight, whence
+\begin{equation}
+  -\partial_{\tau}\ln G(\tau)
+  \;=\; \frac{1}{\tau}\Bigl\langle
+    \sum_{\mathrm{seg}}\varepsilon_{i}\,\Delta\tau_{i}
+    \;+\;\sum_{\mathrm{arcs}}\omega_{a}\,\Delta\tau_{a}
+    \;-\;2N
+  \Bigr\rangle_{\tau}
+  \;=\; E_{0}-\mu+\mathcal{O}\bigl(e^{-\Delta\tau}\bigr),
+  \label{eq:logderiv}
+\end{equation}
+the sign-weighted average taken in the fixed-$\tau$ ensemble. This is the
+$E_{\mathrm{loc}}$ quoted above (the code's \texttt{local\_energy}), and equals
+Eq.~\eqref{eq:estimator} in the $T\to0$ single-band limit up to the vertex-counting
+convention ($-2N$ arcs here vs.\ $-(N_{v}-1)$ vertices there). The estimator therefore
+approaches $E_{0}$ \emph{from above} at finite $\tau$, with the gap $\Delta$ set by the
+polaron-plus-one-phonon continuum, $\Delta\approx\omega_{\mathrm{LO}}$ at
+$\mathbf{p}=\Gamma$. For LiF ($\omega_{\mathrm{LO}}\approx83$~meV) the production
+$\tau_{\max}=60$~eV$^{-1}$ gives $\omega_{\mathrm{LO}}\tau\approx5.0$
+($e^{-5}\approx0.7\%$ of the coupling scale), whereas FEP-DMC's effective
+$\tau_{\max}=1/k_{B}T\approx232$~eV$^{-1}$ at their $T=50$~K gives
+$\omega_{\mathrm{LO}}\tau\approx19$ --- the leading candidate for the few-meV,
+grid-independent offset between the two codes' ladders, under test by a
+$\tau=240$~eV$^{-1}$ guard at $n=20,60$. Because fixed-$\tau$ produces no curve whose
+flattening can be inspected, convergence in $\tau$ is certified by such
+$\tau$-multiplication guards rather than by inspection of $E(\tau)$.
 
 \paragraph{Quantity measured.}
 Rather than the asymptotic slope, the polaron energy is the operator average

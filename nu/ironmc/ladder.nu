@@ -2,9 +2,9 @@
 #
 # Every command returns structured records — pipe them, don't parse them:
 #   ironmc ladder run 20
-#   [20 32 40 50] | each {|n| ironmc ladder run $n} | ironmc ladder fit
+#   ironmc ladder fit runs/e0-fit/tau240
 
-use common.nu [ROOT CONFIGS table-path]
+use common.nu [ROOT CONFIGS table-path run-results]
 use tables.nu
 
 # FEP-DMC's LiF(e) 20³ reference binding (Etrue − Ep, their example output).
@@ -30,13 +30,13 @@ def point [
                           # truncated run still has ≥ chains blocks.
 ] {
     let config = if $tau120 and $node {
-        $CONFIGS | path join ladder-lif-node-tau120.json
+        $CONFIGS | path join lif-node-tau120.json
     } else if $tau120 {
-        $CONFIGS | path join ladder-lif-tau120.json
+        $CONFIGS | path join lif-tau120.json
     } else if $node {
-        $CONFIGS | path join ladder-lif-node.json
+        $CONFIGS | path join lif-node-tau60.json
     } else {
-        $CONFIGS | path join ladder-lif.json
+        $CONFIGS | path join lif-tau60.json
     }
     let config = if $max_steps > 0 {
         let patched = (mktemp -t --suffix .json)
@@ -130,10 +130,30 @@ export def sweep [--node] {
     [32 40 50] | each {|n| if $node { point $n --node } else { point $n } }
 }
 
-# Linear fit of piped point records {grid, e0, ..} against 1/n.
+# Linear fit of E₀ against 1/n over finished ladder runs.
 # The intercept is the thermodynamic-limit estimate (FEP-DMC: ≈ −0.408 eV).
-export def fit [] {
-    let pts = ($in | insert x {|r| 1.0 / $r.grid })
+#
+# Point the fit at existing results — the grid n comes from each run's
+# run-metadata.json (written by the binary; annotate older runs with the
+# metadata-only config, see configs/README.md):
+#   ironmc ladder fit runs/e0-fit/tau240
+#   ironmc ladder fit runs/e0-fit/tau240/{n40,n60,n80}   # a subset of points
+#
+# Piped input works too: `ironmc results ...` rows, or bare {grid, e0} records:
+#   ironmc results runs/e0-fit/tau240 | where e0_err < 0.001 | ironmc ladder fit
+#   ironmc ladder sweep | ironmc ladder fit
+export def fit [
+    ...runs: string   # run dirs or globs (*, **, {a,b}), relative to repo root; when given, piped input is ignored
+] {
+    let rows = if ($runs | is-empty) { $in } else { run-results ...$runs }
+    let pts = (
+        $rows | each {|r|
+            if ($r | get -o grid) == null {
+                error make {msg: $"no grid for ($r | get -o run | default ($r | to nuon)): the run has no run-metadata.json — annotate it with `ironmc cpu run <n> --config metadata-only --out-dir <run>/results`"}
+            }
+            { grid: $r.grid, e0: $r.e0 }
+        } | sort-by grid | insert x {|r| 1.0 / $r.grid }
+    )
     let xm = ($pts.x | math avg)
     let ym = ($pts.e0 | math avg)
     let slope = (

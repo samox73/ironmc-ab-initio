@@ -13,7 +13,7 @@ use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_ab_initio::reconstruct::GammaModel;
 use rmc_ab_initio::run::run_and_write;
 use rmc_ab_initio::vertex_table::{
-    TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+    FillDevice, ShardMeta, TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
 };
 use rmc_core::random::DefaultRng;
 use rmc_diagmc::measure::MeasurementData;
@@ -110,6 +110,20 @@ where
     }
 }
 
+/// Parse a `--p-ext x,y,z` override (fractional coordinates; must be a point
+/// of the table's momentum grid).
+fn parse_p_ext(arg: &str) -> BoxResult<nalgebra::Vector3<f64>> {
+    let parts = arg
+        .split(',')
+        .map(|part| part.trim().parse::<f64>())
+        .collect::<Result<Vec<f64>, _>>()
+        .map_err(|error| format!("invalid --p-ext value '{arg}': {error}"))?;
+    match parts.as_slice() {
+        [x, y, z] => Ok(nalgebra::Vector3::new(*x, *y, *z)),
+        _ => Err(format!("--p-ext needs exactly three comma-separated components, got '{arg}'").into()),
+    }
+}
+
 fn gib_to_bytes(gib: f64) -> BoxResult<u64> {
     if !gib.is_finite() || gib <= 0.0 || gib > u64::MAX as f64 / 2_f64.powi(30) {
         return Err("max GiB must be finite, positive, and representable".into());
@@ -146,6 +160,30 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         Some(value) => gib_to_bytes(value.parse()?)?,
         None => env_table_max_bytes()?.unwrap_or(DEFAULT_MAX_BYTES),
     };
+    // Base data is always CPU; --device gpu moves the Fourier fill to the GPU.
+    let device: FillDevice = take(&mut options, "--device", Some(FillDevice::Cpu))?;
+    // Fail GPU misconfigurations here, in milliseconds — build_range checks them
+    // too, but only after the dataset load and SVD have burned walltime.
+    if device == FillDevice::Gpu {
+        if precision != TablePrecision::F32 {
+            return Err("GPU fill produces f32 tables only; use --precision f32".into());
+        }
+        if cfg!(not(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))) {
+            return Err(
+                "GPU fill needs a GPU runtime: build with --features gpu-cuda (or gpu-cpu)".into(),
+            );
+        }
+    }
+    // A shard fills only slab [i*nk/S, (i+1)*nk/S) and defers the global
+    // band-edge shift to `table-merge`; --shard and --shards go together.
+    let shard: Option<usize> = options
+        .remove("--shard")
+        .map(|v| v.parse().map_err(|e| format!("invalid --shard value '{v}': {e}")))
+        .transpose()?;
+    let shards: Option<usize> = options
+        .remove("--shards")
+        .map(|v| v.parse().map_err(|e| format!("invalid --shards value '{v}': {e}")))
+        .transpose()?;
     let out = options.remove("--out").map_or_else(
         || dataset.join(VertexTable::cache_filename(grid_n, total_rank, precision)),
         PathBuf::from,
@@ -154,7 +192,69 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         return Err(format!("unknown option {unknown}").into());
     }
 
+    let (shard, shards) = match (shard, shards) {
+        (None, None) => {
+            build_full_table(&dataset, grid_n, total_rank, precision, max_bytes, device, &out)?;
+            return Ok(());
+        }
+        (Some(i), Some(s)) => (i, s),
+        _ => return Err("--shard and --shards must be given together".into()),
+    };
+    if shards == 0 || shard >= shards {
+        return Err(format!("--shard {shard} out of range for --shards {shards}").into());
+    }
+    let nk = grid_n.checked_pow(3).ok_or("grid cubed overflows usize")?;
+    let (lo, hi) = (shard * nk / shards, (shard + 1) * nk / shards);
+    let meta = ShardMeta { grid_n, shards, shard, lo, hi, total_rank, precision };
+    let shard_out = {
+        let mut name = out.into_os_string();
+        name.push(format!(".shard-{shard}-of-{shards}"));
+        PathBuf::from(name)
+    };
+
+    // Resume: a matching shard on disk means this leg's work is already done —
+    // resubmitting the devel job is a plain no-op for finished shards.
+    if shard_out.exists() {
+        if let Ok(existing) = VertexTable::read_shard_meta(&shard_out) {
+            if existing == meta {
+                println!("shard {shard}/{shards} already built: {}", shard_out.display());
+                return Ok(());
+            }
+        }
+    }
+
     let (epw, crystal, wigner, epmat) = load_vertex_inputs(&dataset)?;
+    let started = Instant::now();
+    let svd = EphSvd::compress_global(&epmat, DEFAULT_TOL, total_rank);
+    println!("compression time: {:.3} s", started.elapsed().as_secs_f64());
+    println!(
+        "shard {shard}/{shards}: points [{lo}, {hi}) of {nk} (components={})",
+        svd.rank()
+    );
+    println!("output: {}", shard_out.display());
+    let started = Instant::now();
+    let table = VertexTable::build_range(
+        &epw, &crystal, &wigner, &svd, grid_n, lo, hi, DEFAULT_PHFREQ_CUTOFF_EV, precision,
+        max_bytes, false, device,
+    )?;
+    println!("build time: {:.3} s", started.elapsed().as_secs_f64());
+    let started = Instant::now();
+    table.save_shard(&meta, &shard_out)?;
+    println!("wrote {} in {:.3} s", shard_out.display(), started.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// Full-grid build (the non-sharded path): SVD, build, save.
+fn build_full_table(
+    dataset: &Path,
+    grid_n: usize,
+    total_rank: usize,
+    precision: TablePrecision,
+    max_bytes: u64,
+    device: FillDevice,
+    out: &Path,
+) -> BoxResult<()> {
+    let (epw, crystal, wigner, epmat) = load_vertex_inputs(dataset)?;
     let started = Instant::now();
     let svd = EphSvd::compress_global(&epmat, DEFAULT_TOL, total_rank);
     println!("compression time: {:.3} s", started.elapsed().as_secs_f64());
@@ -165,22 +265,58 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         svd.rank()
     );
     println!("output: {}", out.display());
+    let nk = grid_n.checked_pow(3).ok_or("grid cubed overflows usize")?;
     let started = Instant::now();
-    let table = VertexTable::build(
+    let table = VertexTable::build_range(
         &epw,
         &crystal,
         &wigner,
         &svd,
         grid_n,
+        0,
+        nk,
         DEFAULT_PHFREQ_CUTOFF_EV,
         precision,
         max_bytes,
+        true,
+        device,
     )?;
     println!("build time: {:.3} s", started.elapsed().as_secs_f64());
     let started = Instant::now();
+    table.save(out)?;
+    println!("wrote {} in {:.3} s", out.display(), started.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// `table-merge --out <final.rmcvtab> <shards...>`: reassemble a full table from
+/// its complete shard set (validates the set, applies the global band-edge shift).
+fn table_merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
+    let mut out: Option<PathBuf> = None;
+    let mut paths = Vec::new();
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        if arg == "--out" {
+            out = Some(PathBuf::from(args.next().ok_or("missing value for --out")?));
+        } else if arg.starts_with("--") {
+            return Err(format!("unknown option {arg} (only --out is accepted)").into());
+        } else {
+            paths.push(PathBuf::from(arg));
+        }
+    }
+    let out = out.ok_or("usage: table-merge --out <final.rmcvtab> <shards...>")?;
+    if paths.is_empty() {
+        return Err("no shard files given".into());
+    }
+    let shards = paths
+        .iter()
+        .map(VertexTable::load_shard)
+        .collect::<Result<Vec<_>, _>>()?;
+    let started = Instant::now();
+    let table = VertexTable::merge_shards(shards)?;
     table.save(&out)?;
     println!(
-        "wrote {} in {:.3} s",
+        "merged {} shards → {} in {:.3} s",
+        paths.len(),
         out.display(),
         started.elapsed().as_secs_f64()
     );
@@ -286,6 +422,58 @@ fn load_resume(
     Ok((Some((checkpoint.cycles_done, checkpoint.chains)), leg))
 }
 
+/// Write `run-metadata.json` into `out_dir`: ONLY what no other run artifact
+/// records — the identity of the vertex table (grid, kept SVD components,
+/// filename, read from the table file itself, not the CLI) and the engine.
+/// Deliberately nothing more: the run dir already owns its `DiagConfig` (in
+/// the checkpoint and the job dir's config copy) and its per-leg code
+/// provenance (in every result JSON, dump, and checkpoint).
+///
+/// An existing file is immutable: every rank checks it and refuses to continue
+/// a run whose recorded table or engine differs. This is a physics guard, not
+/// bookkeeping — the checkpoint's `same_trajectory` pins the config across
+/// legs but records nothing about the table, so without this check a resume
+/// against the wrong table would silently mix estimators. Rank 0 creates the
+/// file (via temp + rename, so a concurrent rank never reads a torn file).
+fn write_run_metadata(
+    out_dir: &Path,
+    rank: u64,
+    engine: &str,
+    table_path: &Path,
+    grid_n: usize,
+    svd_rank: usize,
+) -> BoxResult<()> {
+    let metadata = serde_json::json!({
+        "engine": engine,
+        "grid": grid_n,
+        // Components actually kept by the SVD (the filename's r<N> is the cap).
+        "svd_rank": svd_rank,
+        "table": table_path.file_name().map(|name| name.to_string_lossy()),
+    });
+    let path = out_dir.join("run-metadata.json");
+    if path.exists() {
+        let recorded: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        if recorded != metadata {
+            return Err(format!(
+                "{} does not match this invocation: recorded {recorded}, this run would \
+                 write {metadata}; refusing to continue a run with a different table or engine",
+                path.display()
+            )
+            .into());
+        }
+        return Ok(());
+    }
+    if rank != 0 {
+        return Ok(());
+    }
+    std::fs::create_dir_all(out_dir)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&metadata)?)?;
+    std::fs::rename(&tmp, &path)?;
+    log::info!("wrote {}", path.display());
+    Ok(())
+}
+
 /// Save one leg's per-rank `RankDump` (this leg's raw `MeasurementData`) to
 /// `out_dir`. Engine-agnostic — both CPU engines and `run-gpu` produce the same
 /// `MeasurementData`, and `merge` consumes these dumps.
@@ -332,7 +520,11 @@ fn write_leg_outputs(
 ) -> BoxResult<()> {
     use rmc_ab_initio::dump::Checkpoint;
 
-    write_rank_dump(out_dir, rank, leg, config, model, &output.data, output.steps_done)?;
+    // A warmup-only leg (deadline hit inside warmup) has no samples: nothing
+    // to dump for merge; the checkpoint below still records its progress.
+    if output.steps_done > 0 {
+        write_rank_dump(out_dir, rank, leg, config, model, &output.data, output.steps_done)?;
+    }
 
     let spc = config.steps_per_cycle.max(1);
     let total_cycles = config.warmup_steps.div_ceil(spc) + config.max_steps.div_ceil(spc);
@@ -370,9 +562,12 @@ fn write_leg_outputs(
     }
     let result_path = out_dir.join(format!("result-rank{rank}-leg{leg}.json"));
     std::fs::write(&result_path, serde_json::to_string_pretty(&result)?)?;
+    let summary = match &output.report {
+        Some(report) => report_summary(report),
+        None => "warmup-only leg (no measured samples yet)".to_string(),
+    };
     println!(
-        "rank {rank} leg {leg}: {}, cycles {}/{total_cycles}{}, {:.3e} steps/s [{}]",
-        report_summary(&output.report),
+        "rank {rank} leg {leg}: {summary}, cycles {}/{total_cycles}{}, {:.3e} steps/s [{}]",
         output.cycles_done,
         if complete { ", complete" } else { "" },
         output.steps_done as f64 / output.step_secs,
@@ -401,11 +596,21 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
             config.chains = chains;
         }
     }
+    // Empty = keep the config's p_ext (lets wrappers always pass the flag).
+    // A first-class override like --chains: the config the engine runs — and
+    // the checkpoint records, and same_trajectory pins across legs — is the
+    // post-override one; no patched temp config anywhere.
+    if let Some(p_ext) = options.remove("--p-ext") {
+        if !p_ext.is_empty() {
+            config.p_ext = parse_p_ext(&p_ext)?;
+        }
+    }
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     // group_size = 1 by default: per-chain update selection, no GPU-style
     // lockstep waste (group-uniform selection is a device concession).
-    // NOT recorded in the checkpoint — every leg of a run must pass the same
-    // --group, or the resumed trajectory silently diverges from an
+    // A flag, not a DiagConfig field (see BatchedRunOpts::group_size for why),
+    // so it is NOT recorded in the checkpoint — every leg of a run must pass
+    // the same --group, or the resumed trajectory silently diverges from an
     // uninterrupted run (still valid MC, but no longer bit-reproducible).
     let group: usize = take(&mut options, "--group", Some(1))?;
     let max_order_gpu: usize =
@@ -418,7 +623,18 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         return Err(format!("unknown option {unknown}").into());
     }
 
-    let table = Arc::new(VertexTable::load(table_path)?);
+    // Metadata-only mode — see the run-cpu twin of this block.
+    if config.max_steps == 0 {
+        let head = VertexTable::load_head(&table_path)?;
+        return write_run_metadata(
+            &out_dir, rank, "cpu-flat", &table_path, head.grid_n, head.s.len(),
+        );
+    }
+
+    let table = Arc::new(VertexTable::load(&table_path)?);
+    write_run_metadata(
+        &out_dir, rank, "cpu-flat", &table_path, table.grid_n, table.s.len(),
+    )?;
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
 
@@ -526,6 +742,15 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
             config.chains = chains;
         }
     }
+    // Empty = keep the config's p_ext (lets wrappers always pass the flag).
+    // A first-class override like --chains: the config the engine runs — and
+    // the checkpoint records, and same_trajectory pins across legs — is the
+    // post-override one; no patched temp config anywhere.
+    if let Some(p_ext) = options.remove("--p-ext") {
+        if !p_ext.is_empty() {
+            config.p_ext = parse_p_ext(&p_ext)?;
+        }
+    }
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed, merged,
     // or told apart from an accidental identical resubmission.
@@ -534,7 +759,21 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         return Err(format!("unknown option {unknown}").into());
     }
 
-    let table = Arc::new(VertexTable::load(table_path)?);
+    // max_steps == 0 never samples (`DiagConfig::validate` rejects it), so it is
+    // the explicit metadata-only mode (configs/metadata-only.json): annotate an
+    // existing run with run-metadata.json and exit, never touching its dumps.
+    // Reads only the table head, not the tens-of-GiB payload — login-node safe.
+    if config.max_steps == 0 {
+        let head = VertexTable::load_head(&table_path)?;
+        return write_run_metadata(
+            &out_dir, rank, "cpu-slotmap", &table_path, head.grid_n, head.s.len(),
+        );
+    }
+
+    let table = Arc::new(VertexTable::load(&table_path)?);
+    write_run_metadata(
+        &out_dir, rank, "cpu-slotmap", &table_path, table.grid_n, table.s.len(),
+    )?;
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
 
@@ -636,6 +875,15 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
             config.chains = chains;
         }
     }
+    // Empty = keep the config's p_ext (lets wrappers always pass the flag).
+    // A first-class override like --chains: the config the engine runs — and
+    // the checkpoint records, and same_trajectory pins across legs — is the
+    // post-override one; no patched temp config anywhere.
+    if let Some(p_ext) = options.remove("--p-ext") {
+        if !p_ext.is_empty() {
+            config.p_ext = parse_p_ext(&p_ext)?;
+        }
+    }
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     let lanes: u32 = take(&mut options, "--lanes", Some(DEFAULT_LANES))?;
     let max_order_gpu: usize =
@@ -650,7 +898,15 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         return Err(format!("unknown option {unknown}").into());
     }
 
-    let table = Arc::new(VertexTable::load(table_path)?);
+    // Metadata-only mode — see the run-cpu twin of this block. Returns before
+    // any device work, so it runs fine on a node without a GPU.
+    if config.max_steps == 0 {
+        let head = VertexTable::load_head(&table_path)?;
+        return write_run_metadata(&out_dir, rank, "gpu", &table_path, head.grid_n, head.s.len());
+    }
+
+    let table = Arc::new(VertexTable::load(&table_path)?);
+    write_run_metadata(&out_dir, rank, "gpu", &table_path, table.grid_n, table.s.len())?;
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
 
@@ -736,6 +992,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", config.to_json_string()?);
         }
         Some("table") => table_command(args)?,
+        Some("table-merge") => table_merge_command(args)?,
         Some("run") => table_run_command(args)?,
         Some("run-cpu") => run_cpu_command(args)?,
         Some("run-flat") => run_flat_command(args)?,

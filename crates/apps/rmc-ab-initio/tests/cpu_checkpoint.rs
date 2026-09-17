@@ -100,16 +100,17 @@ fn resumed_legs_match_uninterrupted_run() {
         dump(&model, &cfg, 1, &leg2),
     ])
     .unwrap();
-    assert_eq!(merged.steps_done, full.report.steps_done);
+    let full_report = full.report.as_ref().unwrap();
+    assert_eq!(merged.steps_done, full_report.steps_done);
     let close = |a: f64, b: f64, what: &str| {
         assert!(
             (a - b).abs() <= 1.0e-12 * a.abs().max(b.abs()).max(1.0),
             "{what}: {a} vs {b}"
         );
     };
-    close(merged.e0_thermo.mean, full.report.e0_thermo.mean, "e0_thermo");
-    close(merged.mean_order.mean, full.report.mean_order.mean, "mean_order");
-    close(merged.sign.mean, full.report.sign.mean, "sign");
+    close(merged.e0_thermo.mean, full_report.e0_thermo.mean, "e0_thermo");
+    close(merged.mean_order.mean, full_report.mean_order.mean, "mean_order");
+    close(merged.sign.mean, full_report.sign.mean, "sign");
 
     // Guards: wrong resume shapes fail loudly.
     assert!(run_batched_opts(
@@ -167,11 +168,12 @@ fn extending_max_steps_matches_fresh_long_run() {
         dump(&model, &long, 1, &leg2),
     ])
     .unwrap();
-    assert_eq!(merged.steps_done, fresh.report.steps_done);
+    let fresh_report = fresh.report.as_ref().unwrap();
+    assert_eq!(merged.steps_done, fresh_report.steps_done);
     assert!(
-        (merged.e0_thermo.mean - fresh.report.e0_thermo.mean).abs() <= 1.0e-12,
+        (merged.e0_thermo.mean - fresh_report.e0_thermo.mean).abs() <= 1.0e-12,
         "{} vs {}",
         merged.e0_thermo.mean,
-        fresh.report.e0_thermo.mean
+        fresh_report.e0_thermo.mean
     );
 }

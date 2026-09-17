@@ -7,6 +7,21 @@
 //! each chain records `(τ, order, phase, E_loc)` into the standard
 //! `rmc_diagmc` measurement pipeline; warmup cycles run like any other and
 //! their samples are discarded.
+//!
+//! Group-uniform selection is a device concession (uniform control flow on
+//! SIMT hardware), and it is statistically free: the update-type draw is
+//! keyed only by `(seed, group, step)` — never by chain state — so each
+//! chain's *marginal* trajectory law is exactly the standard random-scan
+//! chain driven by the uniform mixture kernel (1/n)·Σᵤ Pᵤ, identical to
+//! per-chain selection, and the 1/n selection probabilities of paired moves
+//! (AddPhonon ↔ RemovePhonon) cancel in the acceptance ratio unchanged.
+//! Sharing the draw alters only the *joint* law across a group: chains
+//! attempting the same move class simultaneously are weakly correlated,
+//! which can only inflate variance — a linear chain-average stays unbiased
+//! under any cross-chain correlation. The load-bearing invariant is the
+//! state-independence of the selection: resampling impossible moves, or any
+//! state-dependent group/update choice, would break the 1/n cancellation
+//! and genuinely bias the run (see [`step_selected`]).
 
 use std::sync::Arc;
 
@@ -25,7 +40,10 @@ pub const DEFAULT_GROUP_SIZE: usize = 64;
 pub const DEFAULT_MAX_ORDER_GPU: usize = 256;
 
 pub struct BatchedRunOutput {
-    pub report: Report,
+    /// `None` for a warmup-only leg (deadline hit before the first measured
+    /// cycle): no statistics to summarize, but `chains`/`cycles_done` still
+    /// carry the warmup progress for the checkpoint.
+    pub report: Option<Report>,
     /// Raw batch data (rank dumps / offline merge).
     pub data: MeasurementData,
     pub update_stats: Vec<UpdateStatEntry>,
@@ -95,6 +113,14 @@ pub fn run_batched_with_deadline(
 /// twin of [`crate::gpu::run::DeviceRunOpts`].
 pub struct BatchedRunOpts {
     pub chain_offset: u64,
+    /// Update-selection group size (the per-step draw is keyed by
+    /// `chain_id / group_size`). Trajectory-shaping, yet deliberately NOT a
+    /// `DiagConfig` field: the config is engine-agnostic (the slotmap engine
+    /// has no groups) and bincode-embedded in every dump/checkpoint on disk,
+    /// so adding a field there orphans them all. The price is that neither
+    /// `same_trajectory` nor the checkpoint can catch a group change — every
+    /// leg of a run must repeat the same value. TODO: fold into `DiagConfig`
+    /// at the next `FORMAT_VERSION` bump (see the note at its definition).
     pub group_size: usize,
     pub max_order_gpu: usize,
     /// Stop between cycles once past this instant (see `slurm_deadline`).
@@ -346,16 +372,21 @@ pub fn run_batched_opts(
         .map(DiagMeasurement::into_output)
         .reduce(Merge::merge)
         .expect("chains > 0");
-    let mut report = summarize(
-        data.clone(),
-        model.electron_energy(cfg.p_ext),
-        cfg.mu,
-        cfg.max_tau,
-        cfg.tau_fit,
-        cfg.fixed_tau,
-    )?;
     let steps_done = measured_steps_per_chain * n_chains as u64;
-    report.steps_done = steps_done;
+    let report = if steps_done == 0 {
+        None
+    } else {
+        let mut report = summarize(
+            data.clone(),
+            model.electron_energy(cfg.p_ext),
+            cfg.mu,
+            cfg.max_tau,
+            cfg.tau_fit,
+            cfg.fixed_tau,
+        )?;
+        report.steps_done = steps_done;
+        Some(report)
+    };
     Ok(BatchedRunOutput {
         report,
         data,
@@ -396,6 +427,12 @@ pub fn build_chain(
     Ok(chain)
 }
 
+/// Attempt one group-selected update; returns `(accepted, impossible)`. An
+/// impossible proposal (negative probability) counts as proposed-and-rejected
+/// and must NOT be redrawn: resampling until a possible move would make the
+/// effective update-type distribution state-dependent, breaking the uniform
+/// 1/n selection-probability cancellation in the acceptance ratio — a real
+/// bias, not a determinism nit.
 fn step_selected<R: rand::Rng + ?Sized>(
     chain: &mut FlatDiagram,
     updates: &mut rmc_core::mc::WeightedUpdateSet<FlatAbUpdate>,

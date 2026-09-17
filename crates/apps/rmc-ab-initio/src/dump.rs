@@ -19,6 +19,11 @@ type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const DUMP_MAGIC: &[u8; 8] = b"RMCDUMP\0";
 const CKPT_MAGIC: &[u8; 8] = b"RMCCKPT\0";
 const SLOT_CKPT_MAGIC: &[u8; 8] = b"RMCSCKP\0";
+// TODO: at the next FORMAT_VERSION bump, move the flat engines' `group_size`
+// into `DiagConfig` (serde default 1; the slotmap engine ignores it) so
+// `same_trajectory` and checkpoints catch group drift across legs — free once
+// the on-disk payloads are being regenerated anyway (see
+// `BatchedRunOpts::group_size` for why it is not there today).
 const FORMAT_VERSION: u32 = 1;
 
 fn write_header(writer: &mut impl std::io::Write, magic: &[u8; 8]) -> BoxResult<()> {
@@ -104,6 +109,11 @@ impl RankDump {
 /// Same physical trajectory: config equality ignoring `max_steps`, the one
 /// field a checkpointed run may legally extend between legs (step keys are
 /// schedule-independent, so a longer schedule is a superset).
+///
+/// Blind spot: the flat engines' `group_size` also shapes the trajectory but
+/// lives outside `DiagConfig` (see `BatchedRunOpts::group_size` for why), so
+/// config equality cannot see it — `run-flat` legs must repeat the same
+/// `--group` themselves.
 pub fn same_trajectory(a: &DiagConfig, b: &DiagConfig) -> bool {
     let mut a = a.clone();
     a.max_steps = b.max_steps;

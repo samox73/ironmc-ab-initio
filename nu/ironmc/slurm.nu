@@ -1,11 +1,14 @@
 # Dispatch ironmc targets as slurm jobs on VSC-5.
 #
 #   ironmc slurm targets                               # job catalog
-#   ironmc slurm submit { ironmc ladder run 50 --node } --time 08:00:00
-#   ironmc slurm submit { ironmc gates dmc } --devel   # 10-min devel QoS
-#   ironmc slurm submit { ironmc gpu run 20 --config ladder-lif-gpu } --out-dir runs/gpu/n20
+#   ironmc slurm submit { ironmc ladder run 50 --node } --time 08:00:00 --out-dir runs/ladder/n50
+#   ironmc slurm submit { ironmc gates dmc } --devel --out-dir runs/gates/dmc   # 10-min devel QoS
+#   ironmc slurm submit { ironmc gpu run 20 --config lif-gpu-tau60 } --out-dir runs/gpu/n20
 #   ironmc slurm submit { ironmc cpu run 50 } --devel --ranks 5 --out-dir runs/e0-fit/n50
-#   ironmc slurm submit { ironmc tables build 50 } --dry-run
+#   ironmc slurm submit { ironmc tables build 50 } --dry-run --out-dir runs/tables/n50
+#
+# Every job is a named experiment: --out-dir runs/<experiment> is REQUIRED. Its
+# scripts/logs land in <out-dir>/jobs/<stamp>-<name>, results in <out-dir>/results.
 #
 # The job is a closure: inside the braces the full nu toolchain applies —
 # tab completion of commands AND their flags, parse-time flag/type checking.
@@ -257,13 +260,12 @@ export def submit [
                                # commit; the job runs that tree's code (data paths stay in the
                                # main repo via $IRONMC_DATA_ROOT) and removes the worktree when
                                # it finishes
-    --out-dir: string          # experiment dir under runs/ (e.g. runs/e0-fit/n20): this
+    --out-dir: string          # REQUIRED experiment dir under runs/ (e.g. runs/e0-fit/n20): this
                                # submission's scripts/logs land in <out-dir>/jobs/<stamp>-<name>,
                                # and the job sees $IRONMC_OUT_DIR = <out-dir>/results, which run
                                # targets take as their --out-dir default (cumulative dumps).
                                # Resubmit with the same --out-dir to resume the checkpointed run —
-                               # the N submissions that build one result set sit beside it in
-                               # jobs/. Omit for the legacy flat slurm/<stamp>-<name> layout.
+                               # the N submissions that build one result set sit beside it in jobs/.
     --dry-run                  # print the batch script instead of submitting
 ] {
     let body = (view source $job
@@ -272,7 +274,7 @@ export def submit [
         | str replace --regex '\s*\}$' ''
         | str trim)
     if ($body | is-empty) {
-        error make {msg: "empty job; try `ironmc slurm submit { ironmc ladder run 20 }`"}
+        error make {msg: "empty job; try `ironmc slurm submit { ironmc ladder run 20 } --out-dir runs/demo`"}
     }
     if ($body | str starts-with "|") {
         error make {msg: "the job closure must not take parameters — flags go after the braces"}
@@ -284,6 +286,28 @@ export def submit [
     }
     if ($env.DATA? | is-empty) {
         error make {msg: "submit needs $env.DATA (the VSC-5 shared filesystem) — run it on the cluster"}
+    }
+    # Table builds derive their run dir from the grid in the body: `submit {
+    # ironmc tables shard 80 }` (also merge-shards / build / reference) targets
+    # runs/tables/n80, so a grid's shard and merge jobs share one dir and the
+    # merge finds the shards. An explicit --out-dir always wins.
+    let out_dir = if $out_dir != null { $out_dir } else {
+        let m = ($body | parse --regex 'tables\s+(?:merge-shards|shard|build|reference)\s+(?<n>\d+)')
+        if ($m | is-not-empty) { $"runs/tables/n($m.0.n)" } else { null }
+    }
+    # Every job is a named experiment under runs/: scripts/logs go to
+    # <out-dir>/jobs/, results to <out-dir>/results/. No anonymous jobs.
+    if $out_dir == null {
+        error make {msg: "every job needs --out-dir runs/<experiment> (table builds derive it from the grid, e.g. `tables shard 80` → runs/tables/n80)"}
+    }
+    # Constrained under runs/ so job-log-search and the Makefile sync/mount
+    # targets find everything by construction; the charset keeps the path safe
+    # to embed unquoted in job.sh and #SBATCH directives.
+    if (not ($out_dir =~ '^runs/[A-Za-z0-9._/-]+$')) or ($out_dir =~ '\.\.') {
+        error make {msg: $"--out-dir must be a relative dir under runs/, using only [A-Za-z0-9._/-] — e.g. runs/e0-fit/n50; got: ($out_dir)"}
+    }
+    if ($body =~ '--out-dir[=\s]+\S+') {
+        error make {msg: "--out-dir is a `slurm submit` flag — drop it from the job closure"}
     }
     let row = ($PARTITIONS | where partition == $partition)
     if ($row | is-empty) {
@@ -318,55 +342,29 @@ export def submit [
     # Fold the experiment into the default name: distinct experiments submitting
     # the same closure must stay tellable-apart in squeue/history/completions,
     # and the still-queued guard below matches jobs by name.
-    let name = if $out_dir != null and $job_name == null {
+    let name = if $job_name == null {
         $"($name)-($out_dir | str replace --regex '^runs/' '' | str replace --all --regex '[^A-Za-z0-9._]+' '-')"
     } else { $name }
     let stamp = (date now | format date "%Y%m%d-%H%M%S")
     let root = ($env.DATA | path join ironmc)
-    # Run targets (cpu/gpu run|flat) accumulate dumps in a run dir and resume
-    # from a checkpoint there; every other target just returns a value.
-    # ponytail: run-ness is sniffed from the body text — a new run-like target
-    # must be added to this regex. Misclassification is benign with --out-dir
-    # ($IRONMC_OUT_DIR is exported either way; only merge/stdout capture differ);
-    # declare it per-target in `dispatchable` if the target list grows.
+    # Run targets (cpu/gpu run|flat) accumulate dumps in the run dir and resume
+    # from a checkpoint there; every other target just returns a value. The run
+    # dir reaches the job as $IRONMC_OUT_DIR (run targets read it as their
+    # --out-dir default) — never by editing the closure text, so any body shape
+    # works. ponytail: run-ness is sniffed from the body text — a new run-like
+    # target must be added to this regex; misclassification is benign
+    # ($IRONMC_OUT_DIR is exported regardless; only merge/stdout capture differ).
     let is_run = ($body =~ '\b(gpu|cpu) (run|flat)\b')
-    let body_has_outdir = ($body =~ '--out-dir[=\s]+\S+')
-    # Two layouts. With --out-dir: one experiment dir holds jobs/ (this and every
-    # resubmission's scripts/logs) beside results/ (the single dump set they
-    # build), so the 1-to-N job→result relationship is explicit and co-located;
-    # the run dir reaches the job as $IRONMC_OUT_DIR (run targets read it as
-    # their --out-dir default) — never by editing the closure text, so any body
-    # shape works. Without it: the legacy flat slurm/<stamp>-<name> dir, dumps
-    # wherever the closure's own --out-dir points. The stamp prefix makes
+    # One experiment dir holds jobs/ (this and every resubmission's scripts/logs)
+    # beside results/ (the single dump set they build), so the 1-to-N job→result
+    # relationship is explicit and co-located. The stamp prefix makes
     # lexicographic order = submission order = job-id order (ids are monotone in
     # time), and the dir name is known before sbatch, so scripts, output, and
     # results are born in their final place.
-    let jobdir = if $out_dir != null {
-        # Constrained under runs/ so job-log-search and the Makefile sync/mount
-        # targets find everything by construction; the charset keeps the path
-        # safe to embed unquoted in job.sh and #SBATCH directives.
-        if (not ($out_dir =~ '^runs/[A-Za-z0-9._/-]+$')) or ($out_dir =~ '\.\.') {
-            error make {msg: $"--out-dir must be a relative dir under runs/, using only [A-Za-z0-9._/-] — e.g. runs/e0-fit/n50; got: ($out_dir)"}
-        }
-        if $body_has_outdir {
-            error make {msg: "--out-dir is a `slurm submit` flag now — drop it from the job closure"}
-        }
-        $root | path join $out_dir jobs $"($stamp)-($name)"
-    } else {
-        if $is_run and not $body_has_outdir {
-            error make {msg: "cpu run / gpu run needs a run dir: pass --out-dir to `slurm submit` (recommended) or inside the closure"}
-        }
-        slurm-logdir | path join $"($stamp)-($name)"
-    }
+    let jobdir = ($root | path join $out_dir jobs $"($stamp)-($name)")
     # Where a run target's cumulative dumps land (absolute): exported as
     # $IRONMC_OUT_DIR and merged all-ranks/all-legs at the end of the job.
-    let run_dir = if $out_dir != null {
-        $root | path join $out_dir results
-    } else if $is_run {
-        let d = ($body | parse --regex "--out-dir[=\\s]+(?<dir>\"[^\"]*\"|'[^']*'|\\S+)"
-            | get 0.dir | str trim --char '"' | str trim --char "'")
-        if ($d | str starts-with "/") { $d } else { $root | path join $d }
-    } else { null }
+    let run_dir = ($root | path join $out_dir results)
     let script = ($jobdir | path join "job.sh")
     # Pinned jobs run the code of a detached worktree (unique per submission,
     # so cleanup by one job can never yank another's tree); data paths keep
@@ -434,9 +432,8 @@ export def submit [
         "# start time + walltime so the in-run deadline stop arms either way."
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
-    ] | append (if $out_dir != null {
-        [$"export IRONMC_OUT_DIR=\"($run_dir)\""]
-    } else { [] }))
+        $"export IRONMC_OUT_DIR=\"($run_dir)\""
+    ])
     # `cpu run`/`gpu run` write their own result files into the run dir, so their
     # stdout is purely a log; every other target's return value is captured into
     # the job dir (`save` picks the format from the .json extension). Import both
@@ -451,17 +448,16 @@ export def submit [
         ]
     }
     let lines = ($lines | append $invoke_lines)
-    # `run_dir` (already absolute, set above) is where a run target's cumulative
-    # dumps land; merge them all-ranks/all-legs at the end of the job.
-    let merge_lines = if $run_dir != null {
-        [
-            $"DUMPS=\"($run_dir)\""
-            "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
-            $"    '($code_root)/target/release/rmc-ab-initio' merge --out \"$DUMPS/merged.json\" \"$DUMPS\"/batches-rank*.bin"
-            "    echo; echo '=== merged report (all ranks, all legs) ==='; cat \"$DUMPS/merged.json\""
-            "fi"
-        ]
-    } else { [] }
+    # `run_dir` (always set — every job has an out-dir) is where a run target's
+    # cumulative dumps land; merge them all-ranks/all-legs at the end of the job.
+    # For non-run targets the compgen guard makes this a no-op.
+    let merge_lines = [
+        $"DUMPS=\"($run_dir)\""
+        "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
+        $"    '($code_root)/target/release/rmc-ab-initio' merge --out \"$DUMPS/merged.json\" \"$DUMPS\"/batches-rank*.bin"
+        "    echo; echo '=== merged report (all ranks, all legs) ==='; cat \"$DUMPS/merged.json\""
+        "fi"
+    ]
     # Multi-rank jobs: each srun task runs the target with its own $SLURM_PROCID
     # (rank) and result file. GPU tasks bind one device each; CPU tasks take a
     # whole node. Rank-aware targets (cpu run / gpu run) read $SLURM_PROCID.
@@ -512,15 +508,21 @@ export def submit [
         if $task_text != null { print $"\n# --- task.sh ---\n($task_text)" }
         return {script: null, submitted: false}
     }
-    # A second leg writing the same <out-dir>/results mid-run corrupts the
-    # checkpointed resume, so refuse while a same-named job is still in the
-    # queue (the default name folds in the experiment dir, so name ≙ run).
-    if $out_dir != null and (which squeue | is-not-empty) {
+    # A second job writing the same <out-dir>/results mid-run corrupts the
+    # checkpointed resume, so refuse while any job of this experiment is still
+    # in the queue. Default names end in the folded experiment dir, so matching
+    # that suffix also catches a *different* body into the same dir (e.g.
+    # merge-shards submitted while the shard legs are still running). Explicit
+    # --job-name jobs are only caught on an exact name match.
+    if (which squeue | is-not-empty) {
         # --Format with an explicit width: the default %j column truncates
         # long names, and ours carry the whole body + experiment path.
         let queued = (squeue --me --noheader --Format "Name:256" | lines | str trim)
-        if $name in $queued {
-            error make {msg: $"($name) is already queued/running — wait or `ironmc slurm cancel` it before resubmitting into ($run_dir)"}
+        let exp = ($out_dir | str replace --regex '^runs/' ''
+            | str replace --all --regex '[^A-Za-z0-9._]+' '-')
+        let clash = ($queued | where {|q| $q == $name or ($q | str ends-with $"-($exp)") })
+        if ($clash | is-not-empty) {
+            error make {msg: $"($clash | first) is already queued/running — wait or `ironmc slurm cancel` it before submitting another job into ($run_dir)"}
         }
     }
     mkdir $jobdir

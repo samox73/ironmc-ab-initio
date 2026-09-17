@@ -11,6 +11,24 @@
 //! vtab strip (the dual-k optimization). State mutations happen on lane 0
 //! between barriers.
 //!
+//! Lane-uniformity is a *hard* requirement, not a tuning choice. A cube is
+//! CubeCL's thread block: lanes co-resident on one SM sharing one shared-
+//! memory arena and `sync_cube` (= `__syncthreads`), a block-wide rendezvous
+//! whose arrivals the hardware pairs by *dynamic count*, not source
+//! location. If lanes diverged, either (a) barrier counts mismatch — some
+//! lanes wait at a barrier the others never reach — and the kernel
+//! deadlocks (SM reads busy, no progress), or (b) counts happen to match at
+//! *different* call sites, the barrier "succeeds", and lanes in unrelated
+//! phases race each other through the one shared `sm` arena — silent
+//! bit-level corruption. The barrier count per step depends on the update
+//! type, the proposal draws, and the diagram state (how many [`arc_factor`]
+//! calls a step makes), so uniformity must hold over the whole dynamic
+//! trace, not merely the update label — which the redundant-identical-lanes
+//! design guarantees bit-for-bit. The only divergence, the strided rank
+//! loop's `g < r` guard, contains no barrier and reconverges before the
+//! reduce. (Why lockstep selection is statistically free is argued in
+//! `flat::batched`.)
+//!
 //! CPU-runtime parity runs at `CubeDim = 1` (lane 0 only): `sync_cube`
 //! no-ops, the reduce degenerates to the sequential sum in flat order, and
 //! the CPU runtime's single shared-memory arena sees no cross-cube races

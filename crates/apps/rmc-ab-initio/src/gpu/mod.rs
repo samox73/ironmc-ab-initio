@@ -7,6 +7,7 @@
 
 pub mod kernel;
 pub mod run;
+pub mod table_fill;
 pub mod vertex_bench;
 
 #[cfg(feature = "gpu-cuda")]

@@ -160,7 +160,7 @@ fn holstein_flat_energy_is_grid_independent() {
     let model = Arc::new(HolsteinFlatModel { n: 4, gamma: 0.6 });
 
     let report = run(model.clone(), base.clone()).unwrap();
-    assert_within_3sigma("fit", report.e0, target);
+    assert_within_3sigma("fit", report.e0.unwrap(), target);
     assert_within_3sigma("thermo", report.e0_thermo, target);
 
     let report = run(
@@ -171,7 +171,7 @@ fn holstein_flat_energy_is_grid_independent() {
         },
     )
     .unwrap();
-    assert!(report.e0.mean.is_nan() && report.z.mean.is_nan());
+    assert!(report.e0.is_none() && report.z.is_none());
     assert_within_3sigma("fixed-tau thermo", report.e0_thermo, target);
 }
 
@@ -194,11 +194,9 @@ fn frohlich_mishchenko_stage_zero() {
             ..DiagConfig::default()
         };
         let report = run(Arc::new(FrohlichModel::new(alpha)), cfg.clone()).unwrap();
-        eprintln!(
-            "alpha={alpha}: E0={} +/- {}",
-            report.e0.mean, report.e0.stderr
-        );
-        assert!((report.e0.mean - target).abs() <= 3.0 * report.e0.stderr);
+        let e0 = report.e0.unwrap();
+        eprintln!("alpha={alpha}: E0={} +/- {}", e0.mean, e0.stderr);
+        assert!((e0.mean - target).abs() <= 3.0 * e0.stderr);
         assert!((report.e0_thermo.mean - target).abs() <= 3.0 * report.e0_thermo.stderr);
 
         let fixed = run(
@@ -232,11 +230,13 @@ fn frohlich_alpha_two_energy_curve_flattens() {
         ..DiagConfig::default()
     };
     let report = run(Arc::new(FrohlichModel::new(2.0)), cfg).unwrap();
-    for (&tau, energy) in report.green.tau.iter().zip(&report.green_energy) {
+    let green = report.green.as_ref().unwrap();
+    for (&tau, energy) in green.tau.iter().zip(report.green_energy.as_ref().unwrap()) {
         eprintln!("tau={tau:.3} E={} +/- {}", energy.mean, energy.stderr);
     }
-    let error = (report.e0.stderr.powi(2) + report.e0_thermo.stderr.powi(2)).sqrt();
-    assert!((report.e0.mean - report.e0_thermo.mean).abs() <= 3.0 * error);
+    let e0 = report.e0.unwrap();
+    let error = (e0.stderr.powi(2) + report.e0_thermo.stderr.powi(2)).sqrt();
+    assert!((e0.mean - report.e0_thermo.mean).abs() <= 3.0 * error);
 }
 
 #[test]
@@ -251,7 +251,7 @@ fn zero_chains_auto_sizes_to_the_thread_pool() {
         ..DiagConfig::default()
     };
     let report = run(model, cfg).expect("chains = 0 must auto-size, not fail validation");
-    assert!(report.e0.mean.is_finite());
+    assert!(report.e0.unwrap().mean.is_finite());
     assert!((report.sign.mean - 1.0).abs() < 1.0e-12);
 }
 

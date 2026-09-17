@@ -2,7 +2,7 @@
 #
 #   ironmc gpu vbench 20                        # A1 microbench on this node's GPU
 #   ironmc gpu vbench 50 --variants coop        # winner-only, biggest grid
-#   ironmc slurm submit { ironmc gpu vbench 50 } --partition zen3_0512_a100x2 --devel
+#   ironmc slurm submit { ironmc gpu vbench 50 } --partition zen3_0512_a100x2 --devel --out-dir runs/gpu/vbench
 #
 # Each target does `cuda load` itself, so it works interactively and inside
 # sbatch scripts alike (the toolkit must exist: `ironmc cuda setup`, once per
@@ -33,10 +33,10 @@ export def vbench [
 
 # A4/A5 device run of a DiagConfig on this node's GPU; writes a RankDump
 # for `rmc-ab-initio merge`. `config` may be a path or a name from
-# crates/apps/rmc-ab-initio/configs (e.g. ladder-lif-node).
+# crates/apps/rmc-ab-initio/configs (e.g. lif-gpu-tau60).
 export def run [
     grid: int = 20
-    --config: string@config-names = "ladder-lif-node"
+    --config: string@config-names = "lif-gpu"
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID (multi-rank srun)
     --chains: int = 0             # override the config's chain count (0 = keep config)
     --rank-table: int = 800       # table rank in the artifact filename
@@ -44,14 +44,17 @@ export def run [
     --max-order-gpu: int = 256
     --cycles-per-launch: int = 256
     --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
-    --out-dir: string             # run directory (e.g. results/gpu/n50-prod): holds dumps +
+    --p-ext: list<float>          # external momentum in fractional coords, e.g. [0.5 0.0 0.5] = X;
+                                  # must be a grid point. Overrides the config's p_ext and becomes
+                                  # part of the run's config — resubmit legs with the same value
+    --out-dir: string             # run directory (e.g. runs/gpu/n50-prod): holds dumps +
                                   # checkpoints; resubmitting with the same dir resumes the run
                                   # (bit-identical to an uninterrupted one). Defaults to
                                   # $IRONMC_OUT_DIR (set by `slurm submit --out-dir`); REQUIRED otherwise.
 ] {
     let out_dir = ($out_dir | default $env.IRONMC_OUT_DIR?)
     if $out_dir == null {
-        error make {msg: "every run must be named: pass --out-dir results/gpu/<run-name>"}
+        error make {msg: "every run must be named: pass --out-dir runs/gpu/<run-name> (or submit via `slurm submit --out-dir`)"}
     }
     cuda load
     cd $ROOT
@@ -73,6 +76,7 @@ export def run [
     }
     (cargo run --release -p rmc-ab-initio --features gpu-cuda --
         run-gpu --table $table --config $config_path --rank $rank --chains $chains
+        --p-ext ($p_ext | default [] | str join ",")
         --lanes $lanes --max-order-gpu $max_order_gpu
         --cycles-per-launch $cycles_per_launch --leg-cycles $leg_cycles --out-dir $out_dir)
 }
@@ -83,7 +87,7 @@ export def run [
 export def scale [
     grid: int = 20
     --chains-list: list<int> = [256, 1024, 4096, 8192]
-    --config: string@config-names = "ladder-lif-gpu-smoke"
+    --config: string@config-names = "lif-gpu-smoke"
     --cycles-per-launch: int = 8
 ] {
     cuda load
@@ -94,7 +98,7 @@ export def scale [
         print $"=== chains ($chains) ==="
         (cargo run --release -p rmc-ab-initio --features gpu-cuda --
             run-gpu --table $table --config $config_path --chains $chains
-            --cycles-per-launch $cycles_per_launch --out-dir $"results/gpu-scale/($chains)")
+            --cycles-per-launch $cycles_per_launch --out-dir $"runs/gpu-scale/($chains)")
     }
 }
 
@@ -102,7 +106,7 @@ export def scale [
 # report. This is the cumulative statistics of a checkpointed run; the
 # per-job result-*.json files are per-leg views, not merge inputs.
 export def merge [
-    dir: string                   # e.g. results/gpu/n50-prod
+    dir: string                   # e.g. runs/gpu/n50-prod
     --out: string                 # merged report path (default <dir>/merged.json)
 ] {
     cd $ROOT
@@ -119,6 +123,16 @@ export def parity [] {
     cuda load
     cd $ROOT
     cargo test --release -p rmc-ab-initio --features gpu-cuda --test gpu_engine_parity -- --nocapture
+}
+
+# Vertex-table GPU-fill parity on this node's GPU: the Fourier fill (`--device gpu`)
+# vs the CPU fill, per-element within f32 tolerance. A lib unit test, so `--lib`
+# (the engine parity above is an integration test → `--test`).
+export def table-parity [] {
+    cuda load
+    cd $ROOT
+    (cargo test --release -p rmc-ab-initio --features gpu-cuda --lib
+        gpu_fill_matches_cpu_within_f32_tol -- --nocapture)
 }
 
 # nvidia-smi snapshot of the visible devices (sanity check inside jobs).

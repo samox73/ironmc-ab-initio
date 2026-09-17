@@ -21,13 +21,20 @@ pub struct GreenFunction {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Report {
-    pub e0: Estimate,
-    pub z: Estimate,
+    /// Decay-fit estimators and the G(τ) curve exist only in free-τ mode; a
+    /// fixed-τ run samples at τ = max_tau exactly, so they are `None` there
+    /// (omitted from JSON) and `e0_thermo` is the estimator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e0: Option<Estimate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z: Option<Estimate>,
     pub e0_thermo: Estimate,
     pub mean_order: Estimate,
     pub sign: Estimate,
-    pub green: GreenFunction,
-    pub green_energy: Vec<Estimate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub green: Option<GreenFunction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub green_energy: Option<Vec<Estimate>>,
     /// Total MC steps completed across all chains. Below `chains · max_steps` the
     /// run was truncated by a wall-clock deadline and the sample count is no
     /// longer reproducible from the seed alone.
@@ -294,14 +301,14 @@ pub fn summarize(
     let order_jackknife = ScalarJackknife::from_values(order_batches);
 
     Ok(Report {
-        e0: Estimate {
+        e0: (!fixed_tau).then(|| Estimate {
             mean: e0,
             stderr: nonlinear_jackknife_error(&e0_leave_one),
-        },
-        z: Estimate {
+        }),
+        z: (!fixed_tau).then(|| Estimate {
             mean: z,
             stderr: nonlinear_jackknife_error(&z_leave_one),
-        },
+        }),
         e0_thermo: Estimate {
             mean: e0_thermo_mean,
             stderr: nonlinear_jackknife_error(&e0_thermo_leave_one),
@@ -314,11 +321,11 @@ pub fn summarize(
             mean: sign_mean,
             stderr: sign_jackknife.standard_error().unwrap_or(0.0),
         },
-        green: GreenFunction {
-            tau: if fixed_tau { vec![] } else { tau },
+        green: (!fixed_tau).then(|| GreenFunction {
+            tau,
             value: green_values,
-        },
-        green_energy,
+        }),
+        green_energy: (!fixed_tau).then_some(green_energy),
         steps_done: 0,
     })
 }

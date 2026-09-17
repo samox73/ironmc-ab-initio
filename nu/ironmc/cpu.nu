@@ -1,7 +1,7 @@
 # CPU (slotmap engine, rayon) targets — the fast CPU production path and the
 # CPU twin of `gpu run`.
 #
-#   ironmc cpu run 20 --out-dir results/cpu/n20-prod          # direct, local
+#   ironmc cpu run 20 --out-dir runs/cpu/n20-prod             # direct, local
 #   ironmc slurm submit { ironmc cpu run 50 } --partition zen3_0512 --devel --ranks 5 --out-dir runs/e0-fit/n50
 #
 # Same RankDump/Checkpoint/merge machinery as `gpu run`: resubmitting with the
@@ -15,22 +15,25 @@ use common.nu [ROOT config-names]
 
 # CPU run of a DiagConfig on this node's cores; writes a RankDump + Checkpoint
 # into --out-dir for resume and `merge`. `config` may be a path or a name from
-# crates/apps/rmc-ab-initio/configs (e.g. ladder-lif-slotmap). ladder-lif-slotmap
-# and ladder-lif-flat are kept identical for a clean 1:1 engine comparison.
+# crates/apps/rmc-ab-initio/configs (e.g. lif-slotmap). lif-slotmap and
+# lif-flat are kept identical for a clean 1:1 engine comparison.
 export def run [
     grid: int = 20                # table grid n → datasets/LiF/table-n{n}-r{rank}-f32.rmcvtab
-    --config: string@config-names = "ladder-lif-slotmap"
+    --config: string@config-names = "lif-slotmap"
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID (multi-rank srun)
     --chains: int = 0             # override the config's chain count (0 = keep config; must be pinned for multi-rank)
     --rank-table: int = 800       # table rank in the artifact filename
-    --out-dir: string             # run directory (e.g. results/cpu/n50-prod): holds dumps +
+    --p-ext: list<float>          # external momentum in fractional coords, e.g. [0.5 0.0 0.5] = X;
+                                  # must be a grid point. Overrides the config's p_ext and becomes
+                                  # part of the run's config — resubmit legs with the same value
+    --out-dir: string             # run directory (e.g. runs/cpu/n50-prod): holds dumps +
                                   # checkpoints; resubmitting with the same dir resumes the run
                                   # (bit-identical to an uninterrupted one). Defaults to
                                   # $IRONMC_OUT_DIR (set by `slurm submit --out-dir`); REQUIRED otherwise.
 ] {
     let out_dir = ($out_dir | default $env.IRONMC_OUT_DIR?)
     if $out_dir == null {
-        error make {msg: "every run must be named: pass --out-dir results/cpu/<run-name>"}
+        error make {msg: "every run must be named: pass --out-dir runs/cpu/<run-name> (or submit via `slurm submit --out-dir`)"}
     }
     cd $ROOT
     # Code runs from $ROOT (a pinned worktree under `slurm submit
@@ -51,6 +54,7 @@ export def run [
     }
     (cargo run --release -p rmc-ab-initio --
         run-cpu --table $table --config $config_path --rank $rank --chains $chains
+        --p-ext ($p_ext | default [] | str join ",")
         --out-dir $out_dir)
 }
 
@@ -60,7 +64,7 @@ export def run [
 # (not interchangeable with `cpu run`'s — use a separate --out-dir).
 export def flat [
     grid: int = 20                # table grid n → datasets/LiF/table-n{n}-r{rank}-f32.rmcvtab
-    --config: string@config-names = "ladder-lif-flat"
+    --config: string@config-names = "lif-flat"
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID
     --chains: int = 0             # override the config's chain count (0 = keep config)
     --rank-table: int = 800       # table rank in the artifact filename
@@ -73,7 +77,7 @@ export def flat [
 ] {
     let out_dir = ($out_dir | default $env.IRONMC_OUT_DIR?)
     if $out_dir == null {
-        error make {msg: "every run must be named: pass --out-dir results/cpu/<run-name>"}
+        error make {msg: "every run must be named: pass --out-dir runs/cpu/<run-name> (or submit via `slurm submit --out-dir`)"}
     }
     cd $ROOT
     let data_root = ($env.IRONMC_DATA_ROOT? | default ($ROOT | path expand))
@@ -99,7 +103,7 @@ export def flat [
 # engine-agnostic (CPU and GPU dumps share the format). The cumulative
 # statistics of a checkpointed/multi-rank run.
 export def merge [
-    dir: string                   # e.g. results/cpu/n50-prod
+    dir: string                   # e.g. runs/cpu/n50-prod
     --out: string                 # merged report path (default <dir>/merged.json)
 ] {
     cd $ROOT

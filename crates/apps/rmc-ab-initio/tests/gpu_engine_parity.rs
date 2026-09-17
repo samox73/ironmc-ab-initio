@@ -88,25 +88,27 @@ fn compare(cpu: &BatchedRunOutput, gpu: &BatchedRunOutput, tol: f64, label: &str
         );
     }
     // Report scalars.
+    let cpu_report = cpu.report.as_ref().unwrap();
+    let gpu_report = gpu.report.as_ref().unwrap();
     assert_close(
-        cpu.report.e0_thermo.mean,
-        gpu.report.e0_thermo.mean,
+        cpu_report.e0_thermo.mean,
+        gpu_report.e0_thermo.mean,
         tol,
         &format!("{label}: e0_thermo"),
     );
     assert_close(
-        cpu.report.mean_order.mean,
-        gpu.report.mean_order.mean,
+        cpu_report.mean_order.mean,
+        gpu_report.mean_order.mean,
         tol,
         &format!("{label}: mean_order"),
     );
     assert_close(
-        cpu.report.sign.mean,
-        gpu.report.sign.mean,
+        cpu_report.sign.mean,
+        gpu_report.sign.mean,
         tol,
         &format!("{label}: sign"),
     );
-    assert_eq!(cpu.report.steps_done, gpu.report.steps_done);
+    assert_eq!(cpu_report.steps_done, gpu_report.steps_done);
 }
 
 #[test]
@@ -117,7 +119,7 @@ fn kernel_matches_flat_driver_on_cpu_runtime() {
         // Kernel selection is group_size = 1 by construction.
         let cpu = run_batched(&model, &cfg, 0, 1, MAX_ORDER_GPU).unwrap();
         assert!(
-            cpu.report.mean_order.mean > 0.05,
+            cpu.report.as_ref().unwrap().mean_order.mean > 0.05,
             "walk never left order 0 (fixed_tau {fixed_tau})"
         );
         // 32 lanes (a real warp) on hardware; 4 on the CPU runtime, whose
@@ -206,8 +208,12 @@ fn device_deadline_truncates_between_segments() {
         out.steps_done < cfg.max_steps * cfg.chains,
         "run was not truncated"
     );
-    assert_eq!(out.report.steps_done, out.steps_done);
+    assert_eq!(out.report.as_ref().unwrap().steps_done, out.steps_done);
 
+    // An expired deadline means a warmup-only leg: no report, but the chain
+    // states and cycle count still come back for the checkpoint.
     let expired = std::time::Instant::now();
-    assert!(run_device(client, &model, &cfg, opts(expired)).is_err());
+    let warmup_only = run_device(client, &model, &cfg, opts(expired)).unwrap();
+    assert!(warmup_only.report.is_none());
+    assert_eq!(warmup_only.steps_done, 0);
 }

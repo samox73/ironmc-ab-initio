@@ -24,11 +24,18 @@ type Cf = Complex64;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub const DEFAULT_PHFREQ_CUTOFF_EV: f64 = 1.0e-3;
-pub const DEFAULT_MAX_BYTES: u64 = 16 * 1024_u64.pow(3);
+/// Sized for the VSC-5 512 GB nodes (zen3_0512 incl. devel, a100x2) with OS
+/// headroom; n=120 at rank 800/f32 is ~72 GiB. Override via --max-gib or
+/// $RMC_TABLE_MAX_GIB on smaller machines.
+pub const DEFAULT_MAX_BYTES: u64 = 480 * 1024_u64.pow(3);
 
 const CACHE_MAGIC: &[u8; 8] = b"RMCVTAB\0";
 const CACHE_VERSION: u32 = 1;
 const FLAG_F32: u32 = 1;
+/// Set on shard files so a shard can never be misread as a full table (or vice
+/// versa) — without the bit, both formats share the header and a cross-load
+/// only fails deep in bincode with an opaque error.
+const FLAG_SHARD: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -54,6 +61,27 @@ impl std::str::FromStr for TablePrecision {
             "f32" => Ok(Self::F32),
             "f64" => Ok(Self::F64),
             _ => Err("precision must be f32 or f64"),
+        }
+    }
+}
+
+/// Which engine fills the Fourier tables. Base data is always CPU; only the fill
+/// (the build's dominant cost) can move to the GPU. GPU output is f32 only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FillDevice {
+    #[default]
+    Cpu,
+    Gpu,
+}
+
+impl std::str::FromStr for FillDevice {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "cpu" => Ok(Self::Cpu),
+            "gpu" => Ok(Self::Gpu),
+            _ => Err("device must be cpu or gpu"),
         }
     }
 }
@@ -99,6 +127,101 @@ impl Tab {
             Self::F64(values) => values[index] *= factor,
         }
     }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::F32(values) => values.len(),
+            Self::F64(values) => values.len(),
+        }
+    }
+
+    /// Concatenate same-precision parts in order (shard reassembly). Exact
+    /// preallocation — a growth-doubling realloc at n=120 would transiently
+    /// hold an extra copy of a ~70 GiB table.
+    fn concat<'a>(parts: impl Iterator<Item = &'a Tab>, precision: TablePrecision) -> Result<Tab> {
+        let parts: Vec<&Tab> = parts.collect();
+        let total: usize = parts.iter().map(|part| part.len()).sum();
+        match precision {
+            TablePrecision::F32 => {
+                let mut out = Vec::with_capacity(total);
+                for part in parts {
+                    match part {
+                        Tab::F32(values) => out.extend_from_slice(values),
+                        Tab::F64(_) => return Err("mixed-precision shards".into()),
+                    }
+                }
+                Ok(Tab::F32(out))
+            }
+            TablePrecision::F64 => {
+                let mut out = Vec::with_capacity(total);
+                for part in parts {
+                    match part {
+                        Tab::F64(values) => out.extend_from_slice(values),
+                        Tab::F32(_) => return Err("mixed-precision shards".into()),
+                    }
+                }
+                Ok(Tab::F64(out))
+            }
+        }
+    }
+}
+
+/// Shard metadata: which balanced slab of the `grid_n³` grid this file holds,
+/// plus the build parameters (SVD budget, precision) so the resume check can
+/// reject a stale shard from a different build, not only a different slab.
+/// Written ahead of the slab table so a resume check can read it cheaply.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardMeta {
+    pub grid_n: usize,
+    pub shards: usize,
+    pub shard: usize,
+    pub lo: usize,
+    pub hi: usize,
+    pub total_rank: usize,
+    pub precision: TablePrecision,
+}
+
+fn write_cache_header(
+    writer: &mut impl Write,
+    precision: TablePrecision,
+    is_shard: bool,
+) -> Result<()> {
+    writer.write_all(CACHE_MAGIC)?;
+    writer.write_all(&CACHE_VERSION.to_le_bytes())?;
+    let mut flags = match precision {
+        TablePrecision::F32 => FLAG_F32,
+        TablePrecision::F64 => 0,
+    };
+    if is_shard {
+        flags |= FLAG_SHARD;
+    }
+    writer.write_all(&flags.to_le_bytes())?;
+    Ok(())
+}
+
+fn read_cache_header(reader: &mut impl Read) -> Result<(TablePrecision, bool)> {
+    let mut magic = [0; 8];
+    let mut version = [0; 4];
+    let mut flags = [0; 4];
+    reader.read_exact(&mut magic)?;
+    reader.read_exact(&mut version)?;
+    reader.read_exact(&mut flags)?;
+    if &magic != CACHE_MAGIC {
+        return Err("invalid vertex-table cache; rebuild the table".into());
+    }
+    let version = u32::from_le_bytes(version);
+    if version != CACHE_VERSION {
+        return Err(format!(
+            "vertex-table cache version {version} is unsupported (expected {CACHE_VERSION}); rebuild the table"
+        )
+        .into());
+    }
+    let flags = u32::from_le_bytes(flags);
+    if flags & !(FLAG_F32 | FLAG_SHARD) != 0 {
+        return Err("unsupported vertex-table cache flags; rebuild the table".into());
+    }
+    let precision = if flags & FLAG_F32 != 0 { TablePrecision::F32 } else { TablePrecision::F64 };
+    Ok((precision, flags & FLAG_SHARD != 0))
 }
 
 /// E⁽²⁾ = (1/N_q) Σ_{q≠0,ν} |g_ν(0,q)|² / (ε(0)−ε(−q)−ω_ν(q)).
@@ -124,6 +247,20 @@ pub fn e2(table: &VertexTable, long_range: bool, rank_cap: &usize) -> f64 {
     sum / table.len() as f64
 }
 
+/// The cheap-to-read prefix of a serialized [`VertexTable`]: its identity
+/// (grid, band/mode counts, SVD spectrum) without the tab payloads. Field
+/// order and types MUST mirror the head of [`VertexTable`] exactly —
+/// [`VertexTable::load_head`] deserializes this prefix from the same bincode
+/// stream that [`VertexTable::save`] wrote.
+#[derive(Debug, Deserialize)]
+pub struct VertexTableHead {
+    pub grid_n: usize,
+    pub nbnd: usize,
+    pub nmodes: usize,
+    pub pair_offsets: Vec<usize>,
+    pub s: Vec<f64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct VertexTable {
     pub grid_n: usize,
@@ -137,7 +274,7 @@ pub struct VertexTable {
     /// CBM bra-band index for each compressed component.
     #[serde(default)]
     pub bra_band: Vec<u8>,
-    /// `[component][q][branch]`.
+    /// `[point][branch][component]` — flat index `(point*nmodes + branch)*rank + component`.
     pub vtab: Tab,
     /// CBM eigenvector `[k][orbital]`.
     pub cbm_evec: Vec<Cf>,
@@ -177,6 +314,7 @@ fn fill_fourier_tables<T: StoredComplex>(
     wigner: &Wigner,
     svd: &EphSvd,
     grid_n: usize,
+    point_offset: usize,
     phonon_evec: &[Cf],
     component_bands: &[(usize, usize)],
     wtab: &mut [T],
@@ -184,17 +322,19 @@ fn fill_fourier_tables<T: StoredComplex>(
     completed: &AtomicUsize,
     progress_step: usize,
 ) {
-    let nk = grid_n.pow(3);
     let components = svd.rank();
     let nm = epw.nmodes;
     if components == 0 {
         return;
     }
+    // The slab may be a shard of the grid; `point_offset` maps the 0-based chunk
+    // index to its global grid point (the phase depends on the global point).
+    let npoints = wtab.len() / components;
     wtab.par_chunks_mut(components)
         .zip(vtab.par_chunks_mut(nm * components))
         .enumerate()
         .for_each(|(index, (u_row, v_row))| {
-            let point = VertexTable::point_for(grid_n, index);
+            let point = VertexTable::point_for(grid_n, point_offset + index);
             let pe: Vec<Cf> = wigner.k.irvec.iter().map(|&r| phase(point, r)).collect();
             let pp: Vec<Cf> = wigner.g.irvec.iter().map(|&r| phase(point, r)).collect();
             for g in 0..components {
@@ -223,13 +363,67 @@ fn fill_fourier_tables<T: StoredComplex>(
                 }
             }
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % progress_step == 0 || done == nk {
+            if done % progress_step == 0 || done == npoints {
                 log::info!(
-                    "vertex Fourier data: {done}/{nk} points ({:.0}%)",
-                    done * 100 / nk
+                    "vertex Fourier data: {done}/{npoints} points ({:.0}%)",
+                    done * 100 / npoints
                 );
             }
         });
+}
+
+/// Dispatch the GPU Fourier fill (fills both `wtab` and `vtab` slabs). Split out
+/// so the feature gate lives in one place: with a GPU backend it calls the device
+/// fill; without one it is a clear runtime error (checked again early in the CLI
+/// so a misconfigured job fails before the dataset load and SVD).
+#[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
+#[allow(clippy::too_many_arguments)]
+fn gpu_fill_dispatch(
+    wigner: &Wigner,
+    svd: &EphSvd,
+    grid_n: usize,
+    lo: usize,
+    hi: usize,
+    phonon_evec: &[Cf],
+    component_bands: &[(usize, usize)],
+    wtab: &mut [Complex<f32>],
+    vtab: &mut [Complex<f32>],
+) -> Result<()> {
+    // Points per launch; lower it via $RMC_GPU_CHUNK if the device OOMs (the B
+    // intermediate is chunk·nmodes·rank complex f64).
+    let chunk = std::env::var("RMC_GPU_CHUNK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(crate::gpu::table_fill::DEFAULT_GPU_CHUNK);
+    crate::gpu::table_fill::fill_fourier_gpu_f32(
+        wigner,
+        svd,
+        grid_n,
+        lo,
+        hi,
+        phonon_evec,
+        component_bands,
+        wtab,
+        vtab,
+        chunk,
+    );
+    Ok(())
+}
+
+#[cfg(not(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda")))]
+#[allow(clippy::too_many_arguments)]
+fn gpu_fill_dispatch(
+    _wigner: &Wigner,
+    _svd: &EphSvd,
+    _grid_n: usize,
+    _lo: usize,
+    _hi: usize,
+    _phonon_evec: &[Cf],
+    _component_bands: &[(usize, usize)],
+    _wtab: &mut [Complex<f32>],
+    _vtab: &mut [Complex<f32>],
+) -> Result<()> {
+    Err("GPU fill needs a GPU runtime: build with --features gpu-cuda (or gpu-cpu)".into())
 }
 
 impl VertexTable {
@@ -245,18 +439,33 @@ impl VertexTable {
         precision: TablePrecision,
     ) -> u64 {
         let nk = (grid_n as u64).saturating_pow(3);
-        let tables = nk
+        Self::estimated_bytes_for_points(nk, components, nbnd, nmodes, precision)
+    }
+
+    /// Peak table bytes for a slab of `points` grid points (a shard fills only
+    /// its slab, so the guard scales with the slab, not the full grid).
+    fn estimated_bytes_for_points(
+        points: u64,
+        components: usize,
+        nbnd: usize,
+        nmodes: usize,
+        precision: TablePrecision,
+    ) -> u64 {
+        let tables = points
             .saturating_mul(components as u64)
             .saturating_mul((1 + nmodes) as u64)
             .saturating_mul(precision.bytes());
-        let complex = nk.saturating_mul((nbnd + nmodes) as u64).saturating_mul(16);
-        let real = nk
+        let complex = points.saturating_mul((nbnd + nmodes) as u64).saturating_mul(16);
+        let real = points
             .saturating_mul((1 + nmodes) as u64)
             .saturating_mul(8)
             .saturating_add((components as u64).saturating_mul(8));
         tables.saturating_add(complex).saturating_add(real)
     }
 
+    /// Full-grid table: the `S=1` case of [`Self::build_range`] with the global
+    /// band-edge shift applied.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         epw: &EpwData,
         crystal: &Crystal,
@@ -267,8 +476,39 @@ impl VertexTable {
         precision: TablePrecision,
         max_bytes: u64,
     ) -> Result<Self> {
+        let nk = grid_n.checked_pow(3).ok_or("grid_n cubed overflows usize")?;
+        Self::build_range(
+            epw, crystal, wigner, svd, grid_n, 0, nk, phfreq_cutoff_ev, precision, max_bytes, true,
+            FillDevice::Cpu,
+        )
+    }
+
+    /// Build the table for the point slab `[lo, hi)` of the `n³` grid — the shard
+    /// primitive. Every per-point value (base data, Fourier fill, precontraction)
+    /// is independent of the slab, so a shard's arrays are byte-for-byte the full
+    /// build's corresponding rows. The ONE exception is the band-edge shift, which
+    /// is global: pass `apply_shift = false` for shards and let the merge subtract
+    /// the global minimum once. `apply_shift = true` (full build) subtracts here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_range(
+        epw: &EpwData,
+        crystal: &Crystal,
+        wigner: &Wigner,
+        svd: &EphSvd,
+        grid_n: usize,
+        lo: usize,
+        hi: usize,
+        phfreq_cutoff_ev: f64,
+        precision: TablePrecision,
+        max_bytes: u64,
+        apply_shift: bool,
+        device: FillDevice,
+    ) -> Result<Self> {
         if grid_n == 0 {
             return Err("grid_n must be positive".into());
+        }
+        if device == FillDevice::Gpu && precision != TablePrecision::F32 {
+            return Err("GPU fill produces f32 tables only; use --precision f32".into());
         }
         if !phfreq_cutoff_ev.is_finite() || phfreq_cutoff_ev < 0.0 {
             return Err("phfreq_cutoff_ev must be finite and non-negative".into());
@@ -281,9 +521,15 @@ impl VertexTable {
         if epw.nbnd > u8::MAX as usize + 1 {
             return Err("precontracted vertex supports at most 256 bands".into());
         }
-        let bytes = Self::estimated_bytes(grid_n, svd.rank(), epw.nbnd, epw.nmodes, precision);
+        let nk = grid_n.checked_pow(3).ok_or("grid_n cubed overflows usize")?;
+        if lo > hi || hi > nk {
+            return Err(format!("shard slab [{lo}, {hi}) is out of range for {nk} points").into());
+        }
+        let npoints = hi - lo;
+        let bytes =
+            Self::estimated_bytes_for_points(npoints as u64, svd.rank(), epw.nbnd, epw.nmodes, precision);
         log::info!(
-            "vertex table estimate: {:.2} GiB",
+            "vertex table estimate: {:.2} GiB ({npoints}/{nk} points)",
             bytes as f64 / 2_f64.powi(30)
         );
         if bytes > max_bytes {
@@ -295,21 +541,18 @@ impl VertexTable {
             .into());
         }
 
-        let nk = grid_n
-            .checked_pow(3)
-            .ok_or("grid_n cubed overflows usize")?;
         let nb = epw.nbnd;
         let nm = epw.nmodes;
         let components = svd.rank();
-        let mut electron_ev = vec![0.0; nk];
-        let mut cbm_evec = vec![Cf::new(0.0, 0.0); nk * nb];
-        let mut phonon_ev = vec![0.0; nk * nm];
-        let mut phonon_evec = vec![Cf::new(0.0, 0.0); nk * nm * nm];
-        let mut long_ev = vec![Cf::new(0.0, 0.0); nk * nm];
+        let mut electron_ev = vec![0.0; npoints];
+        let mut cbm_evec = vec![Cf::new(0.0, 0.0); npoints * nb];
+        let mut phonon_ev = vec![0.0; npoints * nm];
+        let mut phonon_evec = vec![Cf::new(0.0, 0.0); npoints * nm * nm];
+        let mut long_ev = vec![Cf::new(0.0, 0.0); npoints * nm];
 
         let started = Instant::now();
         let completed = AtomicUsize::new(0);
-        let progress_step = (nk / 20).max(1);
+        let progress_step = (npoints / 20).max(1);
         electron_ev
             .par_iter_mut()
             .zip(cbm_evec.par_chunks_mut(nb))
@@ -319,7 +562,7 @@ impl VertexTable {
             .enumerate()
             .for_each(
                 |(index, ((((electron, cbm), phonon), phonon_vectors), long))| {
-                    let point = Self::point_for(grid_n, index);
+                    let point = Self::point_for(grid_n, lo + index);
                     let (energies, evecs) = interpolate_h(epw, wigner, point);
                     *electron = energies[0];
                     cbm.copy_from_slice(&evecs[0]);
@@ -336,32 +579,35 @@ impl VertexTable {
                         long[nu] = branches[nu];
                     }
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if done % progress_step == 0 || done == nk {
+                    if done % progress_step == 0 || done == npoints {
                         log::info!(
-                            "vertex base data: {done}/{nk} points ({:.0}%)",
-                            done * 100 / nk
+                            "vertex base data: {done}/{npoints} points ({:.0}%)",
+                            done * 100 / npoints
                         );
                     }
                 },
             );
         log::info!(
             "vertex base data complete: {:.0} points/sec",
-            nk as f64 / started.elapsed().as_secs_f64()
+            npoints as f64 / started.elapsed().as_secs_f64()
         );
         // Shift to the global band minimum so ε ≥ 0 holds for any material;
-        // for a Γ-minimum band (LiF) this equals electron_ev[0].
-        let band_edge = electron_ev.iter().copied().fold(f64::INFINITY, f64::min);
-        if band_edge < electron_ev[0] {
-            log::warn!(
-                "conduction minimum is {:.6} eV below Γ — the band edge is off-Γ; \
-                 dispersion is shifted to the true minimum",
-                electron_ev[0] - band_edge
-            );
+        // for a Γ-minimum band (LiF) this equals electron_ev[0]. Shards skip this
+        // (their slab min ≠ the global min) — the merge applies it once.
+        if apply_shift {
+            let band_edge = electron_ev.iter().copied().fold(f64::INFINITY, f64::min);
+            if band_edge < electron_ev[0] {
+                log::warn!(
+                    "conduction minimum is {:.6} eV below Γ — the band edge is off-Γ; \
+                     dispersion is shifted to the true minimum",
+                    electron_ev[0] - band_edge
+                );
+            }
+            electron_ev.iter_mut().for_each(|e| *e -= band_edge);
         }
-        electron_ev.iter_mut().for_each(|e| *e -= band_edge);
 
-        let mut wtab = Tab::zeros(components * nk, precision);
-        let mut vtab = Tab::zeros(components * nk * nm, precision);
+        let mut wtab = Tab::zeros(components * npoints, precision);
+        let mut vtab = Tab::zeros(components * npoints * nm, precision);
 
         let mut g_to_nm = vec![(0usize, 0usize); components];
         for n in 0..nb {
@@ -374,36 +620,28 @@ impl VertexTable {
 
         let started = Instant::now();
         let completed = AtomicUsize::new(0);
-        match (&mut wtab, &mut vtab) {
-            (Tab::F32(w), Tab::F32(v)) => fill_fourier_tables(
-                epw,
-                wigner,
-                svd,
-                grid_n,
-                &phonon_evec,
-                &g_to_nm,
-                w,
-                v,
-                &completed,
-                progress_step,
-            ),
-            (Tab::F64(w), Tab::F64(v)) => fill_fourier_tables(
-                epw,
-                wigner,
-                svd,
-                grid_n,
-                &phonon_evec,
-                &g_to_nm,
-                w,
-                v,
-                &completed,
-                progress_step,
-            ),
-            _ => unreachable!("table arrays use one precision"),
+        match device {
+            FillDevice::Cpu => match (&mut wtab, &mut vtab) {
+                (Tab::F32(w), Tab::F32(v)) => fill_fourier_tables(
+                    epw, wigner, svd, grid_n, lo, &phonon_evec, &g_to_nm, w, v, &completed,
+                    progress_step,
+                ),
+                (Tab::F64(w), Tab::F64(v)) => fill_fourier_tables(
+                    epw, wigner, svd, grid_n, lo, &phonon_evec, &g_to_nm, w, v, &completed,
+                    progress_step,
+                ),
+                _ => unreachable!("table arrays use one precision"),
+            },
+            FillDevice::Gpu => match (&mut wtab, &mut vtab) {
+                (Tab::F32(w), Tab::F32(v)) => {
+                    gpu_fill_dispatch(wigner, svd, grid_n, lo, hi, &phonon_evec, &g_to_nm, w, v)?;
+                }
+                _ => unreachable!("GPU fill is guarded to f32 above"),
+            },
         }
         log::info!(
             "vertex Fourier data complete: {:.0} points/sec",
-            nk as f64 / started.elapsed().as_secs_f64()
+            npoints as f64 / started.elapsed().as_secs_f64()
         );
 
         let mut table = Self {
@@ -442,7 +680,7 @@ impl VertexTable {
         Self::point_for(self.grid_n, index)
     }
 
-    fn point_for(n: usize, index: usize) -> Vector3<f64> {
+    pub(crate) fn point_for(n: usize, index: usize) -> Vector3<f64> {
         let i = index / (n * n);
         let j = index / n % n;
         let k = index % n;
@@ -570,13 +808,7 @@ impl VertexTable {
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let mut writer = BufWriter::new(File::create(path)?);
-        writer.write_all(CACHE_MAGIC)?;
-        writer.write_all(&CACHE_VERSION.to_le_bytes())?;
-        let flags = match self.precision() {
-            TablePrecision::F32 => FLAG_F32,
-            TablePrecision::F64 => 0,
-        };
-        writer.write_all(&flags.to_le_bytes())?;
+        write_cache_header(&mut writer, self.precision(), false)?;
         bincode::serialize_into(&mut writer, self)?;
         writer.flush()?;
         Ok(())
@@ -584,29 +816,11 @@ impl VertexTable {
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let mut reader = BufReader::new(File::open(path)?);
-        let mut magic = [0; 8];
-        let mut version = [0; 4];
-        let mut flags = [0; 4];
-        reader.read_exact(&mut magic)?;
-        reader.read_exact(&mut version)?;
-        reader.read_exact(&mut flags)?;
-        if &magic != CACHE_MAGIC {
-            return Err("invalid vertex-table cache; rebuild the table".into());
-        }
-        let version = u32::from_le_bytes(version);
-        if version != CACHE_VERSION {
-            return Err(format!(
-                "vertex-table cache version {version} is unsupported (expected {CACHE_VERSION}); rebuild the table"
-            )
-            .into());
-        }
-        let flags = u32::from_le_bytes(flags);
-        if flags & !FLAG_F32 != 0 {
-            return Err("unsupported vertex-table cache flags; rebuild the table".into());
+        let (expected, is_shard) = read_cache_header(&mut reader)?;
+        if is_shard {
+            return Err("this is a shard file — reassemble the table with `table-merge`".into());
         }
         let table: Self = bincode::deserialize_from(&mut reader)?;
-        let expected =
-            if flags & FLAG_F32 != 0 { TablePrecision::F32 } else { TablePrecision::F64 };
         if table.wtab.precision() != expected || table.vtab.precision() != expected {
             return Err(
                 "vertex-table cache precision flag does not match its payload; rebuild the table"
@@ -616,15 +830,184 @@ impl VertexTable {
         Ok(table)
     }
 
+    /// Read only a table's identity — grid and SVD spectrum — without the tab
+    /// payloads (a few KiB instead of up to tens of GiB). Bincode is
+    /// sequential, so deserializing the [`VertexTableHead`] prefix from the
+    /// same stream `save` wrote reads exactly the leading fields.
+    pub fn load_head(path: impl AsRef<Path>) -> Result<VertexTableHead> {
+        let mut reader = BufReader::new(File::open(path)?);
+        let (_, is_shard) = read_cache_header(&mut reader)?;
+        if is_shard {
+            return Err("this is a shard file — reassemble the table with `table-merge`".into());
+        }
+        Ok(bincode::deserialize_from(&mut reader)?)
+    }
+
+    /// Write a shard: the header (with the shard flag), the shard metadata, then
+    /// the slab table (unshifted, precontracted). Written to a temp file and
+    /// renamed into place, so a walltime kill mid-write can never leave a
+    /// truncated file that the resume check would treat as already built.
+    /// `table-merge` reassembles the full `.rmcvtab` from the complete set.
+    pub fn save_shard(&self, meta: &ShardMeta, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        let tmp = {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(".tmp");
+            std::path::PathBuf::from(name)
+        };
+        let mut writer = BufWriter::new(File::create(&tmp)?);
+        write_cache_header(&mut writer, self.precision(), true)?;
+        bincode::serialize_into(&mut writer, meta)?;
+        bincode::serialize_into(&mut writer, self)?;
+        writer.flush()?;
+        drop(writer);
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Read only a shard's metadata (cheap — skips the slab payload), for the
+    /// resume check: an existing shard whose header matches is already built.
+    pub fn read_shard_meta(path: impl AsRef<Path>) -> Result<ShardMeta> {
+        let mut reader = BufReader::new(File::open(path)?);
+        let (_, is_shard) = read_cache_header(&mut reader)?;
+        if !is_shard {
+            return Err("not a shard file (full vertex table?)".into());
+        }
+        Ok(bincode::deserialize_from(&mut reader)?)
+    }
+
+    /// Load a full shard (metadata + slab table).
+    pub fn load_shard(path: impl AsRef<Path>) -> Result<(ShardMeta, Self)> {
+        let mut reader = BufReader::new(File::open(path)?);
+        let (expected, is_shard) = read_cache_header(&mut reader)?;
+        if !is_shard {
+            return Err("not a shard file (full vertex table?)".into());
+        }
+        let meta: ShardMeta = bincode::deserialize_from(&mut reader)?;
+        let table: Self = bincode::deserialize_from(&mut reader)?;
+        if table.wtab.precision() != expected || table.vtab.precision() != expected {
+            return Err("shard precision flag does not match its payload; rebuild".into());
+        }
+        Ok((meta, table))
+    }
+
+    /// Reassemble the full table from its shards: validate they are the complete
+    /// contiguous balanced partition of one build, concatenate the per-point
+    /// arrays, then apply the deferred global band-edge shift once. The result is
+    /// byte-for-byte identical to the equivalent full [`Self::build`] (per-point
+    /// work is deterministic and slab-independent; `f64::min` is order-invariant).
+    pub fn merge_shards(mut shards: Vec<(ShardMeta, Self)>) -> Result<Self> {
+        if shards.is_empty() {
+            return Err("no shards to merge".into());
+        }
+        shards.sort_by_key(|(meta, _)| meta.lo);
+        let (head_meta, head) = &shards[0];
+        let grid_n = head.grid_n;
+        let expected_shards = head_meta.shards;
+        let nk = grid_n.checked_pow(3).ok_or("grid_n cubed overflows usize")?;
+        if shards.len() != expected_shards {
+            return Err(format!(
+                "expected {expected_shards} shards, got {} — refusing a partial set",
+                shards.len()
+            )
+            .into());
+        }
+        // Reference invariants come from shard 0; every shard must match it and
+        // occupy exactly its balanced slab, with no gaps or overlaps.
+        let nb = head.nbnd;
+        let nm = head.nmodes;
+        let pair_offsets = head.pair_offsets.clone();
+        let s = head.s.clone();
+        let bra_band = head.bra_band.clone();
+        let phfreq_cutoff_ev = head.phfreq_cutoff_ev;
+        let precision = head.precision();
+        let expected_rank = head_meta.total_rank;
+        let mut cursor = 0;
+        for (i, (meta, table)) in shards.iter().enumerate() {
+            let lo = i * nk / expected_shards;
+            let hi = (i + 1) * nk / expected_shards;
+            if meta.shards != expected_shards || meta.shard != i || meta.lo != lo || meta.hi != hi
+                || meta.lo != cursor
+            {
+                return Err(
+                    "shards are not the complete contiguous balanced partition of one build".into(),
+                );
+            }
+            if meta.total_rank != expected_rank || meta.precision != precision {
+                return Err("shards disagree on SVD budget/precision; not from one build".into());
+            }
+            cursor = meta.hi;
+            if table.grid_n != grid_n
+                || table.nbnd != nb
+                || table.nmodes != nm
+                || table.pair_offsets != pair_offsets
+                || table.s != s
+                || table.phfreq_cutoff_ev != phfreq_cutoff_ev
+                || table.precision() != precision
+            {
+                return Err("shards disagree on grid/SVD/precision; not from one build".into());
+            }
+            if table.electron_ev.len() != hi - lo {
+                return Err("shard slab length does not match its header range".into());
+            }
+        }
+        if cursor != nk {
+            return Err("shards do not cover the full grid".into());
+        }
+
+        let wtab = Tab::concat(shards.iter().map(|(_, t)| &t.wtab), precision)?;
+        let vtab = Tab::concat(shards.iter().map(|(_, t)| &t.vtab), precision)?;
+        let mut cbm_evec = Vec::with_capacity(nk * nb);
+        let mut electron_ev = Vec::with_capacity(nk);
+        let mut phonon_ev = Vec::with_capacity(nk * nm);
+        let mut long_ev = Vec::with_capacity(nk * nm);
+        for (_, table) in &shards {
+            cbm_evec.extend_from_slice(&table.cbm_evec);
+            electron_ev.extend_from_slice(&table.electron_ev);
+            phonon_ev.extend_from_slice(&table.phonon_ev);
+            long_ev.extend_from_slice(&table.long_ev);
+        }
+
+        // The global shift the shards deferred; identical to the full build's.
+        let band_edge = electron_ev.iter().copied().fold(f64::INFINITY, f64::min);
+        if band_edge < electron_ev[0] {
+            log::warn!(
+                "conduction minimum is {:.6} eV below Γ — the band edge is off-Γ; \
+                 dispersion is shifted to the true minimum",
+                electron_ev[0] - band_edge
+            );
+        }
+        electron_ev.iter_mut().for_each(|e| *e -= band_edge);
+
+        Ok(Self {
+            grid_n,
+            nbnd: nb,
+            nmodes: nm,
+            pair_offsets,
+            s,
+            wtab,
+            bra_band,
+            vtab,
+            cbm_evec,
+            electron_ev,
+            phonon_ev,
+            long_ev,
+            phfreq_cutoff_ev,
+        })
+    }
+
     fn precontract(&mut self) {
         let ncomp = self.s.len();
+        // Per-point work over the stored points — the full grid for a normal
+        // table, a slab for a shard (electron_ev is always one entry per point).
+        let npoints = self.electron_ev.len();
         self.bra_band = vec![0; ncomp];
         for n in 0..self.nbnd {
             for m in 0..self.nbnd {
                 let pair = n * self.nbnd + m;
                 for g in self.pair_offsets[pair]..self.pair_offsets[pair + 1] {
                     self.bra_band[g] = n as u8;
-                    for k in 0..self.len() {
+                    for k in 0..npoints {
                         let ket = self.cbm_evec[k * self.nbnd + m];
                         self.wtab.scale(k * ncomp + g, self.s[g] * ket);
                     }
@@ -738,60 +1121,95 @@ mod tests {
         assert!(error.to_string().contains("rebuild the table"));
     }
 
-    #[test]
-    fn compressed_table_matches_direct_oracle() {
+    /// A tiny but complete EPW dataset — interpolates at any grid_n, so the same
+    /// fixture drives the oracle, shard, and GPU-parity tests. Deliberately NOT
+    /// minimal: two R-vectors on every Wigner grid (point-dependent dispersion,
+    /// phonons, and phases — a shard/fill that mixes up global vs. slab-local
+    /// indices, drops the deferred band-edge shift, or transposes U_w/V_w
+    /// produces different numbers), two atoms (a/3 ∈ {0,1} exercises the per-atom
+    /// degeneracy axis), and ndegen entries > 1 (the /d division is live).
+    /// `hermitize` runs before every diagonalization, so the raw blocks need not
+    /// be Hermitian; imaginary phonon branches are fine (the fill takes |ω|).
+    fn synthetic_inputs() -> (EpwData, Crystal, Wigner, EpmatWp) {
+        let nm = 6; // 2 atoms × 3
+        // D(R): stiff point-independent diagonal at R=0 plus a small complex
+        // block at R=[1,0,0] so frequencies and eigenvectors vary with q.
+        let mut d = vec![Cf::new(0.0, 0.0); nm * nm * 2];
+        for a in 0..nm {
+            d[(a * nm + a) * 2] = Cf::new(((a + 1) * (a + 1)) as f64, 0.0);
+            for b in 0..nm {
+                d[(a * nm + b) * 2 + 1] =
+                    Cf::new(0.1 * (a + b + 1) as f64, 0.05 * (a as f64 - b as f64));
+            }
+        }
         let epw = EpwData {
             ef: 0.0,
             nbnd: 2,
-            nrr_k: 1,
-            nmodes: 3,
-            nrr_q: 1,
-            nrr_g: 1,
-            zstar: vec![[[0.0; 3]; 3]],
+            nrr_k: 2,
+            nmodes: nm,
+            nrr_q: 2,
+            nrr_g: 2,
+            zstar: vec![[[0.0; 3]; 3]; 2],
             epsi: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            // h[(i·nbnd+j)·nrr_k + r]: R=0 block diag(0, 2) plus a complex
+            // R=[1,0,0] block → k-dependent bands with an off-Γ minimum, so the
+            // deferred band-edge shift subtracts a nonzero, point-found value.
             h: vec![
                 Cf::new(0.0, 0.0),
-                Cf::new(0.0, 0.0),
-                Cf::new(0.0, 0.0),
+                Cf::new(0.3, 0.1),
+                Cf::new(0.1, 0.0),
+                Cf::new(0.05, -0.02),
+                Cf::new(0.1, 0.0),
+                Cf::new(0.02, 0.04),
                 Cf::new(2.0, 0.0),
+                Cf::new(-0.2, 0.05),
             ],
-            d: vec![
-                Cf::new(1.0, 0.0),
-                Cf::new(0.0, 0.0),
-                Cf::new(0.0, 0.0),
-                Cf::new(0.0, 0.0),
-                Cf::new(4.0, 0.0),
-                Cf::new(0.0, 0.0),
-                Cf::new(0.0, 0.0),
-                Cf::new(0.0, 0.0),
-                Cf::new(9.0, 0.0),
-            ],
+            d,
         };
         let crystal = Crystal {
-            nat: 1,
-            nmodes: 3,
+            nat: 2,
+            nmodes: nm,
             at: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             bg: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             omega: 100.0,
             alat: 5.0,
-            tau: vec![[0.0; 3]],
-            ityp: vec![1],
-            amass: vec![1.0],
+            tau: vec![[0.0; 3], [0.25, 0.25, 0.25]],
+            ityp: vec![1, 2],
+            amass: vec![1.0, 2.0],
         };
+        // ndegen > 1 entries sit on the second R-vector of the k and g grids, so
+        // both the electron (per band pair) and el-ph (per atom) degeneracy
+        // divisions are exercised with d ≠ 1.
         let wigner = Wigner {
-            k: WsGrid::from_parts(vec![[0; 3]], 2, 2, vec![1; 4]),
-            q: WsGrid::from_parts(vec![[0; 3]], 1, 1, vec![1]),
-            g: WsGrid::from_parts(vec![[0; 3]], 2, 1, vec![1; 2]),
+            k: WsGrid::from_parts(
+                vec![[0; 3], [1, 0, 0]],
+                2,
+                2,
+                vec![1, 1, 1, 1, 1, 2, 2, 1],
+            ),
+            q: WsGrid::from_parts(vec![[0; 3], [1, 0, 0]], 2, 2, vec![1, 1, 1, 1, 1, 1, 1, 2]),
+            g: WsGrid::from_parts(
+                vec![[0; 3], [0, 1, 0]],
+                2,
+                2,
+                vec![1, 1, 1, 1, 1, 2, 1, 1],
+            ),
         };
         let epmat = EpmatWp {
             nbnd: 2,
-            nrr_k: 1,
-            nmodes: 3,
-            nrr_g: 1,
-            data: (0..12)
-                .map(|i| Cf::new((i + 1) as f64, (i % 3) as f64 - 1.0))
+            nrr_k: 2,
+            nmodes: nm,
+            nrr_g: 2,
+            data: (0..EpmatWp::expected_len(2, 2, nm, 2))
+                .map(|i| Cf::new((i + 1) as f64 * 0.1, ((i % 5) as f64 - 2.0) * 0.1))
                 .collect(),
         };
+        (epw, crystal, wigner, epmat)
+    }
+
+    #[test]
+    fn compressed_table_matches_direct_oracle() {
+        let (epw, crystal, wigner, epmat) = synthetic_inputs();
         let svd = EphSvd::compress(&epmat, 1e-10, 3);
         assert!(svd.max_relative_error(&epmat) < 1e-9);
         let error = VertexTable::build(
@@ -819,6 +1237,107 @@ mod tests {
         .unwrap();
         let direct = DirectVertex::new(&epw, &crystal, &wigner, &epmat);
         assert!(table.max_direct_error(&direct, 200, 19) < 1e-9);
+    }
+
+    #[test]
+    fn sharded_build_merges_to_the_full_table() {
+        let (epw, crystal, wigner, epmat) = synthetic_inputs();
+        let svd = EphSvd::compress(&epmat, 1e-10, 3);
+        // n=5 → 125 points, not divisible by 4: exercises the exact balanced
+        // slab arithmetic (sizes 31,31,31,32), the risky part of sharding.
+        let grid_n = 5_usize;
+        let nshards = 4;
+        let nk = grid_n.pow(3);
+        let precision = TablePrecision::F64;
+
+        let full = VertexTable::build(
+            &epw, &crystal, &wigner, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV, precision, DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
+
+        let shards: Vec<_> = (0..nshards)
+            .map(|i| {
+                let lo = i * nk / nshards;
+                let hi = (i + 1) * nk / nshards;
+                let table = VertexTable::build_range(
+                    &epw, &crystal, &wigner, &svd, grid_n, lo, hi, DEFAULT_PHFREQ_CUTOFF_EV,
+                    precision, DEFAULT_MAX_BYTES, false, FillDevice::Cpu,
+                )
+                .unwrap();
+                let meta = ShardMeta {
+                    grid_n,
+                    shards: nshards,
+                    shard: i,
+                    lo,
+                    hi,
+                    total_rank: 3,
+                    precision,
+                };
+                (meta, table)
+            })
+            .collect();
+
+        // Fixture-strength guards: the merge's deferred band-edge shift is only
+        // tested if the raw (unshifted) energies are point-dependent with a
+        // nonzero minimum — a point-independent fixture makes this test vacuous.
+        let raw_min = shards
+            .iter()
+            .flat_map(|(_, t)| t.electron_ev.iter().copied())
+            .fold(f64::INFINITY, f64::min);
+        assert!(raw_min != 0.0, "fixture band edge is 0 — shift untested");
+        assert!(
+            full.electron_ev.iter().any(|&e| e != full.electron_ev[0]),
+            "fixture dispersion is flat — slab indexing untested"
+        );
+
+        // A shard round-trips through its file format unchanged.
+        let path = std::env::temp_dir()
+            .join(format!("rmc-shard-{}-{}.rmcvtab.shard", std::process::id(), 1));
+        shards[1].1.save_shard(&shards[1].0, &path).unwrap();
+        assert_eq!(VertexTable::read_shard_meta(&path).unwrap(), shards[1].0);
+        let (meta, reloaded) = VertexTable::load_shard(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(meta, shards[1].0);
+        assert_eq!(reloaded, shards[1].1);
+
+        // Shuffled input order must still reassemble the same table (merge sorts).
+        let mut shuffled = shards;
+        shuffled.reverse();
+        let merged = VertexTable::merge_shards(shuffled).unwrap();
+        assert_eq!(merged, full);
+    }
+
+    #[test]
+    fn merge_refuses_incomplete_shard_sets() {
+        let (epw, crystal, wigner, epmat) = synthetic_inputs();
+        let svd = EphSvd::compress(&epmat, 1e-10, 3);
+        let grid_n = 4_usize;
+        let nshards = 4;
+        let nk = grid_n.pow(3);
+        // Only the first three of four shards — must be refused, not silently
+        // merged into a table with a hole.
+        let shards: Vec<_> = (0..3)
+            .map(|i| {
+                let lo = i * nk / nshards;
+                let hi = (i + 1) * nk / nshards;
+                let table = VertexTable::build_range(
+                    &epw, &crystal, &wigner, &svd, grid_n, lo, hi, DEFAULT_PHFREQ_CUTOFF_EV,
+                    TablePrecision::F64, DEFAULT_MAX_BYTES, false, FillDevice::Cpu,
+                )
+                .unwrap();
+                let meta = ShardMeta {
+                    grid_n,
+                    shards: nshards,
+                    shard: i,
+                    lo,
+                    hi,
+                    total_rank: 3,
+                    precision: TablePrecision::F64,
+                };
+                (meta, table)
+            })
+            .collect();
+        assert!(VertexTable::merge_shards(shards).is_err());
     }
 
     #[test]
@@ -884,5 +1403,57 @@ mod tests {
         for (k, q, cap, expected) in cases {
             assert!((table.short_indices_capped(k, q, 0, &cap) - expected).norm() < 1.0e-12);
         }
+    }
+
+    /// GPU/CPU fill parity: the GPU Fourier fill reproduces the CPU fill within
+    /// f32 tolerance (the reductions reorder, so bit-identity is not expected).
+    /// Runs on whichever cubecl backend is compiled in — the CPU runtime locally,
+    /// CUDA on the A100 (`cargo test --features gpu-cuda`). The kernels use no
+    /// plane/shared-memory ops, so the two backends agree.
+    #[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
+    #[test]
+    fn gpu_fill_matches_cpu_within_f32_tol() {
+        let (epw, crystal, wigner, epmat) = synthetic_inputs();
+        let svd = EphSvd::compress(&epmat, 1e-10, 3);
+        let grid_n = 4_usize;
+        let nk = grid_n.pow(3);
+        // Force many small chunks (64 points / 7 per launch → 10 launches) so the
+        // chunk-boundary offsets are exercised, not just the single-launch path.
+        std::env::set_var("RMC_GPU_CHUNK", "7");
+        let build = |device| {
+            VertexTable::build_range(
+                &epw, &crystal, &wigner, &svd, grid_n, 0, nk, DEFAULT_PHFREQ_CUTOFF_EV,
+                TablePrecision::F32, DEFAULT_MAX_BYTES, true, device,
+            )
+            .unwrap()
+        };
+        let cpu = build(FillDevice::Cpu);
+        let gpu = build(FillDevice::Gpu);
+        std::env::remove_var("RMC_GPU_CHUNK");
+
+        let f32_slice = |t: &Tab| -> Vec<Complex<f32>> {
+            match t {
+                Tab::F32(v) => v.clone(),
+                Tab::F64(_) => unreachable!("f32 table"),
+            }
+        };
+        let max_rel = |a: &[Complex<f32>], b: &[Complex<f32>]| -> f64 {
+            assert_eq!(a.len(), b.len());
+            let mut scale = 0.0f64;
+            let mut worst = 0.0f64;
+            for (x, y) in a.iter().zip(b) {
+                scale = scale.max((x.re as f64).hypot(x.im as f64));
+                worst = worst.max(((x.re - y.re) as f64).hypot((x.im - y.im) as f64));
+            }
+            if scale > 0.0 {
+                worst / scale
+            } else {
+                worst
+            }
+        };
+        let w_err = max_rel(&f32_slice(&cpu.wtab), &f32_slice(&gpu.wtab));
+        let v_err = max_rel(&f32_slice(&cpu.vtab), &f32_slice(&gpu.vtab));
+        assert!(w_err < 1e-5, "wtab relative error {w_err:e}");
+        assert!(v_err < 1e-5, "vtab relative error {v_err:e}");
     }
 }
