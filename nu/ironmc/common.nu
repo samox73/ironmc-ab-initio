@@ -44,6 +44,15 @@ export def run-results [
     } | sort-by run
 }
 
+# Existing run dirs (relative to the repo root) for `--out-dir: string@run-dirs`
+# completion — resume, merge, and annotation targets. New run names are typed
+# freely; jobs/ internals are noise, not targets.
+export def run-dirs [] {
+    glob --no-file ($ROOT | path join runs **) --exclude [**/jobs **/jobs/**]
+        | each {|d| $d | path relative-to $ROOT }
+        | sort
+}
+
 # Config names from the rmc-ab-initio configs dir, for `--config: string@config-names`.
 export def config-names [] {
     ls $CONFIGS | get name | path basename

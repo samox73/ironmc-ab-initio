@@ -22,7 +22,7 @@
 # no-feature workspace build too, or the two would thrash cargo's cache on every
 # submit. --dry-run skips the build.
 
-use common.nu [ROOT]
+use common.nu [ROOT run-dirs]
 use cuda.nu
 
 # VSC-5 queue map (gitlab.tuwien.ac.at vsc5_queues.md, fetched 2026-09-07).
@@ -260,7 +260,7 @@ export def submit [
                                # commit; the job runs that tree's code (data paths stay in the
                                # main repo via $IRONMC_DATA_ROOT) and removes the worktree when
                                # it finishes
-    --out-dir: string          # REQUIRED experiment dir under runs/ (e.g. runs/e0-fit/n20): this
+    --out-dir: string@run-dirs # REQUIRED experiment dir under runs/ (e.g. runs/e0-fit/n20): this
                                # submission's scripts/logs land in <out-dir>/jobs/<stamp>-<name>,
                                # and the job sees $IRONMC_OUT_DIR = <out-dir>/results, which run
                                # targets take as their --out-dir default (cumulative dumps).

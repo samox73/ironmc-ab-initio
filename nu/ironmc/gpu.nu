@@ -8,7 +8,7 @@
 # sbatch scripts alike (the toolkit must exist: `ironmc cuda setup`, once per
 # machine — $HOME is shared with the compute nodes).
 
-use common.nu [ROOT table-path config-names]
+use common.nu [ROOT table-path config-names run-dirs]
 use cuda.nu
 
 # A1 vertex-dot microbenchmark (GO/NO-GO): prints the node's cpu-host rayon
@@ -47,7 +47,7 @@ export def run [
     --p-ext: list<float>          # external momentum in fractional coords, e.g. [0.5 0.0 0.5] = X;
                                   # must be a grid point. Overrides the config's p_ext and becomes
                                   # part of the run's config — resubmit legs with the same value
-    --out-dir: string             # run directory (e.g. runs/gpu/n50-prod): holds dumps +
+    --out-dir: string@run-dirs    # run directory (e.g. runs/gpu/n50-prod): holds dumps +
                                   # checkpoints; resubmitting with the same dir resumes the run
                                   # (bit-identical to an uninterrupted one). Defaults to
                                   # $IRONMC_OUT_DIR (set by `slurm submit --out-dir`); REQUIRED otherwise.
@@ -106,7 +106,7 @@ export def scale [
 # report. This is the cumulative statistics of a checkpointed run; the
 # per-job result-*.json files are per-leg views, not merge inputs.
 export def merge [
-    dir: string                   # e.g. runs/gpu/n50-prod
+    dir: string@run-dirs          # e.g. runs/gpu/n50-prod
     --out: string                 # merged report path (default <dir>/merged.json)
 ] {
     cd $ROOT

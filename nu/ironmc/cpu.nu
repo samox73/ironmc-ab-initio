@@ -11,7 +11,7 @@
 # engine remains available as the `run-flat` subcommand — the GPU-parity
 # reference — but is not exposed here.
 
-use common.nu [ROOT config-names]
+use common.nu [ROOT config-names run-dirs]
 
 # CPU run of a DiagConfig on this node's cores; writes a RankDump + Checkpoint
 # into --out-dir for resume and `merge`. `config` may be a path or a name from
@@ -26,7 +26,7 @@ export def run [
     --p-ext: list<float>          # external momentum in fractional coords, e.g. [0.5 0.0 0.5] = X;
                                   # must be a grid point. Overrides the config's p_ext and becomes
                                   # part of the run's config — resubmit legs with the same value
-    --out-dir: string             # run directory (e.g. runs/cpu/n50-prod): holds dumps +
+    --out-dir: string@run-dirs    # run directory (e.g. runs/cpu/n50-prod): holds dumps +
                                   # checkpoints; resubmitting with the same dir resumes the run
                                   # (bit-identical to an uninterrupted one). Defaults to
                                   # $IRONMC_OUT_DIR (set by `slurm submit --out-dir`); REQUIRED otherwise.
@@ -72,7 +72,7 @@ export def flat [
                                   # checkpoint — must be identical across legs of one run
     --max-order-gpu: int = 256    # FlatDiagram capacity = 2·N+2
     --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
-    --out-dir: string             # run directory (holds dumps + a batched checkpoint); defaults
+    --out-dir: string@run-dirs    # run directory (holds dumps + a batched checkpoint); defaults
                                   # to $IRONMC_OUT_DIR (set by `slurm submit --out-dir`)
 ] {
     let out_dir = ($out_dir | default $env.IRONMC_OUT_DIR?)
@@ -103,7 +103,7 @@ export def flat [
 # engine-agnostic (CPU and GPU dumps share the format). The cumulative
 # statistics of a checkpointed/multi-rank run.
 export def merge [
-    dir: string                   # e.g. runs/cpu/n50-prod
+    dir: string@run-dirs          # e.g. runs/cpu/n50-prod
     --out: string                 # merged report path (default <dir>/merged.json)
 ] {
     cd $ROOT
