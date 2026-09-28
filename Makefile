@@ -33,12 +33,13 @@ sync: sync-replica sync-vsc
 # files land with mtime = now, so cargo rebuilds exactly what changed;
 # --checksum keeps unchanged files untransferred (their old mtimes stay put).
 # Only the cargo sources get this — checksumming the whole tree would read
-# datasets/ (~17 GB) on both ends.
+# datasets/ (~17 GB) on both ends. The framework's .git goes along so build.rs
+# on the cluster records the framework commit the sources came from.
 sync-vsc:
 	@let data = (ssh -S none -p $(VSC_PORT) $(VSC_HOST) printenv DATA | str trim)
 	if ($$data | is-empty) { error make { msg: "DATA is empty on $(VSC_HOST) — is it set?" } }
 	print "\nUploading the framework to VSC5"
-	rsync -avP --no-times --checksum -e 'ssh -S none -p $(VSC_PORT)' --relative ../ironmc/./crates ../ironmc/./Cargo.toml ../ironmc/./Cargo.lock $$"$(VSC_HOST):($$data)/ironmc/"
+	rsync -avP --no-times --checksum -e 'ssh -S none -p $(VSC_PORT)' --relative ../ironmc/./crates ../ironmc/./Cargo.toml ../ironmc/./Cargo.lock ../ironmc/./.git $$"$(VSC_HOST):($$data)/ironmc/"
 	print "\nUploading ironmc-ab-initio to VSC5"
 	rsync -avP --no-times --checksum -e 'ssh -S none -p $(VSC_PORT)' --relative ./src ./tests ./examples ./build.rs ./Cargo.toml ./Cargo.lock $$"$(VSC_HOST):($$data)/ironmc-ab-initio/"
 	let excludes = ["--exclude=/target/" "--exclude=/target-cuda/" "--exclude=/.worktrees/" "--exclude=/runs/" "--exclude=/runs-vsc/" "--exclude=/src/" "--exclude=/tests/" "--exclude=/examples/" "--exclude=/build.rs" "--exclude=/Cargo.toml" "--exclude=/Cargo.lock" "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*"]
