@@ -442,28 +442,48 @@ fn write_run_metadata(
     table_path: &Path,
     grid_n: usize,
     svd_rank: usize,
+    // The external momentum this run samples (fractional coordinates). `None`
+    // only in metadata-only mode without an explicit --p-ext, whose config's
+    // p_ext is a placeholder that must not be recorded.
+    p_ext: Option<nalgebra::Vector3<f64>>,
 ) -> BoxResult<()> {
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "engine": engine,
         "grid": grid_n,
         // Components actually kept by the SVD (the filename's r<N> is the cap).
         "svd_rank": svd_rank,
         "table": table_path.file_name().map(|name| name.to_string_lossy()),
     });
+    if let Some(p) = p_ext {
+        metadata["p_ext"] = serde_json::json!([p.x, p.y, p.z]);
+    }
     let path = out_dir.join("run-metadata.json");
     if path.exists() {
         let recorded: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-        if recorded != metadata {
+        // Files written before p_ext was recorded (or by metadata-only mode
+        // without --p-ext) are compared without it and then upgraded in place;
+        // a recorded p_ext must match exactly.
+        let mut expected = metadata.clone();
+        if recorded.get("p_ext").is_none() || p_ext.is_none() {
+            expected.as_object_mut().map(|m| m.remove("p_ext"));
+        }
+        let mut recorded_cmp = recorded.clone();
+        if p_ext.is_none() {
+            recorded_cmp.as_object_mut().map(|m| m.remove("p_ext"));
+        }
+        if recorded_cmp != expected {
             return Err(format!(
                 "{} does not match this invocation: recorded {recorded}, this run would \
-                 write {metadata}; refusing to continue a run with a different table or engine",
+                 write {metadata}; refusing to continue a run with a different table, engine, \
+                 or external momentum",
                 path.display()
             )
             .into());
         }
-        return Ok(());
-    }
-    if rank != 0 {
+        if recorded == metadata || p_ext.is_none() || rank != 0 {
+            return Ok(());
+        }
+    } else if rank != 0 {
         return Ok(());
     }
     std::fs::create_dir_all(out_dir)?;
@@ -600,11 +620,13 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     // A first-class override like --chains: the config the engine runs — and
     // the checkpoint records, and same_trajectory pins across legs — is the
     // post-override one; no patched temp config anywhere.
-    if let Some(p_ext) = options.remove("--p-ext") {
-        if !p_ext.is_empty() {
+    let p_ext_given = match options.remove("--p-ext") {
+        Some(p_ext) if !p_ext.is_empty() => {
             config.p_ext = parse_p_ext(&p_ext)?;
+            true
         }
-    }
+        _ => false,
+    };
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     // group_size = 1 by default: per-chain update selection, no GPU-style
     // lockstep waste (group-uniform selection is a device concession).
@@ -628,12 +650,14 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         let head = VertexTable::load_head(&table_path)?;
         return write_run_metadata(
             &out_dir, rank, "cpu-flat", &table_path, head.grid_n, head.s.len(),
+            p_ext_given.then_some(config.p_ext),
         );
     }
 
     let table = Arc::new(VertexTable::load(&table_path)?);
     write_run_metadata(
         &out_dir, rank, "cpu-flat", &table_path, table.grid_n, table.s.len(),
+        Some(config.p_ext),
     )?;
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
@@ -746,11 +770,13 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     // A first-class override like --chains: the config the engine runs — and
     // the checkpoint records, and same_trajectory pins across legs — is the
     // post-override one; no patched temp config anywhere.
-    if let Some(p_ext) = options.remove("--p-ext") {
-        if !p_ext.is_empty() {
+    let p_ext_given = match options.remove("--p-ext") {
+        Some(p_ext) if !p_ext.is_empty() => {
             config.p_ext = parse_p_ext(&p_ext)?;
+            true
         }
-    }
+        _ => false,
+    };
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed, merged,
     // or told apart from an accidental identical resubmission.
@@ -767,12 +793,14 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         let head = VertexTable::load_head(&table_path)?;
         return write_run_metadata(
             &out_dir, rank, "cpu-slotmap", &table_path, head.grid_n, head.s.len(),
+            p_ext_given.then_some(config.p_ext),
         );
     }
 
     let table = Arc::new(VertexTable::load(&table_path)?);
     write_run_metadata(
         &out_dir, rank, "cpu-slotmap", &table_path, table.grid_n, table.s.len(),
+        Some(config.p_ext),
     )?;
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
@@ -879,11 +907,13 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     // A first-class override like --chains: the config the engine runs — and
     // the checkpoint records, and same_trajectory pins across legs — is the
     // post-override one; no patched temp config anywhere.
-    if let Some(p_ext) = options.remove("--p-ext") {
-        if !p_ext.is_empty() {
+    let p_ext_given = match options.remove("--p-ext") {
+        Some(p_ext) if !p_ext.is_empty() => {
             config.p_ext = parse_p_ext(&p_ext)?;
+            true
         }
-    }
+        _ => false,
+    };
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     let lanes: u32 = take(&mut options, "--lanes", Some(DEFAULT_LANES))?;
     let max_order_gpu: usize =
@@ -902,11 +932,17 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     // any device work, so it runs fine on a node without a GPU.
     if config.max_steps == 0 {
         let head = VertexTable::load_head(&table_path)?;
-        return write_run_metadata(&out_dir, rank, "gpu", &table_path, head.grid_n, head.s.len());
+        return write_run_metadata(
+            &out_dir, rank, "gpu", &table_path, head.grid_n, head.s.len(),
+            p_ext_given.then_some(config.p_ext),
+        );
     }
 
     let table = Arc::new(VertexTable::load(&table_path)?);
-    write_run_metadata(&out_dir, rank, "gpu", &table_path, table.grid_n, table.s.len())?;
+    write_run_metadata(
+        &out_dir, rank, "gpu", &table_path, table.grid_n, table.s.len(),
+        Some(config.p_ext),
+    )?;
     let model = Arc::new(AbInitioModel::new(table));
     let chain_offset = rank * config.chains;
 
