@@ -19,9 +19,10 @@
 #
 # submit prebuilds in release mode before calling sbatch (jobs share $DATA, so
 # compiled artifacts carry over and the job never spends walltime compiling). On
-# GPU partitions it builds only the gpu-cuda feature set — never a plain
-# no-feature workspace build too, or the two would thrash cargo's cache on every
-# submit. --dry-run skips the build.
+# GPU partitions it builds only the gpu-cuda feature set, into target-cuda/
+# (common.nu CUDA_TARGET_DIR): gpu-cuda and no-feature builds never share a
+# target dir, so neither can overwrite the other's uplifted binary while jobs
+# on other nodes are exec'ing it. --dry-run skips the build.
 
 use common.nu [ROOT run-dirs]
 use cuda.nu
@@ -485,6 +486,7 @@ export def submit [
         $"export IRONMC_DATA_ROOT=\"($root)\""
         "# VSC-5's slurm does not export the job end time; synthesize it from"
         "# start time + walltime so the in-run deadline stop arms either way."
+        "JOB_START=$(date +%s)"
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
         $"export IRONMC_OUT_DIR=\"($run_dir)\""
@@ -502,12 +504,29 @@ export def submit [
     # stdout is purely a log; every other target's return value is captured into
     # the job dir (`save` picks the format from the .json extension). Import both
     # prefixed and flat so the body works however the module was loaded.
+    # A failed step must fail the job: without these checks the script's exit
+    # status is that of its last line (the merge guard below), so a dead run
+    # showed up as COMPLETED and chained legs kept firing. The step status is
+    # not enough on its own — on 2026-09-25 every CPU rank exited 0 after 1 s
+    # without running — so a run target must also have written one
+    # result-rank*-leg*.json per rank during this job.
+    let step_check = [
+        "status=$?"
+        "if [ $status -ne 0 ]; then echo \"job step failed with exit status $status\" >&2; exit $status; fi"
+    ]
+    let result_check = if $is_run {
+        [
+            ("written=$(find \"$IRONMC_OUT_DIR\" -maxdepth 1 -name 'result-rank*-leg*.json' -newermt \"@$((JOB_START - 60))\" 2>/dev/null | wc -l)")
+            $"if [ \"$written\" -lt ($ranks) ]; then echo \"run step exited 0 but only $written of ($ranks) ranks wrote a result-rank*-leg*.json into $IRONMC_OUT_DIR — the run did not happen\" >&2; exit 3; fi"
+        ]
+    } else { [] }
     let invoke_lines = if $is_run {
-        [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"]
+        [$"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\)'"] | append $step_check | append $result_check
     } else {
         [
             $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}.json\""
             $"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\) | save -f '\"$RESULT\""
+        ] | append $step_check | append [
             "echo; echo '=== result ==='; cat \"$RESULT\""
         ]
     }
@@ -515,12 +534,19 @@ export def submit [
     # `run_dir` (always set — every job has an out-dir) is where a run target's
     # cumulative dumps land; merge them all-ranks/all-legs at the end of the job.
     # For non-run targets the compgen guard makes this a no-op.
+    # The merge runs the binary this partition's submit prebuilt (target-cuda
+    # on GPU partitions, target on CPU ones) — never the other build's.
+    let merge_bin = if $row.gpus > 0 {
+        $code_root | path join target-cuda release rmc-ab-initio
+    } else {
+        $code_root | path join target release rmc-ab-initio
+    }
     let merge_lines = [
         # $IRONMC_OUT_DIR = run_dir, narrowed per-task in array jobs — merging
         # only this task's own subdir keeps concurrent tasks race-free.
         'DUMPS="$IRONMC_OUT_DIR"'
         "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
-        $"    '($code_root)/target/release/rmc-ab-initio' merge --out \"$DUMPS/merged.json\" \"$DUMPS\"/batches-rank*.bin"
+        $"    '($merge_bin)' merge --out \"$DUMPS/merged.json\" \"$DUMPS\"/batches-rank*.bin || exit $?"
         "    echo; echo '=== merged report (all ranks, all legs) ==='; cat \"$DUMPS/merged.json\""
         "fi"
     ]
@@ -544,7 +570,9 @@ export def submit [
             [
                 $"RESULT=\"($jobdir)/result-${SLURM_JOB_ID}-rank${SLURM_PROCID}.json\""
                 $"'($nu_exe)' -c 'use ($modpath); use ($modpath) *; \(($body)\) | save -f '\"$RESULT\""
+                "status=$?"
                 "echo; echo \"=== result rank ${SLURM_PROCID} ===\"; cat \"$RESULT\""
+                "exit $status"
             ]
         }
         # Print each task's actual core count — the first thing to check if a CPU
@@ -557,7 +585,7 @@ export def submit [
         # allocation, so each task would be pinned to a single CPU and rayon would
         # run on a ~1-core cpuset (measured: ~25× slowdown). Pass it explicitly so
         # every task gets its full node's cores.
-        ($lines | drop ($invoke_lines | length) | append [$"srun --cpus-per-task=($cpus_per_task) bash '($task_script)'"] | append $merge_lines)
+        ($lines | drop ($invoke_lines | length) | append [$"srun --cpus-per-task=($cpus_per_task) bash '($task_script)'"] | append $step_check | append $result_check | append $merge_lines)
     } else {
         ($lines | append $merge_lines)
     }
@@ -624,10 +652,14 @@ export def submit [
         cuda load
         # --quiet: hide the status/"Executable ..." listings (repeated N times by
         # chained --rounds submissions); warnings and errors still print.
-        cargo build --quiet --release -p rmc-ab-initio --features gpu-cuda
-        cargo build --quiet --release -p rmc-frohlich --features gpu-cuda
+        # Into target-cuda (CUDA_TARGET_DIR in common.nu), never target/: the
+        # in-job gpu-cuda `cargo run`s use that dir, so gpu-cuda and no-feature
+        # binaries can never overwrite each other's uplifted executable.
+        let cuda_target = ($code_root | path join target-cuda)
+        cargo build --quiet --release -p rmc-ab-initio --features gpu-cuda --target-dir $cuda_target
+        cargo build --quiet --release -p rmc-frohlich --features gpu-cuda --target-dir $cuda_target
         # `gpu parity` runs cargo test in-job; precompile the test binaries.
-        cargo test --quiet --release -p rmc-ab-initio --features gpu-cuda --no-run
+        cargo test --quiet --release -p rmc-ab-initio --features gpu-cuda --target-dir $cuda_target --no-run
     } else {
         cargo build --quiet --release --workspace
     }

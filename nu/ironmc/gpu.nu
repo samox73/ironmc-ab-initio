@@ -8,7 +8,7 @@
 # sbatch scripts alike (the toolkit must exist: `ironmc cuda setup`, once per
 # machine — $HOME is shared with the compute nodes).
 
-use common.nu [ROOT table-path config-names run-dirs]
+use common.nu [ROOT CUDA_TARGET_DIR table-path config-names run-dirs]
 use cuda.nu
 
 # A1 vertex-dot microbenchmark (GO/NO-GO): prints the node's cpu-host rayon
@@ -27,7 +27,7 @@ export def vbench [
     if not ($table | path exists) {
         error make {msg: $"no table at ($table); build it with `ironmc tables`"}
     }
-    (cargo run --release -p rmc-ab-initio --features gpu-cuda --
+    (cargo run --release -p rmc-ab-initio --features gpu-cuda --target-dir $CUDA_TARGET_DIR --
         vbench --table $table --evals $evals --seed $seed --variants $variants)
 }
 
@@ -74,7 +74,7 @@ export def run [
     } else {
         $ROOT | path join crates apps rmc-ab-initio configs $"($config).json"
     }
-    (cargo run --release -p rmc-ab-initio --features gpu-cuda --
+    (cargo run --release -p rmc-ab-initio --features gpu-cuda --target-dir $CUDA_TARGET_DIR --
         run-gpu --table $table --config $config_path --rank $rank --chains $chains
         --p-ext ($p_ext | default [] | str join ",")
         --lanes $lanes --max-order-gpu $max_order_gpu
@@ -96,7 +96,7 @@ export def scale [
     let config_path = ($ROOT | path join crates apps rmc-ab-initio configs $"($config).json")
     for chains in $chains_list {
         print $"=== chains ($chains) ==="
-        (cargo run --release -p rmc-ab-initio --features gpu-cuda --
+        (cargo run --release -p rmc-ab-initio --features gpu-cuda --target-dir $CUDA_TARGET_DIR --
             run-gpu --table $table --config $config_path --chains $chains
             --cycles-per-launch $cycles_per_launch --out-dir $"runs/gpu-scale/($chains)")
     }
@@ -115,14 +115,14 @@ export def merge [
         error make {msg: $"no batches-rank*.bin in ($dir)"}
     }
     let out = ($out | default ($dir | path join "merged.json"))
-    (^target/release/rmc-ab-initio merge --out $out ...$dumps)
+    (^($CUDA_TARGET_DIR | path join release rmc-ab-initio) merge --out $out ...$dumps)
 }
 
 # A5 CUDA parity checkpoint: the engine parity suite on this node's GPU.
 export def parity [] {
     cuda load
     cd $ROOT
-    cargo test --release -p rmc-ab-initio --features gpu-cuda --test gpu_engine_parity -- --nocapture
+    cargo test --release -p rmc-ab-initio --features gpu-cuda --target-dir $CUDA_TARGET_DIR --test gpu_engine_parity -- --nocapture
 }
 
 # Vertex-table GPU-fill parity on this node's GPU: the Fourier fill (`--device gpu`)
@@ -131,7 +131,7 @@ export def parity [] {
 export def table-parity [] {
     cuda load
     cd $ROOT
-    (cargo test --release -p rmc-ab-initio --features gpu-cuda --lib
+    (cargo test --release -p rmc-ab-initio --features gpu-cuda --target-dir $CUDA_TARGET_DIR --lib
         gpu_fill_matches_cpu_within_f32_tol -- --nocapture)
 }
 

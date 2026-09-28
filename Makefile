@@ -57,13 +57,13 @@ sync-vsc:
 	if ($$data | is-empty) { error make { msg: "DATA is empty on $(VSC_HOST) — is it set?" } }
 	print "\nUploading to VSC5"
 	rsync -avP --no-times --checksum -e 'ssh -S none -p $(VSC_PORT)' --relative ./crates ./Cargo.toml ./Cargo.lock $$"$(VSC_HOST):($$data)/ironmc/"
-	let excludes = ["--exclude=/target/" "--exclude=/profile/" "--exclude=/runs/" "--exclude=/runs-vsc/" "--exclude=/crates/" "--exclude=/Cargo.toml" "--exclude=/Cargo.lock" "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*"]
+	let excludes = ["--exclude=/target/" "--exclude=/target-cuda/" "--exclude=/profile/" "--exclude=/runs/" "--exclude=/runs-vsc/" "--exclude=/crates/" "--exclude=/Cargo.toml" "--exclude=/Cargo.lock" "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*"]
 	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' ...$$excludes ./ $$"$(VSC_HOST):($$data)/ironmc/"
 	print "\nDownloading from VSC5"
 	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*" "--exclude=batches-rank*.bin" "--exclude=checkpoint-rank*.bin" $$"$(VSC_HOST):($$data)/ironmc/runs" ./
 
 sync-replica:
-	rsync -avP --exclude=/target/ --exclude=/results/ --exclude=/slurm/ --exclude=/runs/ --exclude=/runs-vsc/ ./ recker@replica.mpi.univie.ac.at:~/ironmc/
+	rsync -avP --exclude=/target/ --exclude=/target-cuda/ --exclude=/results/ --exclude=/slurm/ --exclude=/runs/ --exclude=/runs-vsc/ ./ recker@replica.mpi.univie.ac.at:~/ironmc/
 
 # runs/ mounts at ./runs-vsc, not ./runs: sync-vsc rsyncs into ./runs, and a
 # pull into a live sshfs mount would write straight back to the cluster.

@@ -38,7 +38,7 @@
 #   ironmc tables merge-shards 65 --out /tmp/merged.rmcvtab
 #   (open --raw /tmp/ref.rmcvtab | hash sha256) == (open --raw /tmp/merged.rmcvtab | hash sha256)
 
-use common.nu [ROOT DATASET table-path]
+use common.nu [ROOT CUDA_TARGET_DIR DATASET table-path]
 use cuda.nu
 
 # Where sharded builds read/write their table files: the slurm run's results dir
@@ -99,7 +99,7 @@ export def shard [
     # matches what `slurm submit` prebuilds on a GPU partition (no in-job rebuild).
     # `cuda load` first: libnvrtc is dlopened at run time and cudarc reads
     # $CUDA_PATH, neither of which the batch script provides on its own.
-    let feat_args = if $device == "gpu" { cuda load; [--features gpu-cuda] } else { [] }
+    let feat_args = if $device == "gpu" { cuda load; [--features gpu-cuda --target-dir $CUDA_TARGET_DIR] } else { [] }
     (cargo run --release -p rmc-ab-initio ...$feat_args --
         table --grid $grid --total-rank $rank_table --precision $precision --device $device
         --shard $rank --shards $shards --out $out ...$max_args)

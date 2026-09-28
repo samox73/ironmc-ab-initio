@@ -233,3 +233,14 @@ Mass: FEP-DMC's "m_p/m_e = 6.1" divides by the **band** mass, not the free-elect
 
 Docs: the LaTeX note gained the ladder/error-budget paragraph, the τ-convergence correction (acoustic gaps close as 1/n, so no single Δ ≈ ω_LO controls it; ω_LO is 77.2 meV, not 83), and new sections on central-slice phonon estimators, dispersion/mass/Landau threshold, and the AHC remote-band correction. New glossary terms cover these. Plans: `nph-estimator` rewritten. The whole-worldline average is biased by O(1/ωτ), about −11 % at τ240; central-window slices give ⟨N⟩, N_ν, Z_N and f(k) with no new updates, so `phonon-sectors` is demoted to G_N spectral work only. New `ahc-correction` (route: total second-order ZPR minus our intraband E² on the same grid) and `extensions`.
 
+## Silent no-op run steps: separate gpu-cuda target dir, job scripts fail loudly (2026-09-25)
+
+The first τ480 (120³) and free-τ (40³) guard legs all "COMPLETED" in 12 s and left no results/. sacct shows the run step `.0` exiting 0 after 1 s. The job logs end at cargo's `Running target/release/rmc-ab-initio run-cpu …`, with no output from the binary, cargo, or nu, while the same command runs normally locally. The in-job merge of the concurrent GPU sweep (n80 τ60, task x1) failed the same silent way, although the leg itself ran and banked its dumps, and a manual merge on the login node works (x1: −0.36036 ± 0.00027). The common factor was `target/release/rmc-ab-initio`. It is the ONE uplifted binary per target dir, and gpu-cuda (`slurm submit` on a100 partitions and in-job `cargo run --features gpu-cuda`) and no-feature `cargo run`s were re-uplifting their variant into that shared GPFS path while jobs on other nodes exec'd it. That is the prime suspect, not proven.
+
+Fixes. Every gpu-cuda cargo invocation (gpu.nu, tables.nu `--device gpu`, the GPU-partition prebuild in slurm.nu) now uses `--target-dir target-cuda` (common.nu `CUDA_TARGET_DIR`), and the in-job merge runs the binary of the partition's own prebuild. job.sh now fails loudly on three counts:
+- a non-zero srun/step status exits the job with that status;
+- a run target that exits 0 but whose ranks did not all write a `result-rank*-leg*.json` during this job exits 3 (this catches the observed failure);
+- a failed merge exits with the merge's status instead of dying later at `cat`.
+
+multi-rank task.sh for non-run targets propagates nu's status past its trailing `cat`. Side effect, accepted: resubmitting an already-complete GPU run now shows as FAILED ("run already complete") instead of a masked no-op. `target-cuda/` is gitignored and excluded from both syncs. The first GPU submit after this rebuilds the gpu-cuda dependency tree from scratch into target-cuda (one-time).
+
