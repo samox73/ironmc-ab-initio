@@ -15,7 +15,7 @@ use common.nu [ROOT config-names run-dirs]
 
 # CPU run of a DiagConfig on this node's cores; writes a RankDump + Checkpoint
 # into --out-dir for resume and `merge`. `config` may be a path or a name from
-# crates/apps/rmc-ab-initio/configs (e.g. lif-slotmap). lif-slotmap and
+# configs (e.g. lif-slotmap). lif-slotmap and
 # lif-flat are kept identical for a clean 1:1 engine comparison.
 export def run [
     grid: int = 20                # table grid n → datasets/LiF/table-n{n}-r{rank}-f32.rmcvtab
@@ -50,7 +50,7 @@ export def run [
     let config_path = if ($config | path exists) {
         $config
     } else {
-        $ROOT | path join crates apps rmc-ab-initio configs $"($config).json"
+        $ROOT | path join configs $"($config).json"
     }
     (cargo run --release -p rmc-ab-initio --
         run-cpu --table $table --config $config_path --rank $rank --chains $chains
@@ -91,7 +91,7 @@ export def flat [
     let config_path = if ($config | path exists) {
         $config
     } else {
-        $ROOT | path join crates apps rmc-ab-initio configs $"($config).json"
+        $ROOT | path join configs $"($config).json"
     }
     (cargo run --release -p rmc-ab-initio --
         run-flat --table $table --config $config_path --rank $rank --chains $chains

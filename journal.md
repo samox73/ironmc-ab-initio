@@ -249,3 +249,15 @@ multi-rank task.sh for non-run targets propagates nu's status past its trailing 
 `run-metadata.json` now records the run's external momentum `p_ext` (fractional coordinates), since dispersion runs were identifiable only by their dir label. Files written before this are compared without the field and upgraded in place by rank 0 on the next leg; a recorded p_ext that differs from the invocation is refused like a table/engine mismatch. Metadata-only mode records p_ext only when `--p-ext` is passed explicitly, because its config's p_ext is a placeholder. Existing points get the field on their next leg; finished points need a one-off backfill on the cluster from their labels (snippet in plans/active/fepdmc-parity.md; it uses `dispersion points`, the same decode the jobs used, so the numbers are bit-identical to what the binary compares; verified locally against the binary's check).
 
 80³ τ60 sweep complete (8 points × 3 legs). τ240 − τ60 at the same (n, p), against the Γ shift of −3.32 ± 0.30 meV: an excess of −0.2 meV at |p| ≤ 0.07 Å⁻¹ (l1, l2, x1; consistent with zero), then −1.1, −2.7, −4.9, −8.3, −8.5 meV at x2…x8 (|p| = 0.08…0.31 Å⁻¹). E₀(p) is therefore not τ-converged at finite p beyond ≈ 0.07 Å⁻¹, in the direction expected from the acoustic-emission continuum (the τ240 dispersion is flatter). Even the smallest window moves the mass: m_p/m_b (p² fit, |p| ≤ 0.08) = 4.83 ± 0.09 at τ60 vs 5.47 ± 0.22 at τ240. Two points per τ cannot tell "τ60 quasiparticle unconverged" from "τ240 continuum contamination"; a τ scan (τ120, τ480) at x1/x2/x4 is needed.
+
+## Repository split: ironmc-ab-initio (2026-09-28)
+
+The ab-initio app and its research artifacts left the public IronMC framework repository. This repository keeps the complete prior history, so every code hash recorded in existing dumps and checkpoints (e.g. `8ecc93d-dirty`) still resolves here. The public repo's unpushed commits were rewritten to drop the moved paths. Layout changes:
+- the crate is at the repo root (`src/`, `tests/`, `examples/`, `configs/`), and data paths are `datasets/LiF` relative to it;
+- the framework is the sibling checkout `../ironmc`, reached by path dependencies (`rmc-core`, `rmc-diagmc`, `rmc-frohlich`);
+- `build.rs` now embeds `<this>[-dirty]+ironmc-<framework>[-dirty]` (framework dirtiness counts tracked changes under `crates/` and `Cargo.*` only), and the code-drift check stays a warning, so legs spanning the format change resume normally;
+- on VSC-5 the repo lives at `$DATA/ironmc-ab-initio` next to the framework at `$DATA/ironmc`: `slurm submit`, `make sync` (which now pushes both), mounts, and `vsc5/install-on-vsc5.nu` follow;
+- pinned `--commit-hash` worktrees get a `.worktrees/ironmc` symlink so `../ironmc` resolves, and only this repo's code is pinned, not the framework's;
+- dropped the framework-only targets (`frohlich bench`, `test engine`) and the gpu-cuda prebuild of `rmc-frohlich`, which is no longer a workspace member.
+
+Verified locally: release build, `--features gpu-cpu --all-targets` check, `datasets_lif` test, nu module load (`configs list`, `results`), and a `slurm submit --dry-run`.

@@ -8,13 +8,6 @@ export def all [] {
     cargo test --workspace
 }
 
-# Engine-only (rmc-diagmc property + detailed-balance tests, release mode
-# so the always-compiled consistency checks run as in production).
-export def engine [] {
-    cd $ROOT
-    cargo test --release -p rmc-diagmc
-}
-
 # The LiF dataset ladder: readers → physics oracles → full-tensor round-trip
 # → compression convergence. Run after any dataset regeneration.
 export def lif [] {

@@ -2,7 +2,7 @@
 
 export const ROOT = (path self | path dirname --num-levels 3)
 export const DATASET = ($ROOT | path join datasets LiF)
-export const CONFIGS = ($ROOT | path join crates apps rmc-ab-initio configs)
+export const CONFIGS = ($ROOT | path join configs)
 # Every gpu-cuda cargo invocation builds into its own target dir. Cargo keeps
 # ONE uplifted binary per target dir (target/release/rmc-ab-initio), so a
 # gpu-cuda `cargo run` and a no-feature one sharing `target/` swap that file

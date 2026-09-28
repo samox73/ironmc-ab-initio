@@ -52,9 +52,8 @@ def partition-completions [] {
     }
 }
 
-# Namespaces whose commands can be dispatched as jobs. Ab-initio LiF work is
-# the top-level namespaces; other physics gets its own namespace (frohlich).
-const NAMESPACES = [tables ladder gates test bench qe cpu gpu frohlich dispersion]
+# Namespaces whose commands can be dispatched as jobs.
+const NAMESPACES = [tables ladder gates test bench qe cpu gpu dispersion]
 
 # Dispatchable targets, discovered from scope with their signatures, so the
 # list stays current automatically.
@@ -93,7 +92,7 @@ def config-for-body [body: string, code_root: string] {
     }
     if $name == null { return null }
     if ($name | path exists) { return $name }
-    let p = ($code_root | path join crates apps rmc-ab-initio configs $"($name).json")
+    let p = ($code_root | path join configs $"($name).json")
     if ($p | path exists) { $p } else { null }
 }
 
@@ -389,7 +388,7 @@ export def submit [
         }
     } else { $after }
     let stamp = (date now | format date "%Y%m%d-%H%M%S")
-    let root = ($env.DATA | path join ironmc)
+    let root = ($env.DATA | path join ironmc-ab-initio)
     # Run targets (cpu/gpu run|flat) accumulate dumps in the run dir and resume
     # from a checkpoint there; every other target just returns a value. The run
     # dir reaches the job as $IRONMC_OUT_DIR (run targets read it as their
@@ -630,6 +629,14 @@ export def submit [
     # worktree; the main checkout is untouched.
     if $pinned != null {
         git -C $root worktree add --detach $pinned $commit_hash
+        # Cargo.toml reaches the framework as ../ironmc; from a worktree under
+        # .worktrees/ that is .worktrees/ironmc, so point it at the real sibling
+        # checkout. Only this repo's code is pinned — the framework is whatever
+        # that checkout holds (build.rs records its commit in the binary).
+        let fw_link = ($root | path join .worktrees ironmc)
+        if not ($fw_link | path exists) {
+            ^ln -s ($root | path dirname | path join ironmc) $fw_link
+        }
     }
     cd $code_root
     # Copy the run's config into the job dir for provenance: job.sh records the
@@ -645,7 +652,7 @@ export def submit [
         # build compiles cubecl/rmc-ab-initio *without* gpu-cuda; the lines below
         # then build them *with* it. Cargo keeps one feature variant per target
         # dir, so having both toggles the `cubecl/cuda` feature off then on and
-        # recompiles cubecl + rmc-ab-initio + rmc-frohlich on every submit.
+        # recompiles cubecl + rmc-ab-initio on every submit.
         # Building only the gpu-cuda set keeps the cache warm across submits.
         # cudarc pins the CUDA version via CUDA_PATH at build time; match the
         # toolkit the in-job `ironmc cuda load` will point at.
@@ -657,11 +664,10 @@ export def submit [
         # binaries can never overwrite each other's uplifted executable.
         let cuda_target = ($code_root | path join target-cuda)
         cargo build --quiet --release -p rmc-ab-initio --features gpu-cuda --target-dir $cuda_target
-        cargo build --quiet --release -p rmc-frohlich --features gpu-cuda --target-dir $cuda_target
         # `gpu parity` runs cargo test in-job; precompile the test binaries.
         cargo test --quiet --release -p rmc-ab-initio --features gpu-cuda --target-dir $cuda_target --no-run
     } else {
-        cargo build --quiet --release --workspace
+        cargo build --quiet --release
     }
     let out = (sbatch $script | str trim)
     print $out

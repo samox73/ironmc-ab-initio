@@ -1,16 +1,12 @@
-# Rust Froehlich-polaron DiagMC (rmc-frohlich)
+# ironmc-ab-initio: cluster sync, mounts, and builds.
 #
-#   make run                 run the release build against crates/apps/rmc-frohlich/input.json
+#   make sync         push code to replica + VSC-5, pull VSC-5 runs/ back
+#   make mount-vsc    sshfs-mount VSC-5's runs/ at ./runs-vsc (unmount-vsc to undo)
+#   make build-vsc    release build tuned for the VSC-5 zen3 nodes
 #
-# Performance targets (all use release-tuned + target-cpu=native, pinned to core 0):
-#   make test-perf-frohlich  end-to-end polaron sim in runs/test-perf-froehlich/alpha-5/
-#   make test-perf-minimal   framework (bare) + physics (full) step-rate measurement
-#   make perf                run both perf tests in sequence
-#
-# Criterion micro-benchmarks (rmc-core hot path):
-#   make bench               run benchmarks, no baseline
-#   make bench-before        run benchmarks and save results as the "before" baseline
-#   make bench-after         run benchmarks and compare against the "before" baseline
+# The framework is the sibling checkout ../ironmc (Cargo.toml path deps). The
+# cluster mirrors that layout: $DATA/ironmc-ab-initio (this repo, datasets,
+# runs) next to $DATA/ironmc (framework sources only), so every sync pushes both.
 
 # Recipes are nushell. Make expands $(VAR) before nu sees the line, so any $
 # meant for nushell (variables, $"...") must be written $$ to survive make.
@@ -20,50 +16,39 @@ SHELL := nu
 .SHELLFLAGS := --no-config-file -c
 .ONESHELL:
 
-CRATE              := rmc-frohlich
-PERF_DIR           := runs/test-perf-froehlich/alpha-5
-TUNED_BIN          := $(CURDIR)/target/release-tuned/$(CRATE)
-
-MINIMAL_CRATE      := rmc-minimal
-MINIMAL_TUNED_BIN  := $(CURDIR)/target/release-tuned/$(MINIMAL_CRATE)
-MINIMAL_STEPS      ?= 100000000
-MINIMAL_WARMUP     ?= 1000000
-
 VSC_HOST           := samuel_soap@vsc5.vsc.ac.at
 VSC_PORT           := 27
 VSC_SSHFS_OPTIONS  := ServerAliveInterval=15,ServerAliveCountMax=3
+REPLICA            := recker@replica.mpi.univie.ac.at
 
-# Flags shared by all tuned builds and benchmarks.
-TUNED_FLAGS        := RUSTFLAGS="-C target-cpu=native"
+.DEFAULT_GOAL := sync
 
-.DEFAULT_GOAL := run
-.PHONY: run sync sync-vsc sync-replica mount-vsc unmount-vsc bench bench-core bench-minimal bench-frohlich build-vsc
-
-# Default: run the release build using the crate's committed input.json.
-# Results are written to ./results (the binary's default output directory).
-run:
-	cargo run --release -p $(CRATE) -- crates/apps/$(CRATE)/input.json
+.PHONY: sync sync-vsc sync-replica mount-vsc unmount-vsc build-vsc
 
 sync: sync-replica sync-vsc
 
-# The cargo-relevant sources are pushed with --no-times --checksum: preserved
-# local mtimes (often older than the cluster's cargo fingerprints) make cargo
-# skip rebuilding freshly synced source. Changed files land with mtime = now, so
-# cargo rebuilds exactly what changed; --checksum keeps unchanged files
-# untransferred (their old mtimes stay put). Only crates/ + Cargo.* get this —
-# checksumming the whole tree would read datasets/ (~17 GB) on both ends.
+# The cargo-relevant sources (this repo's and the framework's) are pushed with
+# --no-times --checksum: preserved local mtimes (often older than the cluster's
+# cargo fingerprints) make cargo skip rebuilding freshly synced source. Changed
+# files land with mtime = now, so cargo rebuilds exactly what changed;
+# --checksum keeps unchanged files untransferred (their old mtimes stay put).
+# Only the cargo sources get this — checksumming the whole tree would read
+# datasets/ (~17 GB) on both ends.
 sync-vsc:
 	@let data = (ssh -S none -p $(VSC_PORT) $(VSC_HOST) printenv DATA | str trim)
 	if ($$data | is-empty) { error make { msg: "DATA is empty on $(VSC_HOST) — is it set?" } }
-	print "\nUploading to VSC5"
-	rsync -avP --no-times --checksum -e 'ssh -S none -p $(VSC_PORT)' --relative ./crates ./Cargo.toml ./Cargo.lock $$"$(VSC_HOST):($$data)/ironmc/"
-	let excludes = ["--exclude=/target/" "--exclude=/target-cuda/" "--exclude=/profile/" "--exclude=/runs/" "--exclude=/runs-vsc/" "--exclude=/crates/" "--exclude=/Cargo.toml" "--exclude=/Cargo.lock" "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*"]
-	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' ...$$excludes ./ $$"$(VSC_HOST):($$data)/ironmc/"
+	print "\nUploading the framework to VSC5"
+	rsync -avP --no-times --checksum -e 'ssh -S none -p $(VSC_PORT)' --relative ../ironmc/./crates ../ironmc/./Cargo.toml ../ironmc/./Cargo.lock $$"$(VSC_HOST):($$data)/ironmc/"
+	print "\nUploading ironmc-ab-initio to VSC5"
+	rsync -avP --no-times --checksum -e 'ssh -S none -p $(VSC_PORT)' --relative ./src ./tests ./examples ./build.rs ./Cargo.toml ./Cargo.lock $$"$(VSC_HOST):($$data)/ironmc-ab-initio/"
+	let excludes = ["--exclude=/target/" "--exclude=/target-cuda/" "--exclude=/.worktrees/" "--exclude=/runs/" "--exclude=/runs-vsc/" "--exclude=/src/" "--exclude=/tests/" "--exclude=/examples/" "--exclude=/build.rs" "--exclude=/Cargo.toml" "--exclude=/Cargo.lock" "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*"]
+	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' ...$$excludes ./ $$"$(VSC_HOST):($$data)/ironmc-ab-initio/"
 	print "\nDownloading from VSC5"
-	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*" "--exclude=batches-rank*.bin" "--exclude=checkpoint-rank*.bin" $$"$(VSC_HOST):($$data)/ironmc/runs" ./
+	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*" "--exclude=batches-rank*.bin" "--exclude=checkpoint-rank*.bin" $$"$(VSC_HOST):($$data)/ironmc-ab-initio/runs" ./
 
 sync-replica:
-	rsync -avP --exclude=/target/ --exclude=/target-cuda/ --exclude=/results/ --exclude=/slurm/ --exclude=/runs/ --exclude=/runs-vsc/ ./ recker@replica.mpi.univie.ac.at:~/ironmc/
+	rsync -avP --exclude=/target/ --exclude=/mcforge/ ../ironmc/ $(REPLICA):~/ironmc/
+	rsync -avP --exclude=/target/ --exclude=/target-cuda/ --exclude=/.worktrees/ --exclude=/runs/ --exclude=/runs-vsc/ ./ $(REPLICA):~/ironmc-ab-initio/
 
 # runs/ mounts at ./runs-vsc, not ./runs: sync-vsc rsyncs into ./runs, and a
 # pull into a live sshfs mount would write straight back to the cluster.
@@ -71,31 +56,13 @@ mount-vsc:
 	@def mounted [p] { (mountpoint -q $$p | complete).exit_code == 0 }
 	let data = (ssh -p $(VSC_PORT) $(VSC_HOST) printenv DATA | str trim)
 	if ($$data | is-empty) { error make { msg: "DATA is empty on $(VSC_HOST) — is it set?" } }
-	mkdir "$(CURDIR)/slurm" "$(CURDIR)/results" "$(CURDIR)/runs-vsc"
-	ssh -p $(VSC_PORT) $(VSC_HOST) mkdir -p $$"($$data)/ironmc/slurm" $$"($$data)/ironmc/results" $$"($$data)/ironmc/runs"
-	if not (mounted "$(CURDIR)/slurm") { sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) $$"$(VSC_HOST):($$data)/ironmc/slurm" "$(CURDIR)/slurm" }
-	if not (mounted "$(CURDIR)/results") { sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) $$"$(VSC_HOST):($$data)/ironmc/results" "$(CURDIR)/results" }
-	if not (mounted "$(CURDIR)/runs-vsc") { sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) $$"$(VSC_HOST):($$data)/ironmc/runs" "$(CURDIR)/runs-vsc" }
+	mkdir "$(CURDIR)/runs-vsc"
+	ssh -p $(VSC_PORT) $(VSC_HOST) mkdir -p $$"($$data)/ironmc-ab-initio/runs"
+	if not (mounted "$(CURDIR)/runs-vsc") { sshfs -p $(VSC_PORT) -o $(VSC_SSHFS_OPTIONS) $$"$(VSC_HOST):($$data)/ironmc-ab-initio/runs" "$(CURDIR)/runs-vsc" }
 
 unmount-vsc:
 	@def mounted [p] { (mountpoint -q $$p | complete).exit_code == 0 }
-	for p in ["$(CURDIR)/slurm" "$(CURDIR)/results" "$(CURDIR)/runs-vsc"] { if (mounted $$p) { fusermount3 -u $$p } }
-
-bench: bench-core bench-minimal bench-frohlich
-
-bench-core:
-	@cargo bench-compare --bench hot_path --dedicate-core
-	print "------------------------------------------------------"
-
-bench-minimal:
-	@cargo bench-compare --bin rmc-minimal --reps 10 --metric-regex 'steps/sec:\s*([\d.]+)' --progress-regex 'step (\d+)/(\d+)' --dedicate-core -- bare 3000000
-	print "------------------------------------------------------"
-	cargo bench-compare --bin rmc-minimal --reps 10 --metric-regex 'steps/sec:\s*([\d.]+)' --progress-regex 'step (\d+)/(\d+)' --dedicate-core -- full 3000000
-	print "------------------------------------------------------"
-
-bench-frohlich:
-	@cargo bench-compare --bin rmc-frohlich --reps 10 --metric-regex 'steps/sec:\s*([\d.]+)' --dedicate-core -- bench
-	print "------------------------------------------------------"
+	if (mounted "$(CURDIR)/runs-vsc") { fusermount3 -u "$(CURDIR)/runs-vsc" }
 
 build-vsc:
-	@RUSTFLAGS="-C target-cpu=znver3" cargo build --release -p rmc-ab-initio
+	@RUSTFLAGS="-C target-cpu=znver3" cargo build --release

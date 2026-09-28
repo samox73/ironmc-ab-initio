@@ -40,9 +40,9 @@ Section~\ref{sec:deferred} records what is intentionally postponed.
 \section{Overview}
 \label{sec:overview}
 
-\texttt{ironmc} is a Rust workspace of DiagMC crates that sample the imaginary-time
-Green's function of a polaron. This project adds \texttt{rmc-diagmc}, a state-generic DiagMC
-engine exposing a \texttt{Model} trait (electron dispersion, phonon dispersion, complex e--ph
+\texttt{ironmc} is a Rust Monte Carlo framework; its DiagMC crates sample the imaginary-time
+Green's function of a polaron. This project (the \texttt{ironmc-ab-initio} repository, built
+on the framework) uses \texttt{rmc-diagmc}, a state-generic DiagMC engine exposing a \texttt{Model} trait (electron dispersion, phonon dispersion, complex e--ph
 vertex, phonon-momentum proposal), plus a standalone \emph{ab-initio} consumer
 \texttt{rmc-ab-initio}. Two models implement the trait: the closed-form \emph{analytic}
 Fr\"ohlich model, and the \emph{ab-initio} model whose material-specific electron--phonon
@@ -56,7 +56,7 @@ The data pipeline is
   \;\longrightarrow\;
   \underbrace{\text{epw.x}}_{\text{Wannier e--ph tensors}}
   \;\longrightarrow\;
-  \underbrace{\text{Rust reader + reconstruction}}_{\texttt{crates/apps/rmc-ab-initio}}
+  \underbrace{\text{Rust reader + reconstruction}}_{\texttt{ironmc-ab-initio}}
   \;\longrightarrow\;
   \text{DiagMC}.
 \]

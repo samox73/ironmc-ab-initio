@@ -33,7 +33,7 @@ export def vbench [
 
 # A4/A5 device run of a DiagConfig on this node's GPU; writes a RankDump
 # for `rmc-ab-initio merge`. `config` may be a path or a name from
-# crates/apps/rmc-ab-initio/configs (e.g. lif-gpu-tau60).
+# configs (e.g. lif-gpu-tau60).
 export def run [
     grid: int = 20
     --config: string@config-names = "lif-gpu"
@@ -72,7 +72,7 @@ export def run [
     let config_path = if ($config | path exists) {
         $config
     } else {
-        $ROOT | path join crates apps rmc-ab-initio configs $"($config).json"
+        $ROOT | path join configs $"($config).json"
     }
     (cargo run --release -p rmc-ab-initio --features gpu-cuda --target-dir $CUDA_TARGET_DIR --
         run-gpu --table $table --config $config_path --rank $rank --chains $chains
@@ -93,7 +93,7 @@ export def scale [
     cuda load
     cd $ROOT
     let table = (table-path $grid 800)
-    let config_path = ($ROOT | path join crates apps rmc-ab-initio configs $"($config).json")
+    let config_path = ($ROOT | path join configs $"($config).json")
     for chains in $chains_list {
         print $"=== chains ($chains) ==="
         (cargo run --release -p rmc-ab-initio --features gpu-cuda --target-dir $CUDA_TARGET_DIR --

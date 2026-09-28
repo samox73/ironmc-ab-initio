@@ -124,7 +124,7 @@ def do-epw [np: int, dir: string] {
 def main [
     --from: string = "scf"   # relax | scf | ph | pp | nscf | epw
     --np: int = 10           # MPI ranks (= pools; EPW requires them equal)
-    --dir: string = "/home/samox/studies/phd/repositories/ironmc/datasets/LiF"
+    --dir: string = "/home/samox/studies/phd/repositories/ironmc-ab-initio/datasets/LiF"
 ] {
     cd $dir
     let stages = [relax scf ph pp nscf epw]

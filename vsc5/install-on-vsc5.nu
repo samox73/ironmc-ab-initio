@@ -14,13 +14,18 @@ if ($remote_data | is-empty) or ($remote_home | is-empty) {
 }
 
 let repo = ($env.FILE_PWD | path dirname)
-let remote_repo = $"($remote_data)/ironmc"
+let remote_repo = $"($remote_data)/ironmc-ab-initio"
+# The framework is a sibling path dependency (Cargo.toml: ../ironmc), so the
+# cluster mirrors the local layout: $DATA/ironmc next to $DATA/ironmc-ab-initio.
+let framework = ($repo | path dirname | path join ironmc)
+let remote_framework = $"($remote_data)/ironmc"
 let bin_dir = $"($remote_home)/.local/bin"
-^ssh -p $port -S $control $host mkdir -p $remote_repo $bin_dir
+^ssh -p $port -S $control $host mkdir -p $remote_repo $remote_framework $bin_dir
 
 let excludes = ["--exclude=.git" "--exclude=target" "--exclude=profile" "--exclude=results" "--exclude=results-stage1" "--exclude=slurm"]
 print "Transferring files with rsync"
 ^rsync --archive --info=progress2 --rsh $"ssh -p ($port) -S ($control)" ...$excludes $"($repo)/" $"($host):($remote_repo)/"
+^rsync --archive --info=progress2 --rsh $"ssh -p ($port) -S ($control)" ...$excludes "--exclude=mcforge" $"($framework)/" $"($host):($remote_framework)/"
 
 # Static musl builds pushed to ~/.local/bin, sha256-pinned.
 let tools = [
@@ -46,5 +51,5 @@ for tool in $tools {
 ^ssh -p $port -S $control $host $"($bin_dir)/nu" $"($remote_repo)/vsc5/install.nu"
 ^ssh -p $port -S $control -O exit $host
 
-print $"Installed ironmc in ($remote_repo)"
-print "Dispatch jobs on VSC5 with: ironmc slurm submit { ironmc <target> } --out-dir runs/<experiment> (load module with: use $env.DATA/ironmc/nu/ironmc)"
+print $"Installed ironmc-ab-initio in ($remote_repo) \(framework in ($remote_framework)\)"
+print "Dispatch jobs on VSC5 with: ironmc slurm submit { ironmc <target> } --out-dir runs/<experiment> (load module with: use $env.DATA/ironmc-ab-initio/nu/ironmc)"

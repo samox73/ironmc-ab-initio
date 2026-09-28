@@ -1,7 +1,7 @@
-# IronMC developer commands — a nushell module instead of a Makefile.
+# ironmc-ab-initio developer commands — a nushell module instead of a Makefile.
 #
 # Load (from the repo root):        use nu/ironmc
-# or globally in your config.nu:    use /home/samox/studies/phd/repositories/ironmc/nu/ironmc
+# or globally in your config.nu:    use /home/samox/studies/phd/repositories/ironmc-ab-initio/nu/ironmc
 # Flat names instead of prefixed:   use nu/ironmc *
 #
 # Everyday flow for the LiF results:
@@ -28,7 +28,6 @@ export use configs.nu
 export use cpu.nu
 export use gpu.nu
 export use dispersion.nu
-export use frohlich.nu
 
 # Result summaries of finished runs: one row per merged.json — the grid n
 # (from the run's run-metadata.json; null for runs predating it), e0_thermo,
