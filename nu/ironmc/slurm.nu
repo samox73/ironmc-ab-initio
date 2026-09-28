@@ -6,6 +6,7 @@
 #   ironmc slurm submit { ironmc gpu run 20 --config lif-gpu-tau60 } --out-dir runs/gpu/n20
 #   ironmc slurm submit { ironmc cpu run 50 } --devel --ranks 5 --out-dir runs/e0-fit/n50
 #   ironmc slurm submit { ironmc tables build 50 } --dry-run --out-dir runs/tables/n50
+#   ironmc slurm submit { ironmc dispersion point } --array-dirs [x1 x2 l1] --out-dir runs/dispersion/n20-tau60
 #
 # Every job is a named experiment: --out-dir runs/<experiment> is REQUIRED. Its
 # scripts/logs land in <out-dir>/jobs/<stamp>-<name>, results in <out-dir>/results.
@@ -52,7 +53,7 @@ def partition-completions [] {
 
 # Namespaces whose commands can be dispatched as jobs. Ab-initio LiF work is
 # the top-level namespaces; other physics gets its own namespace (frohlich).
-const NAMESPACES = [tables ladder gates test bench qe cpu gpu frohlich]
+const NAMESPACES = [tables ladder gates test bench qe cpu gpu frohlich dispersion]
 
 # Dispatchable targets, discovered from scope with their signatures, so the
 # list stays current automatically.
@@ -266,6 +267,16 @@ export def submit [
                                # targets take as their --out-dir default (cumulative dumps).
                                # Resubmit with the same --out-dir to resume the checkpointed run —
                                # the N submissions that build one result set sit beside it in jobs/.
+    --array-dirs: list<string> # slurm job array: one task per entry, each with its own
+                               # $IRONMC_OUT_DIR = <out-dir>/results/<entry> (checkpoint/resume and
+                               # the end-of-job merge stay per-subdir). The body must be the same
+                               # for every task — anything task-specific is decoded from the subdir.
+    --after: string            # chain behind this job id (--dependency=afterany): starts only when
+                               # that job has fully terminated, so the still-queued guard is skipped —
+                               # this is the sanctioned way to queue resubmission rounds in advance
+    --chain                    # if jobs of this experiment are already queued, chain behind the
+                               # newest of them (auto --after) instead of refusing; no-op when
+                               # nothing clashes. The safe version of "suppress the queued warning".
     --dry-run                  # print the batch script instead of submitting
 ] {
     let body = (view source $job
@@ -309,6 +320,20 @@ export def submit [
     if ($body =~ '--out-dir[=\s]+\S+') {
         error make {msg: "--out-dir is a `slurm submit` flag — drop it from the job closure"}
     }
+    # Array entries become results/ subdirs and are spliced unquoted into a bash
+    # array literal — same charset discipline as --out-dir, no separators.
+    if $array_dirs != null {
+        if ($array_dirs | is-empty) {
+            error make {msg: "--array-dirs needs at least one entry"}
+        }
+        let bad = ($array_dirs | where {|d| not ($d =~ '^[A-Za-z0-9._-]+$') })
+        if ($bad | is-not-empty) {
+            error make {msg: $"--array-dirs entries must be plain dir names using [A-Za-z0-9._-]; got: ($bad | str join ', ')"}
+        }
+        if ($array_dirs | uniq | length) != ($array_dirs | length) {
+            error make {msg: "--array-dirs entries must be unique — duplicate tasks would race on one results subdir"}
+        }
+    }
     let row = ($PARTITIONS | where partition == $partition)
     if ($row | is-empty) {
         error make {msg: $"unknown partition ($partition); see `ironmc slurm partitions`"}
@@ -345,6 +370,23 @@ export def submit [
     let name = if $job_name == null {
         $"($name)-($out_dir | str replace --regex '^runs/' '' | str replace --all --regex '[^A-Za-z0-9._]+' '-')"
     } else { $name }
+    # --chain: resolve the newest queued job of this experiment into an afterany
+    # dependency (ArrayJobID = the base id for array jobs, ids monotone in
+    # submission time = the chain tail). Setting $after here also skips the
+    # still-queued guard below, which matches by the same name rule.
+    let after = if $after == null and $chain and (which squeue | is-not-empty) {
+        let exp = ($out_dir | str replace --regex '^runs/' ''
+            | str replace --all --regex '[^A-Za-z0-9._]+' '-')
+        let clash = (squeue --me --noheader --Format "ArrayJobID:20,Name:256" | lines
+            | each {|line| $line | str trim | split row --regex '\s+' }
+            | where {|cols| ($cols | length) >= 2 }
+            | where {|cols| ($cols.1 == $name) or ($cols.1 | str ends-with $"-($exp)") })
+        if ($clash | is-empty) { null } else {
+            let tail = ($clash | each {|cols| $cols.0 | into int } | math max | into string)
+            print $"--chain: queued ($clash | length) job\(s\) of this experiment — chaining afterany:($tail)"
+            $tail
+        }
+    } else { $after }
     let stamp = (date now | format date "%Y%m%d-%H%M%S")
     let root = ($env.DATA | path join ironmc)
     # Run targets (cpu/gpu run|flat) accumulate dumps in the run dir and resume
@@ -354,7 +396,7 @@ export def submit [
     # works. ponytail: run-ness is sniffed from the body text — a new run-like
     # target must be added to this regex; misclassification is benign
     # ($IRONMC_OUT_DIR is exported regardless; only merge/stdout capture differ).
-    let is_run = ($body =~ '\b(gpu|cpu) (run|flat)\b')
+    let is_run = ($body =~ '\b(gpu|cpu) (run|flat)\b|\bdispersion point\b')
     # One experiment dir holds jobs/ (this and every resubmission's scripts/logs)
     # beside results/ (the single dump set they build), so the 1-to-N job→result
     # relationship is explicit and co-located. The stamp prefix makes
@@ -411,6 +453,18 @@ export def submit [
     } else {
         []
     }
+    # A job array: every #SBATCH directive above applies to EACH task (an
+    # 11-entry array on a 2-GPU partition with --ranks 2 = 11 tasks × 1 node ×
+    # 2 ranks, scheduled as nodes free up). %A/%a keep per-task logs apart.
+    let array_directives = if $array_dirs != null {
+        [$"#SBATCH --array=0-(($array_dirs | length) - 1)"]
+    } else { [] }
+    # afterany (not afterok): a walltime-killed or failed round must not block
+    # the next one — the checkpointed resume picks up whatever state exists.
+    let array_directives = if $after != null {
+        $array_directives | append $"#SBATCH --dependency=afterany:($after)"
+    } else { $array_directives }
+    let output_file = if $array_dirs != null { "job-%A-%a.out" } else { "job-%j.out" }
     let lines = ([
         "#!/bin/bash"
         $"#SBATCH --job-name=($name)"
@@ -421,8 +475,9 @@ export def submit [
         $"#SBATCH --ntasks=($ntasks)"
         $"#SBATCH --cpus-per-task=($cpus_per_task)"
     ] | append $gpu_directives
+      | append $array_directives
       | append [
-        $"#SBATCH --output=($jobdir)/job-%j.out"
+        $"#SBATCH --output=($jobdir)/($output_file)"
         ""
         $"export PATH=\"($cargo_dir):$HOME/.cargo/bin:$PATH\""
         "# Explicit rayon pool size; falls back to cgroup autodetection otherwise."
@@ -433,7 +488,16 @@ export def submit [
         "echo \"slurm-provided SLURM_JOB_END_TIME: ${SLURM_JOB_END_TIME:-unset}\""
         ("export SLURM_JOB_END_TIME=\"${SLURM_JOB_END_TIME:-$(($(date +%s) + " + ($walltime_secs | into string) + "))}\"")
         $"export IRONMC_OUT_DIR=\"($run_dir)\""
-    ])
+    ] | append (if $array_dirs != null {
+        # Each array task narrows the run dir to its own subdir: run targets,
+        # checkpoints, and the merge below all follow $IRONMC_OUT_DIR, so the
+        # tasks stay fully disjoint on disk.
+        [
+            $"ARRAY_DIRS=\(($array_dirs | str join ' ')\)"
+            "export IRONMC_OUT_DIR=\"$IRONMC_OUT_DIR/${ARRAY_DIRS[$SLURM_ARRAY_TASK_ID]}\""
+            "echo \"array task ${SLURM_ARRAY_TASK_ID}: IRONMC_OUT_DIR=$IRONMC_OUT_DIR\""
+        ]
+    } else { [] }))
     # `cpu run`/`gpu run` write their own result files into the run dir, so their
     # stdout is purely a log; every other target's return value is captured into
     # the job dir (`save` picks the format from the .json extension). Import both
@@ -452,7 +516,9 @@ export def submit [
     # cumulative dumps land; merge them all-ranks/all-legs at the end of the job.
     # For non-run targets the compgen guard makes this a no-op.
     let merge_lines = [
-        $"DUMPS=\"($run_dir)\""
+        # $IRONMC_OUT_DIR = run_dir, narrowed per-task in array jobs — merging
+        # only this task's own subdir keeps concurrent tasks race-free.
+        'DUMPS="$IRONMC_OUT_DIR"'
         "if compgen -G \"$DUMPS/batches-rank*.bin\" > /dev/null; then"
         $"    '($code_root)/target/release/rmc-ab-initio' merge --out \"$DUMPS/merged.json\" \"$DUMPS\"/batches-rank*.bin"
         "    echo; echo '=== merged report (all ranks, all legs) ==='; cat \"$DUMPS/merged.json\""
@@ -514,7 +580,9 @@ export def submit [
     # that suffix also catches a *different* body into the same dir (e.g.
     # merge-shards submitted while the shard legs are still running). Explicit
     # --job-name jobs are only caught on an exact name match.
-    if (which squeue | is-not-empty) {
+    if $after == null and (which squeue | is-not-empty) {
+        # (An --after submission is exempt: the dependency itself serializes
+        # writes against the queued rounds it chains behind.)
         # --Format with an explicit width: the default %j column truncates
         # long names, and ours carry the whole body + experiment path.
         let queued = (squeue --me --noheader --Format "Name:256" | lines | str trim)
@@ -554,12 +622,14 @@ export def submit [
         # cudarc pins the CUDA version via CUDA_PATH at build time; match the
         # toolkit the in-job `ironmc cuda load` will point at.
         cuda load
-        cargo build --release -p rmc-ab-initio --features gpu-cuda
-        cargo build --release -p rmc-frohlich --features gpu-cuda
+        # --quiet: hide the status/"Executable ..." listings (repeated N times by
+        # chained --rounds submissions); warnings and errors still print.
+        cargo build --quiet --release -p rmc-ab-initio --features gpu-cuda
+        cargo build --quiet --release -p rmc-frohlich --features gpu-cuda
         # `gpu parity` runs cargo test in-job; precompile the test binaries.
-        cargo test --release -p rmc-ab-initio --features gpu-cuda --no-run
+        cargo test --quiet --release -p rmc-ab-initio --features gpu-cuda --no-run
     } else {
-        cargo build --release --workspace
+        cargo build --quiet --release --workspace
     }
     let out = (sbatch $script | str trim)
     print $out

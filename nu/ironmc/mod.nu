@@ -27,6 +27,7 @@ export use cuda.nu
 export use configs.nu
 export use cpu.nu
 export use gpu.nu
+export use dispersion.nu
 export use frohlich.nu
 
 # Result summaries of finished runs: one row per merged.json — the grid n

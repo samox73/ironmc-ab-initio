@@ -1,0 +1,255 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\kv}{\mathbf{k}}
+\newcommand{\qv}{\mathbf{q}}
+\newcommand{\pv}{\mathbf{p}}
+\newcommand{\av}{\mathbf{a}}
+\newcommand{\bv}{\mathbf{b}}
+
+\title{High-symmetry points and paths in the Brillouin zone\\
+       \large and what they dictate for the LiF polaron dispersion}
+\author{Samuel Recker}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The polaron-dispersion campaign measures $E_{0}(\pv)$ at nonzero external momentum and
+extracts the effective mass $m^{*}$ from its curvature at $\Gamma$. Choosing \emph{which}
+momenta to run means choosing directions in the Brillouin zone, and the conventional
+choices --- ``$\Gamma\!\to\!X$'', ``$\Gamma\!\to\!L$'' --- come from crystal symmetry.
+This note defines high-symmetry points and paths from scratch for the fcc lattice of
+LiF, maps them onto the fractional-coordinate $n^{3}$ grid the sampler uses, derives what
+cubic symmetry forces on the small-$\pv$ expansion of $E_{0}(\pv)$ (an isotropic scalar
+$m^{*}$ for the non-degenerate conduction band, direction dependence only at quartic
+order), and closes with an annotated reading list. The methodology note
+(\texttt{latex/ab-initio-diagmc}) remains the authoritative reference for the sampler and
+estimators; this note only covers the symmetry background.
+\end{abstract}
+
+\section{Reciprocal lattice, Brillouin zone, and fractional coordinates}
+\label{sec:bz}
+
+LiF crystallizes in the rock-salt structure: a face-centered-cubic (fcc) Bravais lattice
+with a two-atom basis. With $a$ the conventional cubic lattice constant, the primitive
+real-space vectors are
+\begin{equation}
+\av_{1}=\tfrac{a}{2}(0,1,1),\qquad
+\av_{2}=\tfrac{a}{2}(1,0,1),\qquad
+\av_{3}=\tfrac{a}{2}(1,1,0),
+\end{equation}
+and the reciprocal primitive vectors, fixed by $\bv_{i}\cdot\av_{j}=2\pi\delta_{ij}$, are
+\begin{equation}
+\bv_{1}=\tfrac{2\pi}{a}(-1,1,1),\qquad
+\bv_{2}=\tfrac{2\pi}{a}(1,-1,1),\qquad
+\bv_{3}=\tfrac{2\pi}{a}(1,1,-1).
+\label{eq:recip}
+\end{equation}
+The first Brillouin zone (BZ) --- the Wigner--Seitz cell of the reciprocal lattice --- is
+a truncated octahedron: eight regular hexagonal faces (perpendicular to the cube
+diagonals $\langle111\rangle$) and six square faces (perpendicular to the cube axes
+$\langle100\rangle$).
+
+Throughout the codebase momenta are stored in \emph{fractional (crystal) coordinates}
+$\mathbf{f}=(f_{1},f_{2},f_{3})$, meaning
+\begin{equation}
+\kv \;=\; f_{1}\bv_{1}+f_{2}\bv_{2}+f_{3}\bv_{3},
+\label{eq:frac}
+\end{equation}
+on a $\Gamma$-centered $n^{3}$ grid $f_{i}=j_{i}/n$, $j_{i}\in\{0,\dots,n-1\}$. Two
+consequences matter for everything below. First, the grid is closed under addition
+modulo reciprocal-lattice vectors, which is what keeps every diagram's momentum
+bookkeeping on-grid. Second, the map~\eqref{eq:frac} is \emph{not} an isometry --- the
+$\bv_{i}$ are neither orthogonal nor unit-length --- so equal steps in fractional
+coordinates are not equal steps in physical momentum, and any fit in $|\pv|$ must first
+convert to Cartesian via~\eqref{eq:frac}.
+
+\section{High-symmetry points}
+\label{sec:points}
+
+The point group of the crystal (for rock-salt: the full cubic group $O_{h}$, 48
+operations --- rotations, mirrors, inversion) acts on reciprocal space and maps the BZ
+onto itself. For a given $\kv$, the subgroup of operations that leave $\kv$ invariant
+\emph{modulo a reciprocal-lattice vector} is called the \emph{little group} (or
+stabilizer) of $\kv$. A generic $\kv$ has a trivial little group; points whose little
+group is larger are called \emph{high-symmetry points} and carry conventional letters.
+For the fcc BZ:
+
+\begin{center}
+\begin{tabular}{l l l l l}
+\hline
+Point & Fractional $(f_{1},f_{2},f_{3})$ & Cartesian $[\tfrac{2\pi}{a}]$ & Little group & Location \\
+\hline
+$\Gamma$ & $(0,0,0)$                     & $(0,0,0)$                     & $O_{h}$ (48)  & zone center \\
+$X$      & $(\tfrac12,0,\tfrac12)$       & $(0,1,0)$                     & $D_{4h}$ (16) & square-face center, $\langle100\rangle$ \\
+$L$      & $(\tfrac12,\tfrac12,\tfrac12)$& $(\tfrac12,\tfrac12,\tfrac12)$& $D_{3d}$ (12) & hexagon center, $\langle111\rangle$ \\
+$W$      & $(\tfrac12,\tfrac14,\tfrac34)$& $(\tfrac12,1,0)$              & $D_{2d}$ (8)  & square--hexagon--hexagon corner \\
+$K$      & $(\tfrac38,\tfrac38,\tfrac34)$& $(\tfrac34,\tfrac34,0)$       & $C_{2v}$ (4)  & hexagon--hexagon edge midpoint \\
+$U$      & $(\tfrac58,\tfrac14,\tfrac58)$& $(\tfrac14,1,\tfrac14)$       & $C_{2v}$ (4)  & square--hexagon edge midpoint \\
+\hline
+\end{tabular}
+\end{center}
+
+\noindent
+(Orders of the little groups in parentheses. The Cartesian columns follow
+from~\eqref{eq:frac} with~\eqref{eq:recip}; e.g.\ for $X$:
+$\tfrac12\bv_{1}+\tfrac12\bv_{3}=\tfrac{2\pi}{a}(0,1,0)$.) The set of all images of a
+point under the point group is its \emph{star}; e.g.\ the $X$ star has the 6 members
+$\tfrac{2\pi}{a}(\pm1,0,0),(0,\pm1,0),(0,0,\pm1)$, and the $W$ star (24 members) already
+appears in the glossary because bands 6/7 are degenerate on it.
+
+Why these points matter physically: any function with the lattice symmetry ---
+$\varepsilon(\kv)$, $\omega_{\nu}(\qv)$, and the polaron dispersion $E_{0}(\pv)$ alike
+--- satisfies $E(g\kv)=E(\kv)$ for every point-group operation $g$. At a high-symmetry
+point the gradient components along symmetry-broken directions must vanish, so band
+extrema, degeneracies, and critical points concentrate there. The conduction-band
+minimum of LiF sits at $\Gamma$; the polaron ground state inherits that.
+
+\section{Symmetry paths}
+\label{sec:paths}
+
+A \emph{symmetry path} is a piecewise-straight tour through high-symmetry points, along
+edges and face normals of the irreducible BZ wedge. Band structures are functions on a
+three-dimensional domain; the community convention is to plot them along a standard 1D
+path so that any two calculations are visually comparable. For fcc the standard tour
+(Setyawan--Curtarolo convention) is
+\begin{equation*}
+\Gamma \to X \to W \to K \to \Gamma \to L \to U \to W \to L \to K \,\big|\, U \to X,
+\end{equation*}
+where ``$|$'' marks a discontinuous jump. Nothing is physically special about the path
+as a whole --- it is a plotting convention --- but the individual \emph{legs} from
+$\Gamma$ are special: they are the extremal directions along which effective-mass
+expansions are conventionally quoted, and symmetry constrains $E(\kv)$ most strongly
+there. For the dispersion campaign only the first legs out of $\Gamma$ matter:
+$\Gamma\to X$ (a $\langle100\rangle$ cube axis) and $\Gamma\to L$ (a $\langle111\rangle$
+cube diagonal).
+
+\section{The grid rays the sampler can run}
+\label{sec:rays}
+
+The external momentum \texttt{p\_ext} must be a point of the $n^{3}$ grid, so a
+``path'' for us is a ray of grid points. The two legs from $\Gamma$:
+\begin{align}
+\Gamma\to X:\quad
+\mathbf{f}_{j}=\tfrac{j}{n}(1,0,1)
+\;\;\Rightarrow\;\;
+\pv_{j}=\tfrac{2\pi}{a}\,\tfrac{2j}{n}\,(0,1,0),
+&\qquad |\pv_{j}|=\tfrac{4\pi}{a}\,\tfrac{j}{n},
+\qquad j=0,\dots,\tfrac{n}{2}, \\[2pt]
+\Gamma\to L:\quad
+\mathbf{f}_{j}=\tfrac{j}{n}(1,1,1)
+\;\;\Rightarrow\;\;
+\pv_{j}=\tfrac{2\pi}{a}\,\tfrac{j}{n}\,(1,1,1),
+&\qquad |\pv_{j}|=\tfrac{2\pi\sqrt{3}}{a}\,\tfrac{j}{n},
+\qquad j=0,\dots,\tfrac{n}{2}.
+\end{align}
+Both reach their endpoint exactly at $j=n/2$ (all ladder grids are even). Note the
+change of appearance under the fractional$\to$Cartesian map: the ``diagonal-looking''
+fractional ray $(j/n,0,j/n)$ is a Cartesian \emph{cube axis}, and the fractional body
+diagonal is the Cartesian cube diagonal. The Cartesian step sizes differ between the
+legs ($\tfrac{4\pi}{a}\tfrac1n$ vs $\tfrac{2\pi\sqrt3}{a}\tfrac1n$), which the fit
+runbook must account for when comparing the two directions at matched $|\pv|$.
+
+\section{What cubic symmetry dictates for $E_{0}(\pv)$ and $m^{*}$}
+\label{sec:mass}
+
+\paragraph{Assumptions, stated explicitly.} (i) The state being followed is
+\emph{non-degenerate} at $\Gamma$ (true for the LiF conduction-band minimum, a single
+Li-$s$-like band, and hence for the electron polaron built on it; the coupling
+$g(\kv,\qv,\nu)$ respects the crystal symmetry, so the interacting dispersion inherits
+$O_{h}$). (ii) $\pv$ stays below the phonon-emission threshold (below), so $E_{0}(\pv)$
+is a sharp quasiparticle branch. (iii) Inversion symmetry (contained in $O_{h}$) plus
+time reversal give $E_{0}(\pv)=E_{0}(-\pv)$, so the expansion is even.
+
+Under these assumptions the most general small-$\pv$ expansion invariant under the cubic
+group is
+\begin{equation}
+E_{0}(\pv)
+= E_{0}
++ \frac{p_{x}^{2}+p_{y}^{2}+p_{z}^{2}}{2m^{*}}
++ A\,\bigl(p_{x}^{4}+p_{y}^{4}+p_{z}^{4}\bigr)
++ B\,\bigl(p_{x}^{2}+p_{y}^{2}+p_{z}^{2}\bigr)^{2}
++ \mathcal{O}(p^{6}).
+\label{eq:expansion}
+\end{equation}
+The structure is forced by invariant theory: the only symmetric rank-2 tensor invariant
+under $O_{h}$ is $\propto\delta_{ij}$ --- so the quadratic term is \emph{isotropic}, a
+single scalar $m^{*}$ with no direction dependence --- while at quartic order there are
+exactly two independent invariants, $\sum_{i}p_{i}^{4}$ and $|\pv|^{4}$. Restricted to
+the two legs:
+\begin{equation}
+E_{0}(\pv)-E_{0}
+= \frac{|\pv|^{2}}{2m^{*}} +
+\begin{cases}
+\bigl(A+B\bigr)\,|\pv|^{4} + \dots & \text{along } \Gamma\to X \;(\langle100\rangle),\\[4pt]
+\bigl(\tfrac{A}{3}+B\bigr)\,|\pv|^{4} + \dots & \text{along } \Gamma\to L \;(\langle111\rangle),
+\end{cases}
+\label{eq:legs}
+\end{equation}
+using $\sum_{i}p_{i}^{4}=|\pv|^{4}$ on $\langle100\rangle$ and $=|\pv|^{4}/3$ on
+$\langle111\rangle$. The two directions therefore agree on $m^{*}$ exactly and first
+differ at quartic order, by $\tfrac{2}{3}A\,|\pv|^{4}$. Practical consequence: measuring
+both legs is not new physics but a \emph{fit-window diagnostic} --- if quadratic fits
+along $\Gamma\to X$ and $\Gamma\to L$ over the same $|\pv|$ window disagree beyond
+combined errors, quartic contamination is leaking in and the window must shrink.
+
+\paragraph{The degenerate contrast (why the hole is different).} The LiF valence-band
+top at $\Gamma$ is threefold degenerate (F-$2p$-like). For a degenerate level the scalar
+expansion~\eqref{eq:expansion} is replaced by a $3\times3$ matrix quadratic form (the
+Luttinger--Kohn $\kv\!\cdot\!\pv$ Hamiltonian) with \emph{three} independent cubic
+invariants (Luttinger parameters $\gamma_{1},\gamma_{2},\gamma_{3}$): heavy and light
+branches, genuinely anisotropic and warped. This is precisely why the hole polaron
+needs a multi-band, matrix-product-weight treatment and stays deferred (methodology
+note, deferred-work section); nothing in this note's scalar analysis applies to it.
+
+\paragraph{Where the quasiparticle branch ends.} A polaron at momentum $\pv$ can shed a
+phonon and recoil; the dispersion flattens as $E_{0}(\pv)$ approaches the continuum edge
+$E_{0}(\Gamma)+\omega_{\mathrm{LO}}$ ($\omega_{\mathrm{LO}}\approx0.08$~eV in LiF), and
+beyond it there is no sharp branch to fit. All mass fits must stay well below this
+threshold. Two sampling caveats tied to $|\pv|$: the projection gap that suppresses
+excited-state contamination in the fixed-$\tau$ estimator shrinks as the threshold is
+approached, so the required $\tau$ \emph{grows} with $|\pv|$ (hence a $\tau$-doubling
+guard at the largest fitted momentum); and at $\pv\neq\Gamma$ the propagator phases are
+genuinely complex, so $\langle\mathrm{sign}\rangle$ decays with $|\pv|$ and sets the
+largest reachable grid index in practice.
+
+\section{Reading}
+\label{sec:reading}
+
+\begin{description}
+\sloppy
+\item[Setyawan \& Curtarolo (2010).] W.~Setyawan, S.~Curtarolo, \emph{High-throughput
+  electronic band structure calculations: Challenges and tools}, Comput.\ Mater.\ Sci.\
+  \textbf{49}, 299 (2010); \href{https://arxiv.org/abs/1004.2974}{arXiv:1004.2974}.
+  \emph{The} reference for BZ shapes, point labels, and standard paths for every Bravais
+  lattice; the fcc figure and coordinate table cover everything in
+  Section~\ref{sec:points}. Short and practical --- read this one first.
+\item[Hinuma et al.\ (2017).] Y.~Hinuma, G.~Pizzi, Y.~Kumagai, F.~Oba, I.~Tanaka,
+  \emph{Band structure diagram paths based on crystallography}, Comput.\ Mater.\ Sci.\
+  \textbf{128}, 140 (2017); \href{https://arxiv.org/abs/1602.06402}{arXiv:1602.06402}.
+  The modern, crystallographically careful successor (the SeeK-path paper). The
+  companion web tool at
+  \href{https://www.materialscloud.org/work/tools/seekpath}{materialscloud.org} draws
+  the LiF BZ with $\Gamma$/$X$/$L$ labeled interactively --- the fastest way to build
+  geometric intuition for Section~\ref{sec:points}.
+\item[Yu \& Cardona.] P.~Y.~Yu, M.~Cardona, \emph{Fundamentals of Semiconductors},
+  4th~ed., Springer (2010), ch.~2. The $\kv\!\cdot\!\pv$ method: why band extrema at
+  high-symmetry points carry the mass-tensor structure their little group dictates,
+  including the degenerate (Luttinger--Kohn) case of Section~\ref{sec:mass}.
+\item[Dresselhaus, Dresselhaus \& Jorio.] \emph{Group Theory: Application to the
+  Physics of Condensed Matter}, Springer (2008). The full machinery --- little groups,
+  stars, representations at $\Gamma$/$X$/$L$, and $\kv\!\cdot\!\pv$ at high-symmetry
+  points. The reference to reach for when the hole polaron (degenerate $\Gamma$ level)
+  is picked up.
+\item[Ashcroft \& Mermin.] \emph{Solid State Physics}, Saunders (1976), chs.~4--5
+  and~8. Background on the reciprocal lattice, Brillouin zones, and Bloch bands
+  (Section~\ref{sec:bz}), if a first-principles refresher is wanted.
+\end{description}
+
+\end{document}

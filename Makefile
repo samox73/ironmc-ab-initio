@@ -60,7 +60,7 @@ sync-vsc:
 	let excludes = ["--exclude=/target/" "--exclude=/profile/" "--exclude=/runs/" "--exclude=/runs-vsc/" "--exclude=/crates/" "--exclude=/Cargo.toml" "--exclude=/Cargo.lock" "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*"]
 	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' ...$$excludes ./ $$"$(VSC_HOST):($$data)/ironmc/"
 	print "\nDownloading from VSC5"
-	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*" $$"$(VSC_HOST):($$data)/ironmc/runs" ./
+	rsync -avP -e 'ssh -S none -p $(VSC_PORT)' "--exclude=*.rmcvtab" "--exclude=*.rmcvtab.shard-*" "--exclude=batches-rank*.bin" "--exclude=checkpoint-rank*.bin" $$"$(VSC_HOST):($$data)/ironmc/runs" ./
 
 sync-replica:
 	rsync -avP --exclude=/target/ --exclude=/results/ --exclude=/slurm/ --exclude=/runs/ --exclude=/runs-vsc/ ./ recker@replica.mpi.univie.ac.at:~/ironmc/
