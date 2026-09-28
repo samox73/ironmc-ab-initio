@@ -37,7 +37,7 @@ reference; this file only defines the words.
 \term{Formation energy $E_{0}$} The polaron ground-state energy relative to the bare
   band edge, $E_{0}=E_{\mathrm{polaron}}-\varepsilon_{\mathrm{CBM}}$. Negative;
   the headline observable of every production run. LiF references:
-  $-0.2479$~eV on the $20^{3}$ grid, $-0.408$~eV extrapolated (FEP-DMC).
+  $-0.2479$~eV on the $20^{3}$ grid, $-0.408$~eV extrapolated (FEP-DMC; $-0.538$~eV with the remote-band correction). Ours: $-0.4063\pm0.0010$~eV extrapolated at $\tau=240$~eV$^{-1}$.
 
 \term{Fr\"ohlich model} The textbook continuum polaron: parabolic electron band, one
   dispersionless LO phonon, vertex $|g(\qv)|^{2}\propto\alpha/q^{2}$. Serves two roles
@@ -73,6 +73,16 @@ reference; this file only defines the words.
   $\hbar=m=\omega_{\mathrm{LO}}=1$. Ab-initio inputs arrive in Rydberg
   ($\approx13.6057$~eV) or THz and are converted on load.
 
+\term{High-symmetry points / symmetry paths ($\Gamma$, $X$, $L$, $W$, \dots)}
+  Points of the fcc BZ left invariant (modulo reciprocal-lattice vectors) by a
+  nontrivial subgroup of the cubic point group $O_{h}$, and the conventional 1D
+  tours through them along which dispersions are plotted and effective masses
+  quoted (e.g.\ $\Gamma\to X$ = fractional ray $(j/n,0,j/n)$, a Cartesian cube
+  axis). For the electron polaron the quadratic term of $E_{0}(\mathbf{p})$ at
+  $\Gamma$ is symmetry-forced isotropic (a scalar $m^{*}$); directions differ
+  first at quartic order. Full background and reading list:
+  \texttt{latex/symmetry-paths/symmetry-paths.tex}.
+
 \term{Effective mass $m^{*}$, CBM} Conduction-band minimum and its curvature mass.
   LiF's CBM is single and non-degenerate at $\Gamma$ (why LiF is the first material);
   $m^{*}$ enters $\alpha$ and the $q$-unit bridge of the reduced Fr\"ohlich comparison.
@@ -96,9 +106,15 @@ reference; this file only defines the words.
 
 \term{Thermodynamic limit / $1/n$ extrapolation} Because the discrete BZ sum
   underweights the $1/q^{2}$ polar region near $\Gamma$, $E_{0}(n)$ converges from
-  above with leading error $\propto1/n$. The continuum answer is the intercept of a
-  linear fit of $E_{0}(n)$ against $1/n$ over the grid ladder $n=20,32,40,50$
-  (same methodology as FEP-DMC).
+  above with leading error $\propto1/n$. The continuum answer is the intercept of a weighted fit of $E_{0}(n)$ against $u=1/n$ (linear plus quadratic term) over the grid ladder $n=20\ldots120$. The spread over fit models is quoted as a systematic. FEP-DMC fits linearly through its three largest grids.
+
+\term{Band mass $m_{b}$ vs polaron mass $m_{p}$} $m_{b}$ is the $\Gamma$ curvature of the bare Wannier CBM ($0.6926\,m_{e}$ for LiF); $m_{p}$ is the curvature of the polaron dispersion $E_{0}(\mathbf p)$. FEP-DMC's mass enhancement ``$m_{p}/m_{e}$'' means $m_{p}/m_{b}$: its $m_{e}$ is the band effective mass, not the free-electron mass.
+
+\term{Acoustic-emission (Landau) threshold} The momentum $p_{c}=m_{p}c_{s}$ beyond which the polaron moves faster than sound, so that polaron + one acoustic phonon has lower energy than the quasiparticle at the same total momentum. Beyond it the fixed-$\tau$ estimator's $\tau\to\infty$ limit is the continuum bottom, not the quasiparticle energy. For LiF(e), $p_{c}\approx0.015$~\AA$^{-1}$, below every nonzero grid momentum.
+
+\term{Central-slice estimator} An observable (phonon number, $Z_{N}$, per-mode occupation, electron momentum) measured by inserting its operator at times in a window around $\tau/2$. Unlike the log-derivative energy estimator, whole-worldline averages of occupations are biased by $O(1/\Delta\tau)$ from the ends, where the cloud is still forming.
+
+\term{Remote-band (AHC) correction} The part of the band-edge renormalization outside the sampled Hamiltonian: Fan--Migdal transitions to bands other than the sampled one, plus the Debye--Waller term (absent in any linear-coupling DiagMC). Added perturbatively (Allen--Heine--Cardona); for LiF(e) FEP-DMC finds $-0.130$~eV.
 \end{description}
 
 \subsection{Diagrammatics and sampling}

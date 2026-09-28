@@ -213,13 +213,7 @@ Section~\ref{sec:gpu}) are now \emph{implemented}.
 
 \paragraph{Remaining.}
 \begin{description}
-  \item[D1 --- Grid convergence.] The vertex is tabulated on a uniform $n^{3}$ grid; the
-    discrete BZ sum underweights the near-$\Gamma$ $1/q^{2}$ polar region, so the polaron
-    energy converges from above with a leading $1/n$ error (at $n{=}8$ the formation energy
-    is $E_{0}\approx-0.122$~eV against a converged target near $-0.4$~eV). The ladder
-    $n=20,32,40,50$ with a linear $1/n\to0$ extrapolation
-    (Section~\ref{sec:discretization}) is in progress; the GPU backend
-    (Section~\ref{sec:gpu}) reduces one grid point from node-hours to minutes.
+  \item[D1 --- Grid convergence.] \emph{Done} for the energy. The vertex is tabulated on a uniform $n^{3}$ grid; the discrete BZ sum underweights the near-$\Gamma$ $1/q^{2}$ polar region, so the polaron energy converges from above with a leading $1/n$ error (at $n{=}8$, $E_{0}\approx-0.122$~eV). Ladders $n=20\ldots120$ at $\tau=60$ and $\tau=240$~eV$^{-1}$ and their extrapolation are in Section~\ref{sec:discretization}. Still open: the $\tau{=}480$ guard at $120^{3}$, and a $\Gamma$-cell (Fr\"ohlich control-variate) correction that would remove the leading $1/n$ term rather than fit it.
 
   \item[D2 --- Hole polaron.] The degenerate valence-band-maximum polaron (lifting N1),
     needing a multi-band, degenerate (matrix-product sign-fix) treatment.
@@ -248,16 +242,7 @@ The goals of Section~\ref{sec:goals} are checked in stages of increasing physica
     $\Delta_{\mathrm{rank}}=E_{0}(\text{budget})-E_{0}(\text{uncompressed})$, and the measured
     $\Delta_{\mathrm{rank}}$ is quoted as a systematic on every production number
     (Section~\ref{sec:discretization}).
-  \item \textbf{Material comparison.} The grid-ladder formation energy against FEP-DMC
-    (Luo, Park, Bernardi, 2025): their $E_{0}(20^{3})=-0.2479$~eV before extrapolation and
-    $-0.408$~eV in the $1/n\to0$ limit, with Sio \emph{et al.} (2019) as a secondary
-    reference. The first grid point is met: the CPU engine measures
-    $E_{0}(20^{3})=-0.24996\pm0.00026$~eV (fixed-$\tau$ thermodynamic estimator,
-    $\tau=60$~eV$^{-1}$, rank-$800$ table), $\sim\!2$~meV inside the $\pm30$~meV checkpoint
-    band; the GPU engine reproduces the same Hamiltonian at $-0.24826\pm0.00023$~eV, with
-    the residual $1.7$~meV attributed to an equilibration transient
-    (Section~\ref{sec:gpu}), not the engine. The $1/n\to0$ extrapolation over
-    $n=20\ldots50$ remains pending (D1).
+  \item \textbf{Material comparison.} The grid-ladder formation energy against FEP-DMC (Luo, Park, Bernardi, 2025): their $E_{0}(20^{3})=-0.2479$~eV (from their example output, a single run at their effective $\tau\approx232$~eV$^{-1}$) and $-0.408$~eV in the $1/n\to0$ limit (linear fit through their three largest grids). At matched $\tau=240$~eV$^{-1}$ we measure $E_{0}(20^{3})=-0.2506\pm0.0003$~eV, $2.7$~meV deeper; the extrapolated $E_{\infty}=-0.4063\pm0.0006\,(\text{stat})\pm0.0008\,(\text{fit model})$~eV is $1.7$~meV shallower (Section~\ref{sec:discretization}). The two ladders therefore differ in slope by a few meV over $n=20\to\infty$, plausibly from dataset provenance (pseudopotentials, cutoffs, their rank budget); agreement is at the $1\%$ level, and a meV-level claim is not supported. Neither number includes the remote-band (Allen--Heine--Cardona) correction, which FEP-DMC adds separately to reach $-0.538$~eV.
 \end{enumerate}
 
 \section{Discretization, compression, and the thermodynamic limit}
@@ -272,9 +257,11 @@ first-principles self-energy convention), and the DiagMC solves each $\hat H_{n}
 \emph{numerically exactly}. All physical statements are then statements about the sequence
 $E_{0}(n)$: because the discrete sum underweights the $1/q^{2}$ polar region within a
 $1/n$-neighbourhood of $\Gamma$, $E_{0}(n)$ converges from above with a leading error
-linear in $1/n$, and the thermodynamic limit is read off a linear $1/n\to0$ extrapolation
-over a ladder of grids ($n=20\ldots50$ for LiF) --- the same methodology as FEP-DMC, whose
+linear in $1/n$, and the thermodynamic limit is read off a $1/n\to0$ extrapolation
+over a ladder of grids --- the same methodology as FEP-DMC, whose
 LiF benchmarks are $E_{0}(20^{3})=-0.248$~eV and $-0.408$~eV extrapolated.
+
+\paragraph{The LiF ladder and its error budget.} Banked rungs: $\tau=60$~eV$^{-1}$ at $n=20,32,40,50,60,80,100,120$ and $\tau=240$~eV$^{-1}$ at $n=20,40,60,80,100,120$ (runbook \texttt{notebooks/LiF-e0-gamma-extrapolation.ipynb}). Only the leading $u=1/n$ term has a physical origin (the missing $\Gamma$ cell), so the model $E_{0}(u)=E_{\infty}+Cu+Du^{2}$ is fitted by weighted least squares, and the spread over fit models and windows is quoted as a separate systematic. For $\tau=240$ the quadratic fit over all rungs gives $E_{\infty}=-0.4063\pm0.0006$~eV ($\chi^{2}_{\mathrm{red}}=1.4$). Acceptable alternatives ($\chi^{2}_{\mathrm{red}}\le2.2$, own error $\le2$~meV: linear from $n\ge40$, linear through the three largest grids as in FEP-DMC, quadratic from $n\ge40$) span $-0.4064\ldots-0.4048$~eV, i.e.\ a fit-model systematic of $\pm0.8$~meV. Underdetermined fits (cubic on five points, own error $\approx6$~meV) are uninformative rather than competing models, and are excluded. An independent route agrees: the $\tau$ shift $E_{0}(\tau240)-E_{0}(\tau60)$ is $n$-independent for $n\ge40$ ($-2.83\pm0.13$~meV), and adding it to the better-conditioned eight-rung $\tau60$ quadratic fit ($-0.4030\pm0.0002$~eV) gives $-0.4058$~eV. The compression systematic $\Delta_{\mathrm{rank}}(800)=+0.5\pm0.3$~meV (at $20^{3}$) is below the fit-model systematic. The $\tau$ systematic is certified by a $\tau=480$~eV$^{-1}$ guard at $n=120$ (pending). Current quote: $E_{\infty}=-0.4063\pm0.0010$~eV (stat.\ and fit model combined), before the $\tau$ guard.
 
 \paragraph{Compression as a controlled, quoted approximation.}
 The short-range vertex is compressed to a global rank budget (the largest singular values
@@ -660,17 +647,9 @@ the sign-weighted average taken in the fixed-$\tau$ ensemble. This is the
 $E_{\mathrm{loc}}$ quoted above (the code's \texttt{local\_energy}), and equals
 Eq.~\eqref{eq:estimator} in the $T\to0$ single-band limit up to the vertex-counting
 convention ($-2N$ arcs here vs.\ $-(N_{v}-1)$ vertices there). The estimator therefore
-approaches $E_{0}$ \emph{from above} at finite $\tau$, with the gap $\Delta$ set by the
-polaron-plus-one-phonon continuum, $\Delta\approx\omega_{\mathrm{LO}}$ at
-$\mathbf{p}=\Gamma$. For LiF ($\omega_{\mathrm{LO}}\approx83$~meV) the production
-$\tau_{\max}=60$~eV$^{-1}$ gives $\omega_{\mathrm{LO}}\tau\approx5.0$
-($e^{-5}\approx0.7\%$ of the coupling scale), whereas FEP-DMC's effective
-$\tau_{\max}=1/k_{B}T\approx232$~eV$^{-1}$ at their $T=50$~K gives
-$\omega_{\mathrm{LO}}\tau\approx19$ --- the leading candidate for the few-meV,
-grid-independent offset between the two codes' ladders, under test by a
-$\tau=240$~eV$^{-1}$ guard at $n=20,60$. Because fixed-$\tau$ produces no curve whose
-flattening can be inspected, convergence in $\tau$ is certified by such
-$\tau$-multiplication guards rather than by inspection of $E(\tau)$.
+approaches $E_{0}$ \emph{from above} at finite $\tau$, as $\sum_{i}w_{i}\Delta_{i}e^{-\Delta_{i}\tau}$ over excited states $i$ of the $\mathbf{p}$ sector with gaps $\Delta_{i}$ and relative weights $w_{i}$.
+
+The relevant excited states at $\mathbf{p}=\Gamma$ are the polaron at $-\qv$ plus one phonon at $\qv$, with gap $\Delta(\qv)=E_{0}(-\qv)-E_{0}+\omega_{\nu}(\qv)$. For the LO branch, $\Delta\ge\omega_{\mathrm{LO}}=77.2$~meV (18.67~THz), which gives $\omega_{\mathrm{LO}}\tau\approx4.6$ at $\tau=60$~eV$^{-1}$ and $\approx18.5$ at $\tau=240$~eV$^{-1}$ (FEP-DMC's effective $1/k_{B}T$ at 50~K is $232$~eV$^{-1}$). The acoustic branches are gapless, however: on the $n^{3}$ grid the smallest gap is $\approx c_{s}q_{\min}\propto1/n$ ($4.4$~meV at $16^{3}$, below $1$~meV beyond $n\approx70$, where the soft-mode cutoff removes those modes). Convergence in $\tau$ is therefore \emph{not} uniform in $n$. The weak acoustic coupling keeps the amplitude small, but no single $\Delta\approx\omega_{\mathrm{LO}}$ controls it. Measured: $E_{0}(\tau240)-E_{0}(\tau60)=-0.9\pm0.3$~meV at $20^{3}$ but $-2.8\pm0.1$~meV (flat) for $n\ge40$. Because fixed-$\tau$ produces no curve whose flattening can be inspected, two further checks certify $\tau$ convergence: a $\tau=480$~eV$^{-1}$ guard at $n=120$, and a free-$\tau$ run at $40^{3}$. The free-$\tau$ run bins the same $E_{\mathrm{loc}}$ over $\tau\in(0,240]$; its per-bin average must reproduce the fixed-$\tau$ points at $\tau=60,240$, and its shape measures the effective gap directly.
 
 \paragraph{Quantity measured.}
 Rather than the asymptotic slope, the polaron energy is the operator average
@@ -766,5 +745,43 @@ In multiband mode the segment propagators, vertices, and the $\hat H$-insertion 
 \paragraph{Why it replaced the decay fit.}
 
 Relative to the decay fit of P9, Eq.~\eqref{eq:estimator} removes the $\tau_{\max}$ window arbitrariness (the whole $[0,\beta]$ worldline is used), lowers variance (it time-averages rather than reading one slope), and has a systematic error controlled by $\beta$ (excited-state contamination $\sim e^{-\Delta\beta}$). The single-band form accumulates the three sums of Eq.~\eqref{eq:estimator} per sample, dividing by $\beta$ and $\langle s\rangle$ --- no environment matrices are needed until the multiband (hole/degenerate) work of D2. It has been cross-validated against the Fr\"ohlich $\alpha=1,2$ Mishchenko values (stage~0), where it agrees with the decay estimator, and against the exactly solvable dispersionless lattice model noted above; all production numbers (Section~\ref{sec:discretization}) use it.
+
+\section{Phonon-cloud estimators from central time slices}
+\label{sec:slice}
+
+The energy estimator is exact at every $\tau$ because it is a log-derivative, $E_{\mathrm{loc}}=-\partial_{\tau}\ln G$. Occupation-type observables have no such identity. Inserting an operator $\hat O$ at time $t$ on the worldline gives
+\begin{equation}
+  O(t) = \frac{\langle0|c_{\mathbf p}\,e^{-\hat H(\tau-t)}\,\hat O\,e^{-\hat Ht}\,c^{\dagger}_{\mathbf p}|0\rangle}{G(\mathbf p,\tau)}
+  \;\xrightarrow{\;t,\;\tau-t\,\gg\,1/\Delta\;}\;\langle\Psi_{0}(\mathbf p)|\hat O|\Psi_{0}(\mathbf p)\rangle ,
+  \label{eq:slice}
+\end{equation}
+and the ground-state value is reached only far from both ends. In the bare-basis expansion the intermediate state at $t$ is the electron segment crossing $t$ plus the arcs spanning $t$. Hence, for $\hat O=\hat P_{N}$ (projector on $N$ phonons), $O(t)$ is the sign-weighted probability that exactly $N$ arcs cross $t$, i.e.\ FEP-DMC's $Z_{N,\mathbf p}$; $\hat N_{\mathrm{ph}}$ and its per-branch parts count the crossing arcs, and $\hat n_{\kv}$ reads the crossing segment's momentum ($f_{e}(\kv)$ of their Eq.~(4)). None of these needs external phonon lines or a new update.
+
+The averaging window must be central. The whole-worldline average $\tau^{-1}\sum_{a}\Delta\tau_{a}$ is biased low by the ends, where the cloud is still building from $c^{\dagger}|0\rangle$. In the dispersionless model $N(t)=\bar N(1-e^{-\omega t})(1-e^{-\omega(\tau-t)})$, so the full average is $\bar N[1-2(1-e^{-\omega\tau})/(\omega\tau)+e^{-\omega\tau}]$: an $O(1/\omega\tau)$ error, about $-11\%$ for LiF at $\tau=240$~eV$^{-1}$. The production estimator averages Eq.~\eqref{eq:slice} over $t\in[\tau/2-w,\tau/2+w]$ (default $w=\tau/8$), which converges as $e^{-\Delta(\tau/2-w)}$ and is certified by $w$-independence. Implementation plan: \texttt{plans/open/nph-estimator.md}.
+
+\section{Polaron dispersion, effective mass, and the acoustic-emission threshold}
+\label{sec:dispersion}
+
+\paragraph{Protocol.} $E_{0}(\mathbf p)$ is measured on grid momenta along $\Gamma\to X$ ($\mathbf p=\tfrac{j}{n}(\mathbf b_{1}+\mathbf b_{3})$) and $\Gamma\to L$, each point a separate fixed-$\tau$ run (\texttt{ironmc dispersion sweep}; runbook \texttt{notebooks/LiF-dispersion-mass.ipynb}). Cubic symmetry forces $E_{0}(\mathbf p)=E_{0}+|\mathbf p|^{2}/2m_{p}+c_{4,\mathrm{leg}}|\mathbf p|^{4}+\dots$ with one scalar $m_{p}$ (\texttt{latex/symmetry-paths}). Fit windows are fixed in physical $|\mathbf p|$ (\AA$^{-1}$), never in grid index: at fixed $j$ the momentum shrinks as $1/n$, and an index window mistakes non-parabolicity for grid dependence. The mass is reported as $m_{p}/m_{b}$, where the band mass $m_{b}=0.6926\,m_{e}$ is the $\Gamma$ curvature of the same Wannier $\varepsilon(\kv)$ the sampler uses (\texttt{examples/band\_mass.rs}). FEP-DMC's ``$m_{p}/m_{e}$'' uses exactly this normalization; $m_{e}$ there is the band effective mass.
+
+\paragraph{Current result.} With the $p^{2}+p^{4}$ model over $|\mathbf p|\le0.16$~\AA$^{-1}$: $m_{p}/m_{b}=5.31\pm0.23\,(\text{stat})\pm0.42\,(\text{window})$ at $80^{3}$ and $5.0\pm0.3\pm1.0$ at $120^{3}$. At the same $|\mathbf p|$, $40^{3}$, $80^{3}$ and $120^{3}$ agree to within about 1~meV, so the dispersion converges in $n$ much faster than $E_{0}$. A pure parabola is excluded beyond $|\mathbf p|\approx0.1$~\AA$^{-1}$ ($\chi^{2}$ grows, the fitted mass drifts upward): parabolic fits give $6.0$--$6.4$ over $|\mathbf p|\le0.12$~\AA$^{-1}$ and up to $\approx10$ over wider ranges. FEP-DMC's 6.1 ($\Gamma$--$L$, parabolic fit) is therefore consistent with our dispersion, but a single parabolic number is window-dependent at the $\pm1$ level.
+
+\paragraph{The acoustic-emission (Landau) threshold.} For each total momentum $\mathbf p$, the fixed-$\tau$ estimator converges as $\tau\to\infty$ to the \emph{lowest} energy in that sector:
+\begin{equation}
+  E_{\mathrm{sector}}(\mathbf p)=\min\Bigl\{E_{\mathrm{qp}}(\mathbf p),\;\min_{\qv,\nu}\bigl[E_{\mathrm{qp}}(\mathbf p-\qv)+\omega_{\nu}(\qv)\bigr],\;\dots\Bigr\}.
+\end{equation}
+The second entry is the polaron recoiling to $\mathbf p-\qv$ after emitting one real phonon. For LO phonons it is the familiar flattening at $E_{0}+\omega_{\mathrm{LO}}$. For acoustic phonons, $\omega\approx c_{s}q$ with no gap. With $E_{\mathrm{qp}}\approx E_{0}+p^{2}/2m_{p}$, the emission state lies below the quasiparticle as soon as the polaron's group velocity exceeds the sound velocity, $|\mathbf p|/m_{p}>c_{s}$: the lattice analogue of Cherenkov radiation. Beyond that momentum the bottom of the sector is $\approx E_{0}+c_{s}|\mathbf p|-m_{p}c_{s}^{2}/2$. For LiF, $\omega_{\mathrm{TA}}=4.93$~meV at $|\qv|=0.155$~\AA$^{-1}$ along $\Gamma\to X$ gives $c_{s}\approx32$~meV\,\AA{} ($4.8$~km/s). With $m_{p}\approx3.7\,m_{e}$ this puts the threshold at $p_{c}=m_{p}c_{s}\approx0.015$~\AA$^{-1}$, below the first nonzero $\Gamma\to X$ grid point even at $120^{3}$ ($0.026$~\AA$^{-1}$).
+
+The quasiparticle becomes a resonance that can decay by acoustic emission. The measured $E_{0}(\mathbf p,\tau)$ remains quasiparticle-dominated only while the admixture of the lower continuum, $\sum_{i}w_{i}e^{+\delta_{i}\tau}$ with $\delta_{i}=E_{\mathrm{qp}}-E_{i}>0$, stays small. Each weight is small, $w_{i}\sim|g_{\mathrm{ac}}|^{2}/(N_{q}\delta_{i}^{2})$ (acoustic coupling is weak and each state carries $1/N_{q}$), but the factor $e^{\delta_{i}\tau}$ grows with $\tau$ and with $|\mathbf p|$. So, unlike at $\Gamma$, longer $\tau$ is not automatically better at finite $\mathbf p$. The diagnostic is cheap: at the same $(n,\mathbf p)$, $E_{0}(\mathbf p,\tau240)-E_{0}(\mathbf p,\tau60)$ must equal the $\Gamma$ shift ($-2.8$~meV) if the quasiparticle dominates, while an excess that grows with $|\mathbf p|$ signals contamination. Keeping mass fits at small $|\mathbf p|$, where $\delta$ is a few meV, limits the effect in any case.
+
+\section{Remote bands: the Allen--Heine--Cardona correction}
+\label{sec:ahc}
+
+The DiagMC is exact for the Hamiltonian $\hat H_{n}$ it samples: one Wannier band (the CBM), linear e--ph coupling. Two pieces of the physical band-edge renormalization are outside it: (i) Fan--Migdal virtual transitions into bands not included in the sampled manifold, and (ii) the Debye--Waller term (second order in the displacement at one vertex), which a linear-coupling DiagMC never generates. FEP-DMC adds both perturbatively (AHC, their ref.~36, 37), moving LiF(e) from $-0.408$ to $-0.538$~eV. This is a 130~meV correction, larger than every DiagMC systematic above. Consistently with the sampled manifold,
+\begin{equation}
+  \Delta E_{\mathrm{AHC}} = \mathrm{Re}\,\Sigma^{\mathrm{FM}}_{\mathrm{CBM}}\bigl(\varepsilon_{\mathrm{CBM}}\bigr)\Big|_{m\notin\{\mathrm{CBM}\}} + \Sigma^{\mathrm{DW}}_{\mathrm{CBM}}, \qquad
+  \Sigma^{\mathrm{FM}}_{n\kv}(\varepsilon)=\frac{1}{N_{q}}\sum_{m\nu\qv}|g_{mn\nu}(\kv,\qv)|^{2}\,\frac{1}{\varepsilon-\varepsilon_{m\kv+\qv}-\omega_{\nu\qv}} ,
+\end{equation}
+at $T=0$ (single carrier). The band sum runs over all Kohn--Sham bands, via Sternheimer for the high ones, and excludes the intraband CBM$\to$CBM term that the DiagMC already contains to all orders. The practical route and its pitfalls are in \texttt{plans/open/ahc-correction.md}.
 
 \end{document}
