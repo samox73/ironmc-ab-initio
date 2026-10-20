@@ -108,8 +108,16 @@ fn resumed_legs_match_uninterrupted_run() {
             "{what}: {a} vs {b}"
         );
     };
-    close(merged.e0_thermo.mean, full_report.e0_thermo.mean, "e0_thermo");
-    close(merged.mean_order.mean, full_report.mean_order.mean, "mean_order");
+    close(
+        merged.e0_thermo.mean,
+        full_report.e0_thermo.mean,
+        "e0_thermo",
+    );
+    close(
+        merged.mean_order.mean,
+        full_report.mean_order.mean,
+        "mean_order",
+    );
     close(merged.sign.mean, full_report.sign.mean, "sign");
 
     // Guards: wrong resume shapes fail loudly.

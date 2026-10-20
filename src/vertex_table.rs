@@ -455,7 +455,9 @@ impl VertexTable {
             .saturating_mul(components as u64)
             .saturating_mul((1 + nmodes) as u64)
             .saturating_mul(precision.bytes());
-        let complex = points.saturating_mul((nbnd + nmodes) as u64).saturating_mul(16);
+        let complex = points
+            .saturating_mul((nbnd + nmodes) as u64)
+            .saturating_mul(16);
         let real = points
             .saturating_mul((1 + nmodes) as u64)
             .saturating_mul(8)
@@ -476,9 +478,21 @@ impl VertexTable {
         precision: TablePrecision,
         max_bytes: u64,
     ) -> Result<Self> {
-        let nk = grid_n.checked_pow(3).ok_or("grid_n cubed overflows usize")?;
+        let nk = grid_n
+            .checked_pow(3)
+            .ok_or("grid_n cubed overflows usize")?;
         Self::build_range(
-            epw, crystal, wigner, svd, grid_n, 0, nk, phfreq_cutoff_ev, precision, max_bytes, true,
+            epw,
+            crystal,
+            wigner,
+            svd,
+            grid_n,
+            0,
+            nk,
+            phfreq_cutoff_ev,
+            precision,
+            max_bytes,
+            true,
             FillDevice::Cpu,
         )
     }
@@ -521,13 +535,20 @@ impl VertexTable {
         if epw.nbnd > u8::MAX as usize + 1 {
             return Err("precontracted vertex supports at most 256 bands".into());
         }
-        let nk = grid_n.checked_pow(3).ok_or("grid_n cubed overflows usize")?;
+        let nk = grid_n
+            .checked_pow(3)
+            .ok_or("grid_n cubed overflows usize")?;
         if lo > hi || hi > nk {
             return Err(format!("shard slab [{lo}, {hi}) is out of range for {nk} points").into());
         }
         let npoints = hi - lo;
-        let bytes =
-            Self::estimated_bytes_for_points(npoints as u64, svd.rank(), epw.nbnd, epw.nmodes, precision);
+        let bytes = Self::estimated_bytes_for_points(
+            npoints as u64,
+            svd.rank(),
+            epw.nbnd,
+            epw.nmodes,
+            precision,
+        );
         log::info!(
             "vertex table estimate: {:.2} GiB ({npoints}/{nk} points)",
             bytes as f64 / 2_f64.powi(30)
@@ -623,11 +644,29 @@ impl VertexTable {
         match device {
             FillDevice::Cpu => match (&mut wtab, &mut vtab) {
                 (Tab::F32(w), Tab::F32(v)) => fill_fourier_tables(
-                    epw, wigner, svd, grid_n, lo, &phonon_evec, &g_to_nm, w, v, &completed,
+                    epw,
+                    wigner,
+                    svd,
+                    grid_n,
+                    lo,
+                    &phonon_evec,
+                    &g_to_nm,
+                    w,
+                    v,
+                    &completed,
                     progress_step,
                 ),
                 (Tab::F64(w), Tab::F64(v)) => fill_fourier_tables(
-                    epw, wigner, svd, grid_n, lo, &phonon_evec, &g_to_nm, w, v, &completed,
+                    epw,
+                    wigner,
+                    svd,
+                    grid_n,
+                    lo,
+                    &phonon_evec,
+                    &g_to_nm,
+                    w,
+                    v,
+                    &completed,
                     progress_step,
                 ),
                 _ => unreachable!("table arrays use one precision"),
@@ -904,7 +943,9 @@ impl VertexTable {
         let (head_meta, head) = &shards[0];
         let grid_n = head.grid_n;
         let expected_shards = head_meta.shards;
-        let nk = grid_n.checked_pow(3).ok_or("grid_n cubed overflows usize")?;
+        let nk = grid_n
+            .checked_pow(3)
+            .ok_or("grid_n cubed overflows usize")?;
         if shards.len() != expected_shards {
             return Err(format!(
                 "expected {expected_shards} shards, got {} — refusing a partial set",
@@ -926,7 +967,10 @@ impl VertexTable {
         for (i, (meta, table)) in shards.iter().enumerate() {
             let lo = i * nk / expected_shards;
             let hi = (i + 1) * nk / expected_shards;
-            if meta.shards != expected_shards || meta.shard != i || meta.lo != lo || meta.hi != hi
+            if meta.shards != expected_shards
+                || meta.shard != i
+                || meta.lo != lo
+                || meta.hi != hi
                 || meta.lo != cursor
             {
                 return Err(
@@ -1132,8 +1176,8 @@ mod tests {
     /// be Hermitian; imaginary phonon branches are fine (the fill takes |ω|).
     fn synthetic_inputs() -> (EpwData, Crystal, Wigner, EpmatWp) {
         let nm = 6; // 2 atoms × 3
-        // D(R): stiff point-independent diagonal at R=0 plus a small complex
-        // block at R=[1,0,0] so frequencies and eigenvectors vary with q.
+                    // D(R): stiff point-independent diagonal at R=0 plus a small complex
+                    // block at R=[1,0,0] so frequencies and eigenvectors vary with q.
         let mut d = vec![Cf::new(0.0, 0.0); nm * nm * 2];
         for a in 0..nm {
             d[(a * nm + a) * 2] = Cf::new(((a + 1) * (a + 1)) as f64, 0.0);
@@ -1181,19 +1225,9 @@ mod tests {
         // both the electron (per band pair) and el-ph (per atom) degeneracy
         // divisions are exercised with d ≠ 1.
         let wigner = Wigner {
-            k: WsGrid::from_parts(
-                vec![[0; 3], [1, 0, 0]],
-                2,
-                2,
-                vec![1, 1, 1, 1, 1, 2, 2, 1],
-            ),
+            k: WsGrid::from_parts(vec![[0; 3], [1, 0, 0]], 2, 2, vec![1, 1, 1, 1, 1, 2, 2, 1]),
             q: WsGrid::from_parts(vec![[0; 3], [1, 0, 0]], 2, 2, vec![1, 1, 1, 1, 1, 1, 1, 2]),
-            g: WsGrid::from_parts(
-                vec![[0; 3], [0, 1, 0]],
-                2,
-                2,
-                vec![1, 1, 1, 1, 1, 2, 1, 1],
-            ),
+            g: WsGrid::from_parts(vec![[0; 3], [0, 1, 0]], 2, 2, vec![1, 1, 1, 1, 1, 2, 1, 1]),
         };
         let epmat = EpmatWp {
             nbnd: 2,
@@ -1251,7 +1285,14 @@ mod tests {
         let precision = TablePrecision::F64;
 
         let full = VertexTable::build(
-            &epw, &crystal, &wigner, &svd, grid_n, DEFAULT_PHFREQ_CUTOFF_EV, precision, DEFAULT_MAX_BYTES,
+            &epw,
+            &crystal,
+            &wigner,
+            &svd,
+            grid_n,
+            DEFAULT_PHFREQ_CUTOFF_EV,
+            precision,
+            DEFAULT_MAX_BYTES,
         )
         .unwrap();
 
@@ -1260,8 +1301,18 @@ mod tests {
                 let lo = i * nk / nshards;
                 let hi = (i + 1) * nk / nshards;
                 let table = VertexTable::build_range(
-                    &epw, &crystal, &wigner, &svd, grid_n, lo, hi, DEFAULT_PHFREQ_CUTOFF_EV,
-                    precision, DEFAULT_MAX_BYTES, false, FillDevice::Cpu,
+                    &epw,
+                    &crystal,
+                    &wigner,
+                    &svd,
+                    grid_n,
+                    lo,
+                    hi,
+                    DEFAULT_PHFREQ_CUTOFF_EV,
+                    precision,
+                    DEFAULT_MAX_BYTES,
+                    false,
+                    FillDevice::Cpu,
                 )
                 .unwrap();
                 let meta = ShardMeta {
@@ -1291,8 +1342,11 @@ mod tests {
         );
 
         // A shard round-trips through its file format unchanged.
-        let path = std::env::temp_dir()
-            .join(format!("rmc-shard-{}-{}.rmcvtab.shard", std::process::id(), 1));
+        let path = std::env::temp_dir().join(format!(
+            "rmc-shard-{}-{}.rmcvtab.shard",
+            std::process::id(),
+            1
+        ));
         shards[1].1.save_shard(&shards[1].0, &path).unwrap();
         assert_eq!(VertexTable::read_shard_meta(&path).unwrap(), shards[1].0);
         let (meta, reloaded) = VertexTable::load_shard(&path).unwrap();
@@ -1321,8 +1375,18 @@ mod tests {
                 let lo = i * nk / nshards;
                 let hi = (i + 1) * nk / nshards;
                 let table = VertexTable::build_range(
-                    &epw, &crystal, &wigner, &svd, grid_n, lo, hi, DEFAULT_PHFREQ_CUTOFF_EV,
-                    TablePrecision::F64, DEFAULT_MAX_BYTES, false, FillDevice::Cpu,
+                    &epw,
+                    &crystal,
+                    &wigner,
+                    &svd,
+                    grid_n,
+                    lo,
+                    hi,
+                    DEFAULT_PHFREQ_CUTOFF_EV,
+                    TablePrecision::F64,
+                    DEFAULT_MAX_BYTES,
+                    false,
+                    FillDevice::Cpu,
                 )
                 .unwrap();
                 let meta = ShardMeta {
@@ -1422,8 +1486,18 @@ mod tests {
         std::env::set_var("RMC_GPU_CHUNK", "7");
         let build = |device| {
             VertexTable::build_range(
-                &epw, &crystal, &wigner, &svd, grid_n, 0, nk, DEFAULT_PHFREQ_CUTOFF_EV,
-                TablePrecision::F32, DEFAULT_MAX_BYTES, true, device,
+                &epw,
+                &crystal,
+                &wigner,
+                &svd,
+                grid_n,
+                0,
+                nk,
+                DEFAULT_PHFREQ_CUTOFF_EV,
+                TablePrecision::F32,
+                DEFAULT_MAX_BYTES,
+                true,
+                device,
             )
             .unwrap()
         };

@@ -362,7 +362,10 @@ impl<R: Runtime> DeviceTables<R> {
         assert_eq!(RY2EV, crate::reconstruct::RY_TO_EV);
         let nk = table.len();
         let rank = table.s.len();
-        assert!(rank > 0 && rank % VEC == 0, "rank must be a multiple of {VEC}");
+        assert!(
+            rank > 0 && rank % VEC == 0,
+            "rank must be a multiple of {VEC}"
+        );
         assert_eq!(table.bra_band.len(), rank, "table must be precontracted");
         assert!(
             table.bra_band.windows(2).all(|w| w[0] <= w[1]),
@@ -386,11 +389,7 @@ impl<R: Runtime> DeviceTables<R> {
 
         let (w_re, w_im) = tab_to_planar(&table.wtab, nk * rank);
         let (v_re, v_im) = tab_to_planar(&table.vtab, nk * table.nmodes * rank);
-        let cbm: Vec<f64> = table
-            .cbm_evec
-            .iter()
-            .flat_map(|z| [z.re, z.im])
-            .collect();
+        let cbm: Vec<f64> = table.cbm_evec.iter().flat_map(|z| [z.re, z.im]).collect();
         let bra_band: Vec<u32> = table.bra_band.iter().map(|&b| b as u32).collect();
 
         Self {
@@ -582,8 +581,7 @@ pub fn max_rel_error(
     let mut worst: f64 = 0.0;
     let mut scale: f64 = 0.0;
     for (((&k, &q), &nu), &value) in ks.iter().zip(qs).zip(nus).zip(values) {
-        let expected =
-            table.short_indices_capped(k as usize, q as usize, nu as usize, &usize::MAX);
+        let expected = table.short_indices_capped(k as usize, q as usize, nu as usize, &usize::MAX);
         scale = scale.max(expected.norm());
         worst = worst.max((value - expected).norm());
     }

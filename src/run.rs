@@ -117,11 +117,7 @@ fn collect(kernel: &AbInitioKernel) -> Vec<UpdateStatEntry> {
             proposed: s.nprops,
             impossible: s.nimps,
             accepted: s.naccs,
-            acc_ratio: if s.nprops > 0 {
-                s.naccs as f64 / s.nprops as f64
-            } else {
-                0.0
-            },
+            acc_ratio: if s.nprops > 0 { s.naccs as f64 / s.nprops as f64 } else { 0.0 },
         })
         .collect()
 }

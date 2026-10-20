@@ -36,7 +36,12 @@ fn test_config(chains: u64) -> DiagConfig {
     }
 }
 
-fn dump(model: &AbInitioModel, cfg: &DiagConfig, rank: u64, output: &rmc_ab_initio::flat::batched::BatchedRunOutput) -> RankDump {
+fn dump(
+    model: &AbInitioModel,
+    cfg: &DiagConfig,
+    rank: u64,
+    output: &rmc_ab_initio::flat::batched::BatchedRunOutput,
+) -> RankDump {
     RankDump {
         config: cfg.clone(),
         rank,
@@ -55,7 +60,10 @@ fn offset_split_runs_merge_bit_identically() {
     let full_cfg = test_config(4);
     let full = run_batched(&model, &full_cfg, 0, 2, 24).unwrap();
     let full_report = full.report.as_ref().unwrap();
-    assert!(full_report.mean_order.mean > 0.05, "walk never left order 0");
+    assert!(
+        full_report.mean_order.mean > 0.05,
+        "walk never left order 0"
+    );
 
     let half_cfg = test_config(2);
     let rank0 = run_batched(&model, &half_cfg, 0, 2, 24).unwrap();

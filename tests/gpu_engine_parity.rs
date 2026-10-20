@@ -67,11 +67,22 @@ fn compare(cpu: &BatchedRunOutput, gpu: &BatchedRunOutput, tol: f64, label: &str
         assert_eq!(c.len, g.len, "{label}: chain {i} len");
         assert_eq!(c.order, g.order, "{label}: chain {i} order");
         for key in 0..c.len {
-            assert_eq!(c.p_out[key], g.p_out[key], "{label}: chain {i} p_out[{key}]");
+            assert_eq!(
+                c.p_out[key], g.p_out[key],
+                "{label}: chain {i} p_out[{key}]"
+            );
             assert_eq!(c.q[key], g.q[key], "{label}: chain {i} q[{key}]");
-            assert_eq!(c.branch[key], g.branch[key], "{label}: chain {i} branch[{key}]");
+            assert_eq!(
+                c.branch[key], g.branch[key],
+                "{label}: chain {i} branch[{key}]"
+            );
             assert_eq!(c.link[key], g.link[key], "{label}: chain {i} link[{key}]");
-            assert_close(c.tau[key], g.tau[key], tol, &format!("{label}: chain {i} tau[{key}]"));
+            assert_close(
+                c.tau[key],
+                g.tau[key],
+                tol,
+                &format!("{label}: chain {i} tau[{key}]"),
+            );
         }
         assert!(g.check_consistency(), "{label}: chain {i} inconsistent");
         assert_close(
@@ -126,8 +137,7 @@ fn kernel_matches_flat_driver_on_cpu_runtime() {
         // oversubscribed spin barriers make wide cubes pathologically slow.
         let wide = if cfg!(feature = "gpu-cuda") { 32u32 } else { 4 };
         for lanes in [1u32, wide] {
-            let client =
-                <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
+            let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
             let gpu = run_device(
                 client,
                 &model,
@@ -143,7 +153,12 @@ fn kernel_matches_flat_driver_on_cpu_runtime() {
             // glibc by ~1e-12 relative on single draws; the plan's acceptance
             // bar is 1e-6, accept counts are exact.
             let tol = 1.0e-9;
-            compare(&cpu, &gpu, tol, &format!("fixed_tau {fixed_tau} lanes {lanes}"));
+            compare(
+                &cpu,
+                &gpu,
+                tol,
+                &format!("fixed_tau {fixed_tau} lanes {lanes}"),
+            );
         }
     }
 }
@@ -157,8 +172,7 @@ fn device_chain_offset_matches_full_run() {
     cfg.chains = 4;
     let mut full_cfg = cfg.clone();
     full_cfg.chains = 8;
-    let client =
-        <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
+    let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
     let opts = || DeviceRunOpts {
         max_order_gpu: MAX_ORDER_GPU,
         lanes: 1,
@@ -192,8 +206,7 @@ fn device_deadline_truncates_between_segments() {
     // No warmup and a generous budget: the first launch pays the JIT, and the
     // deadline must land after at least one measured segment.
     cfg.warmup_steps = 0;
-    let client =
-        <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
+    let client = <SelectedRuntime as cubecl::prelude::Runtime>::client(&Default::default());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let opts = |deadline| DeviceRunOpts {
         max_order_gpu: MAX_ORDER_GPU,

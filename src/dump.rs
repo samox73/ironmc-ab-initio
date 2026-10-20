@@ -129,7 +129,9 @@ pub fn merge_dumps(mut dumps: Vec<RankDump>) -> BoxResult<Report> {
     let first = &dumps[0];
     for dump in &dumps[1..] {
         if !same_trajectory(&dump.config, &first.config) {
-            return Err(format!("rank {} config differs from rank {}", dump.rank, first.rank).into());
+            return Err(
+                format!("rank {} config differs from rank {}", dump.rank, first.rank).into(),
+            );
         }
         if dump.electron_energy_pext != first.electron_energy_pext {
             return Err(format!("rank {} ε(p_ext) differs", dump.rank).into());

@@ -309,8 +309,9 @@ pub fn run_batched_opts(
                 for cycle in chunk_lo..chunk_hi {
                     for s in 0..steps_per_cycle {
                         let step = cycle * steps_per_cycle + s;
-                        let update_index =
-                            (keyed_draw(cfg.seed, group_id, step, u32::MAX)[0] as usize) % n_updates;
+                        let update_index = (keyed_draw(cfg.seed, group_id, step, u32::MAX)[0]
+                            as usize)
+                            % n_updates;
                         let mut rng = PhiloxRng::new(cfg.seed, chain_id, step);
                         let (accepted, impossible) =
                             step_selected(chain, chain_updates, update_index, &mut rng);

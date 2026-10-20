@@ -61,8 +61,7 @@ impl AddPhonon {
 
         let tau1 = rng.gen::<f64>() * d.tau_ext();
         let segment1 = d.segment_at(tau1);
-        if tau1 - d.tau[segment1] < DELTA_TAU_LIMIT
-            || d.tau[segment1 + 1] - tau1 < DELTA_TAU_LIMIT
+        if tau1 - d.tau[segment1] < DELTA_TAU_LIMIT || d.tau[segment1 + 1] - tau1 < DELTA_TAU_LIMIT
         {
             return -1.0;
         }
@@ -73,8 +72,7 @@ impl AddPhonon {
             return -1.0;
         }
         let segment2 = d.segment_at(tau2);
-        if tau2 - d.tau[segment2] < DELTA_TAU_LIMIT
-            || d.tau[segment2 + 1] - tau2 < DELTA_TAU_LIMIT
+        if tau2 - d.tau[segment2] < DELTA_TAU_LIMIT || d.tau[segment2 + 1] - tau2 < DELTA_TAU_LIMIT
         {
             return -1.0;
         }

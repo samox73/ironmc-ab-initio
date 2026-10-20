@@ -7,7 +7,9 @@ use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData};
 use std::path::PathBuf;
 
 fn lif(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasets/LiF").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("datasets/LiF")
+        .join(rel)
 }
 
 fn close(a: f64, b: f64) {
@@ -19,7 +21,10 @@ fn epwdata_header_dims_ef_polar() {
     let e = EpwData::read(lif("epwdata.fmt")).unwrap();
 
     // dims (Wigner–Seitz grids of the 8×8×8 coarse mesh)
-    assert_eq!((e.nbnd, e.nrr_k, e.nmodes, e.nrr_q, e.nrr_g), (4, 617, 6, 833, 725));
+    assert_eq!(
+        (e.nbnd, e.nrr_k, e.nmodes, e.nrr_q, e.nrr_g),
+        (4, 617, 6, 833, 725)
+    );
     // Fermi energy (Ry)
     close(e.ef, 5.257_179_972_899_102_3e-2);
 
@@ -58,7 +63,10 @@ fn crystal_geometry_masses_positions() {
 fn epmatwp_loads_with_expected_extent() {
     let path = lif("out/LiF.epmatwp");
     if !path.exists() {
-        eprintln!("skipping: {} not present (regenerate via run_pipeline.nu)", path.display());
+        eprintln!(
+            "skipping: {} not present (regenerate via run_pipeline.nu)",
+            path.display()
+        );
         return;
     }
     let g = EpmatWp::read(&path, 4, 617, 6, 725).unwrap_or_else(|e| panic!("{e}"));

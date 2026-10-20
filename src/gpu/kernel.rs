@@ -527,9 +527,8 @@ fn changed_arc_factors(
             let old_absorb = p_out[base + right - 1];
             let emit_changed = tau[base + left] >= tau1 && tau[base + left] < tau2;
             let absorb_changed = tau[base + right] > tau1 && tau[base + right] <= tau2;
-            let skipped = skip_left != NONE
-                && left == skip_left as usize
-                && right == skip_right as usize;
+            let skipped =
+                skip_left != NONE && left == skip_left as usize && right == skip_right as usize;
             let handled_at_left = key == right && emit_changed;
             if !skipped && (emit_changed || absorb_changed) && !handled_at_left {
                 let q = qv[base + left];
@@ -735,8 +734,8 @@ pub fn mc_kernel(
                             let delta = f1 - tau[base + key];
                             let before = electron_ev[p_out[base + key - 1] as usize];
                             let after = electron_ev[p_out[base + key] as usize];
-                            let omega = phonon_ev
-                                [(qv[base + key] * nmodes + branch[base + key]) as usize];
+                            let omega =
+                                phonon_ev[(qv[base + key] * nmodes + branch[base + key]) as usize];
                             let mut phonon = -(omega * delta);
                             if link[base + key] as usize > key {
                                 phonon = omega * delta;
@@ -785,15 +784,22 @@ pub fn mc_kernel(
                                         exponential_pdf_bounded(f2, lambda, f1, tau_ext) / tau_ext;
                                     // insert_arc_ratio.
                                     let ca_log = changed_arc_factors(
-                                        tau, p_out, qv, branch, link, w_re, w_im, v_re, v_im,
-                                        cbm, bra_band, long_re, long_im, &mut sm, base, ln, f1,
-                                        f2, pq, NONE, NONE, grid_n, rank, nmodes, nbnd, lane,
-                                        lanes,
+                                        tau, p_out, qv, branch, link, w_re, w_im, v_re, v_im, cbm,
+                                        bra_band, long_re, long_im, &mut sm, base, ln, f1, f2, pq,
+                                        NONE, NONE, grid_n, rank, nmodes, nbnd, lane, lanes,
                                     );
                                     let ca_pre = sm[SM_PARTIALS as usize + 1];
                                     let ca_pim = sm[SM_PARTIALS as usize + 2];
                                     let seg = segment_change(
-                                        tau, p_out, electron_ev, base, ln, f1, f2, pq, grid_n,
+                                        tau,
+                                        p_out,
+                                        electron_ev,
+                                        base,
+                                        ln,
+                                        f1,
+                                        f2,
+                                        pq,
+                                        grid_n,
                                     );
                                     let fr = arc_factor(
                                         w_re,
@@ -826,7 +832,8 @@ pub fn mc_kernel(
                                         ratio_pim = 0.0;
                                     } else {
                                         // Same += grouping as flat insert_arc_ratio.
-                                        ratio_log = seg + ca_log
+                                        ratio_log = seg
+                                            + ca_log
                                             + (modulus.ln()
                                                 - ln_nq
                                                 - phonon_ev[(pq * nmodes + pnu) as usize]

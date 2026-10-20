@@ -42,7 +42,9 @@ impl Epb {
         let raw = std::fs::read(path)?;
         let marker = u32::from_le_bytes(raw[0..4].try_into().unwrap()) as usize;
         if marker + 8 != raw.len() {
-            return Err(format!("epb: record marker {marker} != file body {}", raw.len() - 8).into());
+            return Err(
+                format!("epb: record marker {marker} != file body {}", raw.len() - 8).into(),
+            );
         }
         let nqc = u32::from_le_bytes(raw[4..8].try_into().unwrap()) as usize;
 
@@ -66,7 +68,18 @@ impl Epb {
             })
             .collect();
 
-        Ok(Epb { nqc, nks, nbnd, nbndep, nmodes, xqc, raw, et_off, dynq_off, epmatq_off })
+        Ok(Epb {
+            nqc,
+            nks,
+            nbnd,
+            nbndep,
+            nmodes,
+            xqc,
+            raw,
+            et_off,
+            dynq_off,
+            epmatq_off,
+        })
     }
 
     /// Coarse dynamical matrix `dynq[a,b]` at q-point `iq`, flat row-major
@@ -81,7 +94,8 @@ impl Epb {
                 // dynq(a,b,iq) col-major, first index fastest.
                 let idx = a + nm * (b + nm * iq);
                 let byte = self.dynq_off + 16 * idx;
-                out[a * nm + b] = Complex64::new(f64_at(&self.raw, byte), f64_at(&self.raw, byte + 8));
+                out[a * nm + b] =
+                    Complex64::new(f64_at(&self.raw, byte), f64_at(&self.raw, byte + 8));
             }
         }
         out
@@ -96,7 +110,13 @@ impl Epb {
     /// the pool contains it (the CBM of LiF sits at Γ). `cbm_band` indexes `et`
     /// (LiF: 5, the 6th nscf band).
     pub fn argmin_k(&self, cbm_band: usize) -> usize {
-        (0..self.nks).min_by(|&a, &b| self.et(a, cbm_band).partial_cmp(&self.et(b, cbm_band)).unwrap()).unwrap()
+        (0..self.nks)
+            .min_by(|&a, &b| {
+                self.et(a, cbm_band)
+                    .partial_cmp(&self.et(b, cbm_band))
+                    .unwrap()
+            })
+            .unwrap()
     }
 
     /// Full coupling `g(ik→ik+q)` for the CBM (kept-band local index 0), per

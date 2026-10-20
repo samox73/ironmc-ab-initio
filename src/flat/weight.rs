@@ -179,11 +179,8 @@ fn changed_arc_factors(
         let nu = d.branch[left];
         let old = arc_factor(model, old_emit, old_absorb, q, nu);
         let new_emit = if emit_changed { wrap_sub(n, old_emit, inserted_q) } else { old_emit };
-        let new_absorb = if absorb_changed {
-            wrap_sub(n, old_absorb, inserted_q)
-        } else {
-            old_absorb
-        };
+        let new_absorb =
+            if absorb_changed { wrap_sub(n, old_absorb, inserted_q) } else { old_absorb };
         let new = arc_factor(model, new_emit, new_absorb, q, nu);
         let old_modulus = old.norm();
         let new_modulus = new.norm();

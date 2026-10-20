@@ -118,11 +118,7 @@ impl AddPhonon {
         }
 
         let (p_mean, vertex2) = d.get_p_mean_between(self.tau1, self.tau2, vertex1);
-        let prev2 = if vertex2.is_null() {
-            d.tail
-        } else {
-            d.prev(vertex2)
-        };
+        let prev2 = if vertex2.is_null() { d.tail } else { d.prev(vertex2) };
         let prev_tau = d.v(prev2).tau;
         if self.tau2 - prev_tau < Diagram::DELTA_TAU_LIMIT
             || (!vertex2.is_null() && d.v(vertex2).tau - self.tau2 < Diagram::DELTA_TAU_LIMIT)
@@ -221,11 +217,7 @@ impl RemovePhonon {
         }
 
         let delta_t = -d.v(d.prev(left)).tau
-            + if d.next(left) == right {
-                d.v(d.next(right)).tau
-            } else {
-                d.v(d.next(left)).tau
-            };
+            + if d.next(left) == right { d.v(d.next(right)).tau } else { d.v(d.next(left)).tau };
         let p_mean = d.get_p_mean_range(left, right, self.q);
         let tail_extension_exponent = if d.next(right).is_null() {
             d.dispersion(&d.momentum_out()) * (d.v(right).tau - d.v(d.prev(right)).tau)

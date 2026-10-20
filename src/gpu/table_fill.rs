@@ -26,8 +26,8 @@ use cubecl::prelude::*;
 use num_complex::{Complex, Complex64};
 use rayon::prelude::*;
 
-use crate::epw::Wigner;
 use crate::eph_svd::EphSvd;
+use crate::epw::Wigner;
 use crate::reconstruct::phase;
 use crate::vertex_table::VertexTable;
 
@@ -146,7 +146,11 @@ fn fill_vtab_kernel(
 }
 
 /// `U_w[re][g] = u_at(g,re) / ndegen_k(re, n_g, m_g)` (0 where ndegen is 0), planar.
-fn build_uw(svd: &EphSvd, wigner: &Wigner, component_bands: &[(usize, usize)]) -> (Vec<f64>, Vec<f64>) {
+fn build_uw(
+    svd: &EphSvd,
+    wigner: &Wigner,
+    component_bands: &[(usize, usize)],
+) -> (Vec<f64>, Vec<f64>) {
     let (nrr_k, comp) = (svd.nrr_k, svd.rank());
     let mut re = vec![0.0f64; nrr_k * comp];
     let mut im = vec![0.0f64; nrr_k * comp];

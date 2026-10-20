@@ -401,7 +401,12 @@ pub fn run_device<R: Runtime>(
     let names: &[&str] = if cfg.fixed_tau {
         &["ChangeInternalTau", "AddPhonon", "RemovePhonon"]
     } else {
-        &["ChangeTau", "ChangeInternalTau", "AddPhonon", "RemovePhonon"]
+        &[
+            "ChangeTau",
+            "ChangeInternalTau",
+            "AddPhonon",
+            "RemovePhonon",
+        ]
     };
     // Kernel stats use the unified 4-slot indices; a 3-update run leaves
     // slot 0 (ChangeTau) empty.

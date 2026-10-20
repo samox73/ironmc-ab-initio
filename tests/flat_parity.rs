@@ -17,7 +17,6 @@ use rmc_diagmc::{Diagram, Model};
 
 const MAX_ORDER_GPU: usize = 24;
 
-
 /// Random slotmap diagram with on-grid arc momenta and Δτ-separated times.
 fn random_diagram(model: &AbInitioModel, rng: &mut impl Rng, max_tau: f64) -> Diagram {
     let table = &model.table;
@@ -148,8 +147,7 @@ fn per_update_ratios_match_slotmap_engine() {
                     .unwrap()
                     - 1)
                 .p_out;
-            let lambda = (model.phonon_energy(q_vec, branch)
-                + model.electron_energy(p - q_vec)
+            let lambda = (model.phonon_energy(q_vec, branch) + model.electron_energy(p - q_vec)
                 - model.electron_energy(p))
             .max(1.0e-6);
             let a_slot = slot_ratio.modulus()
@@ -166,8 +164,7 @@ fn per_update_ratios_match_slotmap_engine() {
         if a_flat >= 0.0 {
             let (left, right) = (remove.left, remove.right);
             let vertex = diagram.v(left);
-            let slot_ratio =
-                slot_weight::remove_arc_ratio(&diagram, model.as_ref(), left, right);
+            let slot_ratio = slot_weight::remove_arc_ratio(&diagram, model.as_ref(), left, right);
             let lambda = (model.phonon_energy(vertex.q, vertex.branch)
                 + model.electron_energy(diagram.incoming_momentum(left) - vertex.q)
                 - model.electron_energy(diagram.incoming_momentum(left)))
@@ -186,7 +183,12 @@ fn per_update_ratios_match_slotmap_engine() {
         if a_flat >= 0.0 {
             let slot_ratio =
                 slot_weight::shift_tail_ratio(&diagram, model.as_ref(), shift_tail.tau);
-            assert_close(a_flat, slot_ratio.modulus(), 1.0e-10, "ChangeTau acceptance");
+            assert_close(
+                a_flat,
+                slot_ratio.modulus(),
+                1.0e-10,
+                "ChangeTau acceptance",
+            );
             checked[2] += 1;
         }
 

@@ -18,7 +18,8 @@ fn synthetic_table() -> VertexTable {
     // 16 ragged pairs, total rank 24 (multiple of the vector width), band
     // boundaries at 7/16/21 — none a multiple of 4, exercising the vector
     // kernel's scalar head/tail paths.
-    let pair_offsets: Vec<usize> = vec![0, 2, 3, 5, 7, 8, 10, 13, 14, 16, 17, 19, 20, 21, 22, 23, 24];
+    let pair_offsets: Vec<usize> =
+        vec![0, 2, 3, 5, 7, 8, 10, 13, 14, 16, 17, 19, 20, 21, 22, 23, 24];
     let ncomp = *pair_offsets.last().unwrap();
     let mut bra_band = vec![0u8; ncomp];
     for n in 0..nbnd {

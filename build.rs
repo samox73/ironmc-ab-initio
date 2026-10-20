@@ -18,7 +18,9 @@ fn main() {
     let here = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let git = |args: &[&str]| git_in(&here, args);
     let hash = git(&["rev-parse", "--short=9", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-    let dirty = git(&["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(false);
+    let dirty = git(&["status", "--porcelain"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
     let own = if dirty { format!("{hash}-dirty") } else { hash };
 
     // The framework is a path dependency on the sibling ../ironmc checkout
@@ -30,7 +32,15 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_string());
     let fw_dirty = git_in(
         &framework,
-        &["status", "--porcelain", "--untracked-files=no", "--", "crates", "Cargo.toml", "Cargo.lock"],
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            "--",
+            "crates",
+            "Cargo.toml",
+            "Cargo.lock",
+        ],
     )
     .map(|s| !s.is_empty())
     .unwrap_or(false);

@@ -120,7 +120,9 @@ fn parse_p_ext(arg: &str) -> BoxResult<nalgebra::Vector3<f64>> {
         .map_err(|error| format!("invalid --p-ext value '{arg}': {error}"))?;
     match parts.as_slice() {
         [x, y, z] => Ok(nalgebra::Vector3::new(*x, *y, *z)),
-        _ => Err(format!("--p-ext needs exactly three comma-separated components, got '{arg}'").into()),
+        _ => Err(
+            format!("--p-ext needs exactly three comma-separated components, got '{arg}'").into(),
+        ),
     }
 }
 
@@ -168,7 +170,11 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         if precision != TablePrecision::F32 {
             return Err("GPU fill produces f32 tables only; use --precision f32".into());
         }
-        if cfg!(not(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))) {
+        if cfg!(not(any(
+            feature = "gpu-cpu",
+            feature = "gpu-hip",
+            feature = "gpu-cuda"
+        ))) {
             return Err(
                 "GPU fill needs a GPU runtime: build with --features gpu-cuda (or gpu-cpu)".into(),
             );
@@ -178,11 +184,17 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     // band-edge shift to `table-merge`; --shard and --shards go together.
     let shard: Option<usize> = options
         .remove("--shard")
-        .map(|v| v.parse().map_err(|e| format!("invalid --shard value '{v}': {e}")))
+        .map(|v| {
+            v.parse()
+                .map_err(|e| format!("invalid --shard value '{v}': {e}"))
+        })
         .transpose()?;
     let shards: Option<usize> = options
         .remove("--shards")
-        .map(|v| v.parse().map_err(|e| format!("invalid --shards value '{v}': {e}")))
+        .map(|v| {
+            v.parse()
+                .map_err(|e| format!("invalid --shards value '{v}': {e}"))
+        })
         .transpose()?;
     let out = options.remove("--out").map_or_else(
         || dataset.join(VertexTable::cache_filename(grid_n, total_rank, precision)),
@@ -194,7 +206,9 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 
     let (shard, shards) = match (shard, shards) {
         (None, None) => {
-            build_full_table(&dataset, grid_n, total_rank, precision, max_bytes, device, &out)?;
+            build_full_table(
+                &dataset, grid_n, total_rank, precision, max_bytes, device, &out,
+            )?;
             return Ok(());
         }
         (Some(i), Some(s)) => (i, s),
@@ -205,7 +219,15 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     }
     let nk = grid_n.checked_pow(3).ok_or("grid cubed overflows usize")?;
     let (lo, hi) = (shard * nk / shards, (shard + 1) * nk / shards);
-    let meta = ShardMeta { grid_n, shards, shard, lo, hi, total_rank, precision };
+    let meta = ShardMeta {
+        grid_n,
+        shards,
+        shard,
+        lo,
+        hi,
+        total_rank,
+        precision,
+    };
     let shard_out = {
         let mut name = out.into_os_string();
         name.push(format!(".shard-{shard}-of-{shards}"));
@@ -217,7 +239,10 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     if shard_out.exists() {
         if let Ok(existing) = VertexTable::read_shard_meta(&shard_out) {
             if existing == meta {
-                println!("shard {shard}/{shards} already built: {}", shard_out.display());
+                println!(
+                    "shard {shard}/{shards} already built: {}",
+                    shard_out.display()
+                );
                 return Ok(());
             }
         }
@@ -234,13 +259,27 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     println!("output: {}", shard_out.display());
     let started = Instant::now();
     let table = VertexTable::build_range(
-        &epw, &crystal, &wigner, &svd, grid_n, lo, hi, DEFAULT_PHFREQ_CUTOFF_EV, precision,
-        max_bytes, false, device,
+        &epw,
+        &crystal,
+        &wigner,
+        &svd,
+        grid_n,
+        lo,
+        hi,
+        DEFAULT_PHFREQ_CUTOFF_EV,
+        precision,
+        max_bytes,
+        false,
+        device,
     )?;
     println!("build time: {:.3} s", started.elapsed().as_secs_f64());
     let started = Instant::now();
     table.save_shard(&meta, &shard_out)?;
-    println!("wrote {} in {:.3} s", shard_out.display(), started.elapsed().as_secs_f64());
+    println!(
+        "wrote {} in {:.3} s",
+        shard_out.display(),
+        started.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -284,7 +323,11 @@ fn build_full_table(
     println!("build time: {:.3} s", started.elapsed().as_secs_f64());
     let started = Instant::now();
     table.save(out)?;
-    println!("wrote {} in {:.3} s", out.display(), started.elapsed().as_secs_f64());
+    println!(
+        "wrote {} in {:.3} s",
+        out.display(),
+        started.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -543,7 +586,15 @@ fn write_leg_outputs(
     // A warmup-only leg (deadline hit inside warmup) has no samples: nothing
     // to dump for merge; the checkpoint below still records its progress.
     if output.steps_done > 0 {
-        write_rank_dump(out_dir, rank, leg, config, model, &output.data, output.steps_done)?;
+        write_rank_dump(
+            out_dir,
+            rank,
+            leg,
+            config,
+            model,
+            &output.data,
+            output.steps_done,
+        )?;
     }
 
     let spc = config.steps_per_cycle.max(1);
@@ -635,8 +686,7 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     // the same --group, or the resumed trajectory silently diverges from an
     // uninterrupted run (still valid MC, but no longer bit-reproducible).
     let group: usize = take(&mut options, "--group", Some(1))?;
-    let max_order_gpu: usize =
-        take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
+    let max_order_gpu: usize = take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
     let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed,
     // merged, or told apart from an accidental identical resubmission.
@@ -649,14 +699,24 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     if config.max_steps == 0 {
         let head = VertexTable::load_head(&table_path)?;
         return write_run_metadata(
-            &out_dir, rank, "cpu-flat", &table_path, head.grid_n, head.s.len(),
+            &out_dir,
+            rank,
+            "cpu-flat",
+            &table_path,
+            head.grid_n,
+            head.s.len(),
             p_ext_given.then_some(config.p_ext),
         );
     }
 
     let table = Arc::new(VertexTable::load(&table_path)?);
     write_run_metadata(
-        &out_dir, rank, "cpu-flat", &table_path, table.grid_n, table.s.len(),
+        &out_dir,
+        rank,
+        "cpu-flat",
+        &table_path,
+        table.grid_n,
+        table.s.len(),
         Some(config.p_ext),
     )?;
     let model = Arc::new(AbInitioModel::new(table));
@@ -792,14 +852,24 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     if config.max_steps == 0 {
         let head = VertexTable::load_head(&table_path)?;
         return write_run_metadata(
-            &out_dir, rank, "cpu-slotmap", &table_path, head.grid_n, head.s.len(),
+            &out_dir,
+            rank,
+            "cpu-slotmap",
+            &table_path,
+            head.grid_n,
+            head.s.len(),
             p_ext_given.then_some(config.p_ext),
         );
     }
 
     let table = Arc::new(VertexTable::load(&table_path)?);
     write_run_metadata(
-        &out_dir, rank, "cpu-slotmap", &table_path, table.grid_n, table.s.len(),
+        &out_dir,
+        rank,
+        "cpu-slotmap",
+        &table_path,
+        table.grid_n,
+        table.s.len(),
         Some(config.p_ext),
     )?;
     let model = Arc::new(AbInitioModel::new(table));
@@ -814,7 +884,15 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 
     // This leg's samples → RankDump (for merge); every chain's final state → the
     // checkpoint (for the next leg).
-    write_rank_dump(&out_dir, rank, leg, &config, &model, &leg_out.data, leg_out.steps_done)?;
+    write_rank_dump(
+        &out_dir,
+        rank,
+        leg,
+        &config,
+        &model,
+        &leg_out.data,
+        leg_out.steps_done,
+    )?;
     let checkpoint_path = out_dir.join(SlotmapCheckpoint::filename(rank));
     SlotmapCheckpoint {
         config: config.clone(),
@@ -875,7 +953,12 @@ fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         Some(out) => {
             // Data to the file, one summary line to the log.
             std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
-            println!("merged {} dumps: {} [{}]", paths.len(), report_summary(&report), out.display());
+            println!(
+                "merged {} dumps: {} [{}]",
+                paths.len(),
+                report_summary(&report),
+                out.display()
+            );
         }
         None => println!("{}", serde_json::to_string_pretty(&report)?),
     }
@@ -916,8 +999,7 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     };
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
     let lanes: u32 = take(&mut options, "--lanes", Some(DEFAULT_LANES))?;
-    let max_order_gpu: usize =
-        take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
+    let max_order_gpu: usize = take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
     let cycles_per_launch: u64 =
         take(&mut options, "--cycles-per-launch", Some(CYCLES_PER_LAUNCH))?;
     let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
@@ -933,14 +1015,24 @@ fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     if config.max_steps == 0 {
         let head = VertexTable::load_head(&table_path)?;
         return write_run_metadata(
-            &out_dir, rank, "gpu", &table_path, head.grid_n, head.s.len(),
+            &out_dir,
+            rank,
+            "gpu",
+            &table_path,
+            head.grid_n,
+            head.s.len(),
             p_ext_given.then_some(config.p_ext),
         );
     }
 
     let table = Arc::new(VertexTable::load(&table_path)?);
     write_run_metadata(
-        &out_dir, rank, "gpu", &table_path, table.grid_n, table.s.len(),
+        &out_dir,
+        rank,
+        "gpu",
+        &table_path,
+        table.grid_n,
+        table.s.len(),
         Some(config.p_ext),
     )?;
     let model = Arc::new(AbInitioModel::new(table));

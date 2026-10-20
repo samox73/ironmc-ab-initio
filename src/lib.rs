@@ -9,11 +9,11 @@
 pub mod config;
 pub mod dump;
 pub mod epb;
+pub mod eph_svd;
+pub mod epw;
 pub mod flat;
 #[cfg(feature = "gpu")]
 pub mod gpu;
-pub mod eph_svd;
-pub mod epw;
 pub mod longrange;
 pub mod model;
 pub mod model_abinitio;
