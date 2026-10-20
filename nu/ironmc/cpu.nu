@@ -68,8 +68,6 @@ export def flat [
     --rank: int                   # chain-offset rank; defaults to $SLURM_PROCID
     --chains: int = 0             # override the config's chain count (0 = keep config)
     --rank-table: int = 800       # table rank in the artifact filename
-    --group: int = 1              # update-selection group size (1 = per-chain); not in the
-                                  # checkpoint — must be identical across legs of one run
     --max-order-gpu: int = 256    # FlatDiagram capacity = 2·N+2
     --leg-cycles: int = 0         # cap this leg at N cycles (0 = run to completion/deadline)
     --out-dir: string@run-dirs    # run directory (holds dumps + a batched checkpoint); defaults
@@ -95,7 +93,7 @@ export def flat [
     }
     (cargo run --release -p rmc-ab-initio --
         run-flat --table $table --config $config_path --rank $rank --chains $chains
-        --group $group --max-order-gpu $max_order_gpu
+         --max-order-gpu $max_order_gpu
         --leg-cycles $leg_cycles --out-dir $out_dir)
 }
 

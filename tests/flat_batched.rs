@@ -58,7 +58,7 @@ fn dump(
 fn offset_split_runs_merge_bit_identically() {
     let model = synthetic_model(7);
     let full_cfg = test_config(4);
-    let full = run_batched(&model, &full_cfg, 0, 2, 24).unwrap();
+    let full = run_batched(&model, &full_cfg, 0, 24).unwrap();
     let full_report = full.report.as_ref().unwrap();
     assert!(
         full_report.mean_order.mean > 0.05,
@@ -66,8 +66,8 @@ fn offset_split_runs_merge_bit_identically() {
     );
 
     let half_cfg = test_config(2);
-    let rank0 = run_batched(&model, &half_cfg, 0, 2, 24).unwrap();
-    let rank1 = run_batched(&model, &half_cfg, 2, 2, 24).unwrap();
+    let rank0 = run_batched(&model, &half_cfg, 0, 24).unwrap();
+    let rank1 = run_batched(&model, &half_cfg, 2, 24).unwrap();
 
     // Half-run configs differ from the full config only in `chains`; merging
     // needs identical configs across ranks, which these are.
@@ -95,7 +95,7 @@ fn offset_split_runs_merge_bit_identically() {
 fn merge_rejects_mismatched_configs_and_duplicate_ranks() {
     let model = synthetic_model(7);
     let cfg = test_config(2);
-    let output = run_batched(&model, &cfg, 0, 2, 24).unwrap();
+    let output = run_batched(&model, &cfg, 0, 24).unwrap();
     let mut other_cfg = cfg.clone();
     other_cfg.seed = 100;
     let mismatched = vec![
@@ -111,17 +111,16 @@ fn merge_rejects_mismatched_configs_and_duplicate_ranks() {
 }
 
 #[test]
-fn misaligned_offset_is_rejected() {
+fn invalid_run_shapes_are_rejected() {
     let model = synthetic_model(7);
     let cfg = test_config(2);
-    assert!(run_batched(&model, &cfg, 3, 2, 24).is_err());
     let mut auto = cfg.clone();
     auto.chains = 0;
-    assert!(run_batched(&model, &auto, 0, 2, 24).is_err());
+    assert!(run_batched(&model, &auto, 0, 24).is_err());
     // Whole cycles only: a short final cycle would break checkpoint extension.
     let mut ragged = cfg;
     ragged.max_steps = 4001;
-    assert!(run_batched(&model, &ragged, 0, 2, 24).is_err());
+    assert!(run_batched(&model, &ragged, 0, 24).is_err());
 }
 
 /// Statistical agreement with the standard runner on the production-mode
@@ -147,7 +146,7 @@ fn batched_driver_agrees_with_slotmap_runner() {
         fixed_tau: true,
         end_time_margin_secs: 60.0,
     };
-    let batched = run_batched(&model, &cfg, 0, 4, 24).unwrap();
+    let batched = run_batched(&model, &cfg, 0, 24).unwrap();
     let batched_report = batched.report.as_ref().unwrap();
     let slotmap = rmc_diagmc::run(model.clone() as Arc<dyn Model>, cfg).unwrap();
 
@@ -187,7 +186,7 @@ fn deadline_truncates_but_reports_honestly() {
     // Far more work than the deadline allows.
     cfg.max_steps = 50_000_000;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
-    let out = run_batched_with_deadline(&model, &cfg, 0, 2, 24, Some(deadline)).unwrap();
+    let out = run_batched_with_deadline(&model, &cfg, 0, 24, Some(deadline)).unwrap();
     assert!(out.steps_done > 0, "nothing measured before the deadline");
     assert!(
         out.steps_done < cfg.max_steps * cfg.chains,
@@ -201,7 +200,7 @@ fn deadline_truncates_but_reports_honestly() {
     // but chains + cycles_done still come back so the caller can checkpoint
     // warmup progress instead of losing the leg.
     let expired = std::time::Instant::now();
-    let warmup_only = run_batched_with_deadline(&model, &cfg, 0, 2, 24, Some(expired)).unwrap();
+    let warmup_only = run_batched_with_deadline(&model, &cfg, 0, 24, Some(expired)).unwrap();
     assert!(warmup_only.report.is_none());
     assert_eq!(warmup_only.steps_done, 0);
 }

@@ -1,27 +1,21 @@
-//! Phase A3: batched lockstep driver — the CPU reference for the GPU run
-//! semantics. Chains step in lockstep with group-uniform update selection
-//! keyed `(seed, global_group, step)` and per-chain Philox streams keyed
-//! `(seed, global_chain, step)`; global ids include the rank's `chain_offset`
-//! so offset-split runs merge bit-identically to one big run (the
-//! `multi-node` golden determinism guarantee at GPU granularity). Per cycle,
-//! each chain records `(τ, order, phase, E_loc)` into the standard
+//! CPU parity harness for the GPU driver: advances [`FlatDiagram`] chains
+//! with exactly the kernel's data layout and RNG keying, so `run_device` can
+//! be checked against it bit-for-bit (`tests/gpu_engine_parity.rs`). Each
+//! step draws its update type from a dedicated Philox word keyed
+//! `(seed, chain, step)` and its proposal/acceptance randomness from a
+//! per-chain Philox stream with the same key; chain ids include the rank's
+//! `chain_offset`, so offset-split runs merge bit-identically to one big run.
+//! Per cycle, each chain records `(τ, order, phase, E_loc)` into the standard
 //! `rmc_diagmc` measurement pipeline; warmup cycles run like any other and
 //! their samples are discarded.
 //!
-//! Group-uniform selection is a device concession (uniform control flow on
-//! SIMT hardware), and it is statistically free: the update-type draw is
-//! keyed only by `(seed, group, step)` — never by chain state — so each
-//! chain's *marginal* trajectory law is exactly the standard random-scan
-//! chain driven by the uniform mixture kernel (1/n)·Σᵤ Pᵤ, identical to
-//! per-chain selection, and the 1/n selection probabilities of paired moves
-//! (AddPhonon ↔ RemovePhonon) cancel in the acceptance ratio unchanged.
-//! Sharing the draw alters only the *joint* law across a group: chains
-//! attempting the same move class simultaneously are weakly correlated,
-//! which can only inflate variance — a linear chain-average stays unbiased
-//! under any cross-chain correlation. The load-bearing invariant is the
-//! state-independence of the selection: resampling impossible moves, or any
-//! state-dependent group/update choice, would break the 1/n cancellation
-//! and genuinely bias the run (see [`step_selected`]).
+//! The update-type draw never depends on chain state, so each chain is the
+//! standard random-scan chain driven by the uniform mixture kernel
+//! (1/n)·Σᵤ Pᵤ, and the 1/n selection probabilities of paired moves
+//! (AddPhonon ↔ RemovePhonon) cancel in the acceptance ratio. That
+//! state-independence is load-bearing: resampling impossible moves, or any
+//! state-dependent update choice, would break the cancellation and bias the
+//! run (see [`step_selected`]).
 
 use std::sync::Arc;
 
@@ -36,7 +30,6 @@ use super::updates::{update_set, update_set_fixed_tau, FlatAbUpdate};
 use super::{weight, FlatDiagram};
 use crate::model_abinitio::AbInitioModel;
 
-pub const DEFAULT_GROUP_SIZE: usize = 64;
 pub const DEFAULT_MAX_ORDER_GPU: usize = 256;
 
 pub struct BatchedRunOutput {
@@ -68,7 +61,6 @@ pub fn run_batched(
     model: &Arc<AbInitioModel>,
     cfg: &DiagConfig,
     chain_offset: u64,
-    group_size: usize,
     max_order_gpu: usize,
 ) -> Result<BatchedRunOutput> {
     let deadline = rmc_diagmc::run::slurm_deadline(cfg.end_time_margin_secs)?;
@@ -77,7 +69,6 @@ pub fn run_batched(
         cfg,
         BatchedRunOpts {
             chain_offset,
-            group_size,
             max_order_gpu,
             deadline,
             resume: None,
@@ -91,7 +82,6 @@ pub fn run_batched_with_deadline(
     model: &Arc<AbInitioModel>,
     cfg: &DiagConfig,
     chain_offset: u64,
-    group_size: usize,
     max_order_gpu: usize,
     deadline: Option<std::time::Instant>,
 ) -> Result<BatchedRunOutput> {
@@ -100,7 +90,6 @@ pub fn run_batched_with_deadline(
         cfg,
         BatchedRunOpts {
             chain_offset,
-            group_size,
             max_order_gpu,
             deadline,
             resume: None,
@@ -113,15 +102,6 @@ pub fn run_batched_with_deadline(
 /// twin of [`crate::gpu::run::DeviceRunOpts`].
 pub struct BatchedRunOpts {
     pub chain_offset: u64,
-    /// Update-selection group size (the per-step draw is keyed by
-    /// `chain_id / group_size`). Trajectory-shaping, yet deliberately NOT a
-    /// `DiagConfig` field: the config is engine-agnostic (the slotmap engine
-    /// has no groups) and bincode-embedded in every dump/checkpoint on disk,
-    /// so adding a field there orphans them all. The price is that neither
-    /// `same_trajectory` nor the checkpoint can catch a group change — every
-    /// leg of a run must repeat the same value. TODO: fold into `DiagConfig`
-    /// at the next `FORMAT_VERSION` bump (see the note at its definition).
-    pub group_size: usize,
     pub max_order_gpu: usize,
     /// Stop between cycles once past this instant (see `slurm_deadline`).
     pub deadline: Option<std::time::Instant>,
@@ -138,7 +118,6 @@ impl Default for BatchedRunOpts {
     fn default() -> Self {
         Self {
             chain_offset: 0,
-            group_size: DEFAULT_GROUP_SIZE,
             max_order_gpu: DEFAULT_MAX_ORDER_GPU,
             deadline: None,
             resume: None,
@@ -148,10 +127,10 @@ impl Default for BatchedRunOpts {
 }
 
 /// The batched driver with the full option set: rank offset, deadline,
-/// checkpoint resume, and per-leg cycle caps. Chains step in lockstep groups
-/// (group-uniform update selection) but never interact, so rayon runs the
-/// groups in parallel — the counter-addressable RNG and the fixed global-chain
-/// merge order keep the result bit-identical to a single-threaded run.
+/// checkpoint resume, and per-leg cycle caps. Chains never interact, so rayon
+/// runs them in parallel — the counter-addressable RNG and the fixed
+/// global-chain merge order keep the result bit-identical to a
+/// single-threaded run.
 pub fn run_batched_opts(
     model: &Arc<AbInitioModel>,
     cfg: &DiagConfig,
@@ -159,7 +138,6 @@ pub fn run_batched_opts(
 ) -> Result<BatchedRunOutput> {
     let BatchedRunOpts {
         chain_offset,
-        group_size,
         max_order_gpu,
         deadline,
         resume,
@@ -171,12 +149,6 @@ pub fn run_batched_opts(
              chain-id offsets)"
                 .to_string(),
         ));
-    }
-    if group_size == 0 || chain_offset % group_size as u64 != 0 {
-        return Err(RmcError::InvalidArgument(format!(
-            "chain_offset ({chain_offset}) must be a multiple of group_size ({group_size}) \
-             so update-selection groups align across ranks"
-        )));
     }
     // n_batches = 1 is legal here (per-chain single batch): with many chains
     // the jackknife still has plenty of replicates, and summarize refuses
@@ -200,8 +172,8 @@ pub fn run_batched_opts(
     let measured_cycles = expected_samples as u64;
     let total_cycles = warmup_cycles + measured_cycles;
 
-    // Per-chain measurement memory ≈ bins × batches × 32 B must stay small
-    // (the Fröhlich sizing lesson); warn loudly before it hurts at GPU scale.
+    // Per-chain measurement memory ≈ bins × batches × 32 B must stay small;
+    // warn loudly before it hurts at GPU-scale chain counts.
     let per_chain_bytes = cfg.num_bins * cfg.n_batches * 32;
     if per_chain_bytes > 1 << 20 {
         log::warn!(
@@ -275,14 +247,12 @@ pub fn run_batched_opts(
         None => total_cycles,
     };
     // Parallelize over CHAINS, each running a whole CHUNK of cycles per rayon
-    // task (stepping + measuring fused) — coarse-grained, like the slotmap
-    // runner. The natural GPU shape (fork-join per cycle) is a disaster on CPU:
-    // it pays a rayon barrier every cycle over tiny tasks and bounces each
-    // chain's (multi-KB) state between cores, so ~all wall time goes to overhead
-    // (measured: ~36 ms/cycle of which the MC work is µs). Chains never interact,
-    // so this is bit-identical; the deadline is checked between chunks, so all
-    // chains stay in lockstep at chunk boundaries and `cycles_done` is a single
-    // consistent resume point.
+    // task (stepping + measuring fused). A fork-join per cycle would pay a
+    // rayon barrier every cycle over µs-sized tasks and bounce each chain's
+    // (multi-KB) state between cores, so ~all wall time would go to overhead.
+    // Chains never interact, so chunking is bit-identical; the deadline is
+    // checked between chunks, so every chain stops at the same cycle and
+    // `cycles_done` is a single consistent resume point.
     const CYCLES_PER_CHUNK: u64 = 256;
     let compute_start = std::time::Instant::now();
     let mut cycles_done = cycle_start0;
@@ -301,15 +271,11 @@ pub fn run_batched_opts(
             .enumerate()
             .map(|(local_chain, ((chain, chain_updates), measurement))| {
                 let chain_id = chain_offset + local_chain as u64;
-                // Group-uniform update selection is keyed by group id; each chain
-                // recomputes its own group's draw (identical within a group), so
-                // per-chain parallelism reproduces any group_size exactly.
-                let group_id = chain_id / group_size as u64;
                 let mut local = vec![(0u64, 0u64, 0u64); n_updates];
                 for cycle in chunk_lo..chunk_hi {
                     for s in 0..steps_per_cycle {
                         let step = cycle * steps_per_cycle + s;
-                        let update_index = (keyed_draw(cfg.seed, group_id, step, u32::MAX)[0]
+                        let update_index = (keyed_draw(cfg.seed, chain_id, step, u32::MAX)[0]
                             as usize)
                             % n_updates;
                         let mut rng = PhiloxRng::new(cfg.seed, chain_id, step);
@@ -342,8 +308,8 @@ pub fn run_batched_opts(
         cycles_done = chunk_hi;
     }
     // Stepping and measurement are fused into one parallel pass, so the whole
-    // compute phase is one timer (the old per-cycle step/replay split only made
-    // sense when they were separate rayon passes).
+    // compute phase is one timer; `replay_secs` is nonzero only for the GPU
+    // driver, which replays measurements on the host.
     let step_secs = compute_start.elapsed().as_secs_f64();
     let replay_secs = 0.0;
     // Measured steps THIS leg = cycles in [cycle_start0, cycles_done) past warmup.
@@ -428,7 +394,7 @@ pub fn build_chain(
     Ok(chain)
 }
 
-/// Attempt one group-selected update; returns `(accepted, impossible)`. An
+/// Attempt the update selected for this step; returns `(accepted, impossible)`. An
 /// impossible proposal (negative probability) counts as proposed-and-rejected
 /// and must NOT be redrawn: resampling until a possible move would make the
 /// effective update-type distribution state-dependent, breaking the uniform

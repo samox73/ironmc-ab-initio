@@ -237,7 +237,7 @@ dispatch_update! {
 }
 
 /// The four-move set (free external τ). Order matches
-/// `rmc_diagmc::updates::update_set`, and the group-uniform device selection
+/// `rmc_diagmc::updates::update_set`, and the device selection
 /// indexes into this same order.
 pub fn update_set(model: Arc<AbInitioModel>) -> Result<WeightedUpdateSet<FlatAbUpdate>> {
     WeightedUpdateSet::new(vec![

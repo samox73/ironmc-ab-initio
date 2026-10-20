@@ -35,12 +35,9 @@ fn config() -> DiagConfig {
     }
 }
 
-/// group_size = 1 (per-chain selection), no deadline — the production CPU
-/// default. Determinism holds for any fixed group_size; 1 keeps offsets trivial.
 fn base_opts() -> BatchedRunOpts {
     BatchedRunOpts {
         max_order_gpu: MAX_ORDER_GPU,
-        group_size: 1,
         ..Default::default()
     }
 }

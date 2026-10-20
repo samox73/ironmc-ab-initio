@@ -529,16 +529,14 @@ reference; this file only defines the words.
   (warp-uniform control flow for free), lanes cooperating only inside vertex
   evaluations.
 
-\term{Lockstep updates} All lanes of a chain's warp (and, under group-uniform
-  selection, all chains of a group) attempt the same update type each step. Mandatory
-  on device: barrier arrivals pair by dynamic count, so divergent lanes either
-  deadlock or silently corrupt the shared scratch memory --- and the barrier count per
-  step is state-dependent, so uniformity must hold over the whole dynamic trace.
-  Statistically free: the update-type schedule is state-independent, so each chain's
-  marginal law is the standard random-scan chain (selection probabilities cancel in
-  the acceptance ratio as usual); a shared schedule only correlates chains weakly ---
-  variance, never bias. Corollary: impossible proposals count as rejections, never
-  redrawn (a state-dependent redraw would bias the run).
+\term{Lockstep updates} All lanes of a chain's warp attempt the same update type
+  each step. Mandatory on device: barrier arrivals pair by dynamic count, so divergent
+  lanes either deadlock or silently corrupt the shared scratch memory --- and the
+  barrier count per step is state-dependent, so uniformity must hold over the whole
+  dynamic trace. Statistically free: the update-type schedule is state-independent, so
+  each chain is the standard random-scan chain (selection probabilities cancel in the
+  acceptance ratio as usual). Corollary: impossible proposals count as rejections,
+  never redrawn (a state-dependent redraw would bias the run).
 
 \term{Cooperative vertex dot} The rank-$r$ contraction strided across the $32$ lanes
   with a shared-memory reduce; the emit/absorb pair

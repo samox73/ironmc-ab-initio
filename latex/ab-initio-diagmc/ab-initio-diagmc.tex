@@ -365,18 +365,13 @@ Since the number of barriers a step executes depends on the update type, the pro
 draws, and the diagram state, control flow must agree across lanes over the \emph{entire
 dynamic trace} --- which redundant execution of identical draws guarantees bit-for-bit.
 The statistical side is equally clean. The update-\emph{type} schedule is drawn from a
-dedicated counter-based stream keyed by (seed, chain, step) --- never by the state --- and
-may even be \emph{shared} by a group of chains (group-uniform selection, the variant used
-when several chains share a warp). Because the schedule is independent of the state and of
-every chain's private proposal/acceptance stream, each chain's \emph{marginal} law is
-exactly that of the standard random-scan chain driven by the mixture kernel
+dedicated counter-based stream keyed by (seed, chain, step) --- never by the state.
+Because the schedule is independent of the state and of the chain's proposal/acceptance
+stream, each chain is exactly the standard random-scan chain driven by the mixture kernel
 $n_{\mathrm{upd}}^{-1}\sum_{u}P_{u}$, and the $1/n_{\mathrm{upd}}$ selection probabilities
 of paired moves (phonon insertion $\leftrightarrow$ removal) cancel in the acceptance
-ratio exactly as in per-chain selection. Sharing the schedule alters only the \emph{joint}
-law: chains attempting the same move class simultaneously are weakly correlated, which can
-only inflate the variance --- a chain average is linear, so its expectation is untouched.
-The load-bearing invariant is that selection stays state-independent: an ``impossible''
-proposal (e.g.\ a removal at order zero) counts as proposed-and-rejected and is never
+ratio. The load-bearing invariant is that selection stays state-independent: an
+``impossible'' proposal (e.g.\ a removal at order zero) counts as proposed-and-rejected and is never
 redrawn, since resampling until a possible move would make the effective selection
 distribution state-dependent and break the cancellation --- a genuine bias, not a
 determinism nit.

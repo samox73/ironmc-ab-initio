@@ -127,8 +127,7 @@ fn kernel_matches_flat_driver_on_cpu_runtime() {
     let model = synthetic_model(7);
     for fixed_tau in [true, false] {
         let cfg = config(fixed_tau);
-        // Kernel selection is group_size = 1 by construction.
-        let cpu = run_batched(&model, &cfg, 0, 1, MAX_ORDER_GPU).unwrap();
+        let cpu = run_batched(&model, &cfg, 0, MAX_ORDER_GPU).unwrap();
         assert!(
             cpu.report.as_ref().unwrap().mean_order.mean > 0.05,
             "walk never left order 0 (fixed_tau {fixed_tau})"

@@ -1,9 +1,9 @@
 //! Phase A4 driver: resident chain state on device, segmented kernel
 //! launches, host-side measurement replay — `flat::batched::run_batched`
-//! semantics exactly (same Philox streams, group_size = 1 selection, warmup
-//! discard, per-cycle `(τ, order, phase, E_loc)` records into the standard
-//! measurement pipeline). Returns the same `BatchedRunOutput`, so rank dumps
-//! and the `merge` subcommand work unchanged for GPU ranks.
+//! semantics exactly (same Philox streams, warmup discard, per-cycle
+//! `(τ, order, phase, E_loc)` records into the standard measurement pipeline).
+//! Returns the same `BatchedRunOutput`, so rank dumps and the `merge`
+//! subcommand work unchanged for GPU ranks.
 
 use std::sync::Arc;
 
@@ -314,9 +314,8 @@ impl Default for DeviceRunOpts {
     }
 }
 
-/// Run the full MC (or one leg of it) on device `R`, mirroring
-/// `run_batched(group_size = 1)`. The returned report and dump carry *this
-/// leg's* measured statistics; `cycles_done` is the resume point.
+/// Run the full MC (or one leg of it) on device `R`. The returned report and dump
+/// carry *this leg's* measured statistics; `cycles_done` is the resume point.
 pub fn run_device<R: Runtime>(
     client: ComputeClient<R>,
     model: &Arc<AbInitioModel>,

@@ -671,8 +671,7 @@ pub fn mc_kernel(
                 let step_lo = step as u32;
                 let step_hi = (step >> 32) as u32;
 
-                // Group-uniform selection at group_size = 1: the group id IS
-                // the global chain id (`keyed_draw(seed, gid, step, u32::MAX)`).
+                // Update-type selection keyed by (seed, chain, step)
                 let sel = philox_block_word(
                     seed_lo,
                     seed_hi,

@@ -679,13 +679,6 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         _ => false,
     };
     let rank: u64 = take(&mut options, "--rank", Some(0))?;
-    // group_size = 1 by default: per-chain update selection, no GPU-style
-    // lockstep waste (group-uniform selection is a device concession).
-    // A flag, not a DiagConfig field (see BatchedRunOpts::group_size for why),
-    // so it is NOT recorded in the checkpoint — every leg of a run must pass
-    // the same --group, or the resumed trajectory silently diverges from an
-    // uninterrupted run (still valid MC, but no longer bit-reproducible).
-    let group: usize = take(&mut options, "--group", Some(1))?;
     let max_order_gpu: usize = take(&mut options, "--max-order-gpu", Some(DEFAULT_MAX_ORDER_GPU))?;
     let leg_cycles: u64 = take(&mut options, "--leg-cycles", Some(0))?;
     // Mandatory: every run is named. An anonymous run cannot be resumed,
@@ -733,7 +726,6 @@ fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
         &config,
         BatchedRunOpts {
             chain_offset,
-            group_size: group,
             max_order_gpu,
             deadline,
             resume,
