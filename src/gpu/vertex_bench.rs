@@ -28,7 +28,7 @@
 
 use cubecl::prelude::*;
 use num_complex::Complex64;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use crate::vertex_table::{Tab, VertexTable};
 
@@ -561,10 +561,10 @@ impl<R: Runtime> DeviceTables<R> {
 pub fn random_evals(table: &VertexTable, n: usize, seed: u64) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let nk = table.len();
-    let ks = (0..n).map(|_| rng.gen_range(0..nk) as u32).collect();
-    let qs = (0..n).map(|_| rng.gen_range(1..nk) as u32).collect();
+    let ks = (0..n).map(|_| rng.random_range(0..nk) as u32).collect();
+    let qs = (0..n).map(|_| rng.random_range(1..nk) as u32).collect();
     let nus = (0..n)
-        .map(|_| rng.gen_range(0..table.nmodes) as u32)
+        .map(|_| rng.random_range(0..table.nmodes) as u32)
         .collect();
     (ks, qs, nus)
 }

@@ -1,4 +1,4 @@
-use rand::SeedableRng;
+use rand::{RngExt, SeedableRng};
 use rmc_ab_initio::eph_svd::{EphSvd, DEFAULT_TOL};
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::vertex_direct::DirectVertex;
@@ -63,9 +63,9 @@ fn compressed_lif_vertex_has_no_wiring_errors() {
     let mut worst = 0.0_f64;
     let mut scale = 0.0_f64;
     for _ in 0..1000 {
-        let k = rand::Rng::gen_range(&mut rng, 0..f64_table.len());
-        let q = rand::Rng::gen_range(&mut rng, 1..f64_table.len());
-        let nu = rand::Rng::gen_range(&mut rng, 0..f64_table.nmodes);
+        let k = rng.random_range(0..f64_table.len());
+        let q = rng.random_range(1..f64_table.len());
+        let nu = rng.random_range(0..f64_table.nmodes);
         let expected = f64_table.full_indices(k, q, nu);
         worst = worst.max((f32_table.full_indices(k, q, nu) - expected).norm());
         scale = scale.max(expected.norm());

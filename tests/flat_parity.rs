@@ -7,7 +7,7 @@ mod common;
 use common::synthetic_model;
 
 use nalgebra::Vector3;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 
 use rmc_ab_initio::flat::{self, updates as flat_updates, weight as flat_weight, FlatDiagram};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
@@ -22,12 +22,12 @@ fn random_diagram(model: &AbInitioModel, rng: &mut impl Rng, max_tau: f64) -> Di
     let table = &model.table;
     let mut diagram = Diagram::new(-0.5, Vector3::zeros(), max_tau, 0, MAX_ORDER_GPU);
     let tail = diagram.tail;
-    diagram.set_vertex_tau(tail, rng.gen_range(0.5 * max_tau..max_tau));
-    for _ in 0..rng.gen_range(0..=8) {
+    diagram.set_vertex_tau(tail, rng.random_range(0.5 * max_tau..max_tau));
+    for _ in 0..rng.random_range(0..=8) {
         let tau_ext = diagram.tau();
         let mut tau = [
-            rng.gen_range(0.01 * tau_ext..0.99 * tau_ext),
-            rng.gen_range(0.01 * tau_ext..0.99 * tau_ext),
+            rng.random_range(0.01 * tau_ext..0.99 * tau_ext),
+            rng.random_range(0.01 * tau_ext..0.99 * tau_ext),
         ];
         tau.sort_by(f64::total_cmp);
         // Keep the generator inside the engines' own separation guard.
@@ -39,8 +39,8 @@ fn random_diagram(model: &AbInitioModel, rng: &mut impl Rng, max_tau: f64) -> Di
         {
             continue;
         }
-        let q = rng.gen_range(1..table.len());
-        let branch = rng.gen_range(0..table.nmodes);
+        let q = rng.random_range(1..table.len());
+        let branch = rng.random_range(0..table.nmodes);
         diagram.insert_arc(tau[0], tau[1], table.point(q), branch);
     }
     slot_weight::sync_cache(&mut diagram, model);
@@ -235,7 +235,7 @@ fn accepted_updates_keep_cache_consistent() {
     for step in 0..2000 {
         let entry = &mut updates.entries_mut()[step % 4];
         let probability = rmc_core::mc::Update::attempt(entry.update_mut(), &mut flat, &mut rng);
-        if probability >= 1.0 || (probability > 0.0 && rng.gen::<f64>() < probability) {
+        if probability >= 1.0 || (probability > 0.0 && rng.random::<f64>() < probability) {
             rmc_core::mc::Update::accept(entry.update_mut(), &mut flat);
             accepted += 1;
         }

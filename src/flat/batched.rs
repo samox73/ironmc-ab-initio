@@ -17,6 +17,7 @@
 //! state-dependent update choice, would break the cancellation and bias the
 //! run (see [`step_selected`]).
 
+use rand::RngExt;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -412,7 +413,7 @@ fn step_selected<R: rand::Rng + ?Sized>(
     if probability < 0.0 {
         entry.update_mut().reject(chain);
         (false, true)
-    } else if probability >= 1.0 || rng.gen::<f64>() < probability {
+    } else if probability >= 1.0 || rng.random::<f64>() < probability {
         entry.update_mut().accept(chain);
         (true, false)
     } else {

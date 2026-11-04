@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rmc_core::dispatch_update;
 use rmc_core::mc::{WeightedUpdate, WeightedUpdateSet};
 use rmc_core::random::{exponential_sample_bounded, uniform_index_from_u01};
@@ -53,13 +53,13 @@ impl AddPhonon {
         if d.order >= d.max_order || d.tau_ext() <= 2.0 * f64::EPSILON {
             return -1.0;
         }
-        let (q, branch, q_pdf) = self.model.propose_phonon_index(rng.gen(), rng.gen());
+        let (q, branch, q_pdf) = self.model.propose_phonon_index(rng.random(), rng.random());
         let (q, branch) = (q as u32, branch as u32);
         if !q_pdf.is_finite() || q_pdf <= 0.0 {
             return -1.0;
         }
 
-        let tau1 = rng.gen::<f64>() * d.tau_ext();
+        let tau1 = rng.random::<f64>() * d.tau_ext();
         let segment1 = d.segment_at(tau1);
         if tau1 - d.tau[segment1] < DELTA_TAU_LIMIT || d.tau[segment1 + 1] - tau1 < DELTA_TAU_LIMIT
         {
@@ -67,7 +67,7 @@ impl AddPhonon {
         }
         let p = d.p_out[segment1];
         let lambda = decay_rate(&self.model, d.grid_n, p, q, branch);
-        let tau2 = exponential_sample_bounded(rng.gen(), lambda, tau1, d.tau_ext());
+        let tau2 = exponential_sample_bounded(rng.random(), lambda, tau1, d.tau_ext());
         if tau2 - tau1 < DELTA_TAU_LIMIT {
             return -1.0;
         }
@@ -115,7 +115,7 @@ impl RemovePhonon {
         if d.order <= d.min_order {
             return -1.0;
         }
-        let nth = uniform_index_from_u01(rng.gen(), d.order);
+        let nth = uniform_index_from_u01(rng.random(), d.order);
         let (left, right) = d.nth_arc(nth).expect("selected arc must exist");
         let q = d.q[left];
         let branch = d.branch[left];
@@ -159,7 +159,7 @@ impl ChangeTau {
         if lower_tau >= d.max_tau {
             return -1.0;
         }
-        let tau = lower_tau + rng.gen::<f64>() * (d.max_tau - lower_tau);
+        let tau = lower_tau + rng.random::<f64>() * (d.max_tau - lower_tau);
         if tau - lower_tau < DELTA_TAU_LIMIT {
             return -1.0;
         }
@@ -199,10 +199,10 @@ impl ChangeInternalTau {
             return -1.0;
         }
         // Positional keys 1..tail, exactly `gen_range(1..diagram.tail)`.
-        let key = 1 + uniform_index_from_u01(rng.gen(), 2 * d.order);
+        let key = 1 + uniform_index_from_u01(rng.random(), 2 * d.order);
         let lower = d.tau[key - 1];
         let upper = d.tau[key + 1];
-        let tau = lower + rng.gen::<f64>() * (upper - lower);
+        let tau = lower + rng.random::<f64>() * (upper - lower);
         if tau - lower < DELTA_TAU_LIMIT || upper - tau < DELTA_TAU_LIMIT {
             return -1.0;
         }

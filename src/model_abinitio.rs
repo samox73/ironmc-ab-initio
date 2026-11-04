@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::vertex_table::VertexTable;
 use nalgebra::Vector3;
 use num_complex::Complex64;
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 use rmc_diagmc::Model;
 
 #[derive(Clone, Debug)]
@@ -138,10 +138,10 @@ impl Model for AbInitioModel {
         self.table.full_indices_capped(ki, qi, nu, &self.rank_cap)
     }
 
-    fn propose_phonon(&self, rng: &mut dyn RngCore) -> (Vector3<f64>, usize, f64) {
-        let q = self.q_from_target(rng.gen::<f64>() * self.q_weight_sum);
+    fn propose_phonon(&self, rng: &mut dyn Rng) -> (Vector3<f64>, usize, f64) {
+        let q = self.q_from_target(rng.random::<f64>() * self.q_weight_sum);
         debug_assert_ne!(q, 0);
-        let nu = rng.gen_range(0..self.table.nmodes);
+        let nu = rng.random_range(0..self.table.nmodes);
         let point = self.table.point(q);
         // The pdf comes straight from the sampled index — no point↔index
         // float round-trip in the proposal hot path.

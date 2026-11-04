@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use num_complex::{Complex, Complex64};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_ab_initio::vertex_table::{Tab, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
 
@@ -16,17 +16,23 @@ pub fn synthetic_model(seed: u64) -> Arc<AbInitioModel> {
     let nbnd = 2_usize;
     let nmodes = 2_usize;
     let ncomp = 8_usize;
-    let mut c32 =
-        |scale: f32| Complex::new(rng.gen_range(-scale..scale), rng.gen_range(-scale..scale));
+    let mut c32 = |scale: f32| {
+        Complex::new(
+            rng.random_range(-scale..scale),
+            rng.random_range(-scale..scale),
+        )
+    };
     let wtab: Vec<Complex<f32>> = (0..nk * ncomp).map(|_| c32(0.1)).collect();
     let vtab: Vec<Complex<f32>> = (0..nk * nmodes * ncomp).map(|_| c32(0.1)).collect();
     let cbm_evec: Vec<Complex64> = (0..nk * nbnd)
-        .map(|_| Complex64::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+        .map(|_| Complex64::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)))
         .collect();
-    let electron_ev: Vec<f64> = (0..nk).map(|_| rng.gen_range(0.0..2.0)).collect();
-    let phonon_ev: Vec<f64> = (0..nk * nmodes).map(|_| rng.gen_range(0.02..0.1)).collect();
+    let electron_ev: Vec<f64> = (0..nk).map(|_| rng.random_range(0.0..2.0)).collect();
+    let phonon_ev: Vec<f64> = (0..nk * nmodes)
+        .map(|_| rng.random_range(0.02..0.1))
+        .collect();
     let long_ev: Vec<Complex64> = (0..nk * nmodes)
-        .map(|_| Complex64::new(rng.gen_range(-0.3..0.3), rng.gen_range(-0.3..0.3)))
+        .map(|_| Complex64::new(rng.random_range(-0.3..0.3), rng.random_range(-0.3..0.3)))
         .collect();
     Arc::new(AbInitioModel::new(Arc::new(VertexTable {
         grid_n,

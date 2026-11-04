@@ -5,7 +5,7 @@
 #![cfg(feature = "gpu-cpu")]
 
 use num_complex::{Complex, Complex64};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rmc_ab_initio::gpu::vertex_bench::{max_rel_error, random_evals, DeviceTables, Variant};
 use rmc_ab_initio::vertex_table::{Tab, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
 
@@ -33,14 +33,19 @@ fn synthetic_table() -> VertexTable {
     let mut cf32 = |len: usize| -> Tab {
         Tab::F32(
             (0..len)
-                .map(|_| Complex::new(rng.gen_range(-1.0f32..1.0), rng.gen_range(-1.0f32..1.0)))
+                .map(|_| {
+                    Complex::new(
+                        rng.random_range(-1.0f32..1.0),
+                        rng.random_range(-1.0f32..1.0),
+                    )
+                })
                 .collect(),
         )
     };
     let wtab = cf32(nk * ncomp);
     let vtab = cf32(nk * nmodes * ncomp);
     let cbm_evec: Vec<Complex64> = (0..nk * nbnd)
-        .map(|_| Complex64::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+        .map(|_| Complex64::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)))
         .collect();
     VertexTable {
         grid_n,

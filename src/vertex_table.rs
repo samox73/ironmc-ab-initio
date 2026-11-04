@@ -11,7 +11,7 @@ use crate::reconstruct::{interpolate_d_polar, interpolate_h, phase, RY_TO_EV, RY
 use crate::vertex_direct::DirectVertex;
 use nalgebra::Vector3;
 use num_complex::{Complex, Complex64};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -835,9 +835,9 @@ impl VertexTable {
         let mut worst: f64 = 0.0;
         let mut scale: f64 = 0.0;
         for _ in 0..samples {
-            let k = rng.gen_range(0..self.len());
-            let q = rng.gen_range(1..self.len());
-            let nu = rng.gen_range(0..self.nmodes);
+            let k = rng.random_range(0..self.len());
+            let q = rng.random_range(1..self.len());
+            let nu = rng.random_range(0..self.nmodes);
             let expected = direct.full(self.point(k), self.point(q))[nu];
             scale = scale.max(expected.norm());
             worst = worst.max((self.full_indices(k, q, nu) - expected).norm());
@@ -1416,20 +1416,20 @@ mod tests {
             nbnd,
             nmodes: 1,
             pair_offsets: vec![0, 2, 4, 6, 8],
-            s: (0..ncomp).map(|_| rng.gen_range(0.2..1.2)).collect(),
+            s: (0..ncomp).map(|_| rng.random_range(0.2..1.2)).collect(),
             wtab: Tab::F64(
                 (0..nk * ncomp)
-                    .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                    .map(|_| Cf::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)))
                     .collect(),
             ),
             bra_band: vec![],
             vtab: Tab::F64(
                 (0..nk * ncomp)
-                    .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                    .map(|_| Cf::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)))
                     .collect(),
             ),
             cbm_evec: (0..nk * nbnd)
-                .map(|_| Cf::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                .map(|_| Cf::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)))
                 .collect(),
             electron_ev: vec![0.0; nk],
             phonon_ev: vec![1.0; nk],
@@ -1442,9 +1442,9 @@ mod tests {
         };
         let mut cases = Vec::with_capacity(100);
         for _ in 0..100 {
-            let k = rng.gen_range(0..nk);
-            let q = rng.gen_range(0..nk);
-            let cap = rng.gen_range(1..=3);
+            let k = rng.random_range(0..nk);
+            let q = rng.random_range(0..nk);
+            let cap = rng.random_range(1..=3);
             let kp = table.index_of(table.point(k) + table.point(q)).unwrap();
             let mut expected = Cf::new(0.0, 0.0);
             for n in 0..nbnd {
