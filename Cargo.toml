@@ -22,7 +22,7 @@ rand = "0.10"
 rand_distr = "0.6"
 rayon = "1"
 slotmap = { version = "1", features = ["serde"] }
-tabled = "0.21.0"
+tabled = "0.22"
 cubecl = { version = "=0.10.0", default-features = false, features = ["std", "stdlib"], optional = true }
 # The IronMC framework, from a sibling checkout (../ironmc). build.rs records
 # that checkout's commit next to this repo's, so binaries stay traceable.
