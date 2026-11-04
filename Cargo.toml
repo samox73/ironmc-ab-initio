@@ -29,6 +29,7 @@ cubecl = { version = "=0.10.0", default-features = false, features = ["std", "st
 rmc-core = { path = "../ironmc/crates/rmc-core", features = ["serde"] }
 rmc-diagmc = { path = "../ironmc/crates/rmc-diagmc" }
 rmc-frohlich = { path = "../ironmc/crates/apps/rmc-frohlich" }
+hdf5-pure = "=0.47.0"
 
 [features]
 default = []

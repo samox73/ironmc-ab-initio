@@ -4,6 +4,7 @@
 //! vertex table. Merging sorts by rank and concatenates batch lists in that
 //! fixed order — the merged report is a pure function of (seed, total chains).
 
+use std::io::Write;
 use std::path::Path;
 
 use rmc_core::random::DefaultRng;
@@ -32,14 +33,20 @@ fn write_header(writer: &mut impl std::io::Write, magic: &[u8; 8]) -> BoxResult<
 /// never truncate the previous good file, which for a checkpoint is the run's
 /// only resume point.
 fn save_atomic(path: &Path, magic: &[u8; 8], value: &impl Serialize) -> BoxResult<()> {
-    let tmp = path.with_extension("bin.tmp");
-    let mut writer = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-    write_header(&mut writer, magic)?;
-    bincode::serialize_into(&mut writer, value)?;
-    writer
-        .into_inner()
-        .map_err(std::io::IntoInnerError::into_error)?
-        .sync_all()?;
+    let mut bytes = Vec::new();
+    write_header(&mut bytes, magic)?;
+    bincode::serialize_into(&mut bytes, value)?;
+    save_bytes_atomic(path, &bytes)
+}
+
+/// `bytes` to `<path>.tmp`, fsync, rename over `path`: a kill mid-write (OOM,
+/// node failure — the very cases checkpoints exist for) must never truncate
+/// the previous good file, which for a checkpoint is the run's only resume point.
+fn save_bytes_atomic(path: &Path, bytes: &[u8]) -> BoxResult<()> {
+    let tmp = path.with_added_extension("tmp");
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -235,5 +242,21 @@ impl SlotmapCheckpoint {
         let mut reader = std::io::BufReader::new(file);
         check_header(&mut reader, SLOT_CKPT_MAGIC, "SlotmapCheckpoint")?;
         Ok(bincode::deserialize_from(&mut reader)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_bytes_atomic_replaces_file_and_leaves_no_tmp() {
+        let path = std::env::temp_dir().join("rmc-dump-atomic.h5");
+        save_bytes_atomic(&path, b"first version, deliberately longer").unwrap();
+        save_bytes_atomic(&path, b"second version").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second version");
+        let tmp = path.clone().with_added_extension("tmp").into_os_string();
+        assert!(!Path::new(&tmp).exists());
+        std::fs::remove_file(&path).unwrap();
     }
 }
