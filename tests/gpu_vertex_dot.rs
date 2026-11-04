@@ -6,8 +6,8 @@
 
 use num_complex::{Complex, Complex64};
 use rand::{RngExt, SeedableRng};
-use rmc_ab_initio::gpu::vertex_bench::{max_rel_error, random_evals, DeviceTables, Variant};
-use rmc_ab_initio::vertex_table::{Tab, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
+use rmc_ab_initio::gpu::vertex_bench::{DeviceTables, Variant, max_rel_error, random_evals};
+use rmc_ab_initio::vertex_table::{DEFAULT_PHFREQ_CUTOFF_EV, Tab, VertexTable};
 
 fn synthetic_table() -> VertexTable {
     let mut rng = rand::rngs::StdRng::seed_from_u64(0xab1);

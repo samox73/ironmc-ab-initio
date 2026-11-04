@@ -7,7 +7,7 @@ use rmc_ab_initio::longrange::{g_long_branch, gg_cart};
 use rmc_ab_initio::model::lo_to_frequencies;
 use rmc_ab_initio::reconstruct::{interpolate_d, interpolate_d_polar, interpolate_h};
 use rmc_ab_initio::vertex_table::{
-    TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+    DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision, VertexTable,
 };
 use std::path::PathBuf;
 

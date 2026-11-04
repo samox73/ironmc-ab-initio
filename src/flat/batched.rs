@@ -22,13 +22,13 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use rmc_core::{Merge, Result, RmcError};
-use rmc_diagmc::measure::{summarize, DiagMeasurement, MeasurementData};
+use rmc_diagmc::measure::{DiagMeasurement, MeasurementData, summarize};
 use rmc_diagmc::{DiagConfig, Model, Report};
-use rmc_frohlich::flat::philox::{keyed_draw, PhiloxRng};
+use rmc_frohlich::flat::philox::{PhiloxRng, keyed_draw};
 use rmc_frohlich::update_stats::UpdateStatEntry;
 
-use super::updates::{update_set, update_set_fixed_tau, FlatAbUpdate};
-use super::{weight, FlatDiagram};
+use super::updates::{FlatAbUpdate, update_set, update_set_fixed_tau};
+use super::{FlatDiagram, weight};
 use crate::model_abinitio::AbInitioModel;
 
 pub const DEFAULT_MAX_ORDER_GPU: usize = 256;

@@ -13,7 +13,7 @@
 
 use nalgebra::Vector3;
 use rmc_ab_initio::epw::{Crystal, EpwData, Wigner};
-use rmc_ab_initio::reconstruct::{interpolate_d_polar, interpolate_h, RY_TO_EV, RY_TO_THZ};
+use rmc_ab_initio::reconstruct::{RY_TO_EV, RY_TO_THZ, interpolate_d_polar, interpolate_h};
 use std::path::PathBuf;
 
 fn lif(rel: &str) -> PathBuf {

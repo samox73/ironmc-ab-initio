@@ -108,7 +108,10 @@ impl EphSvd {
                 if sigma0 > 0.0 {
                     order.retain(|&i| evals[i].max(0.0).sqrt() / sigma0 > tol);
                     if order.len() > max_rank {
-                        log::debug!("SVD pair ({n},{m}) capped at {max_rank}; {} singular values exceed {tol:.1e}", order.len());
+                        log::debug!(
+                            "SVD pair ({n},{m}) capped at {max_rank}; {} singular values exceed {tol:.1e}",
+                            order.len()
+                        );
                     }
                     order.truncate(max_rank);
                     for i in order {

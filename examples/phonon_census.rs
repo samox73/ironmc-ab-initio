@@ -7,7 +7,7 @@
 
 use nalgebra::Vector3;
 use rmc_ab_initio::epw::{Crystal, EpwData, Wigner};
-use rmc_ab_initio::reconstruct::{interpolate_d_polar, RY_TO_EV, RY_TO_THZ};
+use rmc_ab_initio::reconstruct::{RY_TO_EV, RY_TO_THZ, interpolate_d_polar};
 use std::path::PathBuf;
 
 const THZ_TO_MEV: f64 = RY_TO_EV / RY_TO_THZ * 1e3;

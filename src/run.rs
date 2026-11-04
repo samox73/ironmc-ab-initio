@@ -11,15 +11,15 @@ use std::time::Instant;
 
 use rmc_core::mc::{MetropolisKernel, Runner, UpdateSet, WeightedUpdateSet};
 use rmc_core::random::{ChainId, SeedSource};
+use rmc_frohlich::Diagram;
 use rmc_frohlich::app::{
-    build_diagram, build_measurement, summarize_output, write_results, RunOutput, ValidationSummary,
+    RunOutput, ValidationSummary, build_diagram, build_measurement, summarize_output, write_results,
 };
 use rmc_frohlich::measurement::PolaronMeasurement;
 use rmc_frohlich::update_stats::{self, UpdateStatEntry};
-use rmc_frohlich::Diagram;
 
 use crate::config::AbInitioConfig;
-use crate::updates::{update_set, AbInitioUpdate};
+use crate::updates::{AbInitioUpdate, update_set};
 use crate::vertex::Reweight;
 
 type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;

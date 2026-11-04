@@ -10,10 +10,10 @@ mod common;
 
 use common::synthetic_model;
 use nalgebra::Vector3;
-use rmc_ab_initio::dump::{merge_dumps, same_trajectory, RankDump};
+use rmc_ab_initio::dump::{RankDump, merge_dumps, same_trajectory};
 use rmc_ab_initio::flat::batched::BatchedRunOutput;
-use rmc_ab_initio::gpu::run::{run_device, DeviceRunOpts};
 use rmc_ab_initio::gpu::SelectedRuntime;
+use rmc_ab_initio::gpu::run::{DeviceRunOpts, run_device};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_diagmc::{DiagConfig, Model};
 
@@ -127,28 +127,32 @@ fn resumed_legs_match_uninterrupted_run() {
     close(merged.sign.mean, full_report.sign.mean, "sign");
 
     // Guards: wrong resume shapes fail loudly.
-    assert!(run_device(
-        client.clone(),
-        &model,
-        &cfg,
-        DeviceRunOpts {
-            resume: Some((620, leg2.chains.clone())),
-            ..opts()
-        },
-    )
-    .is_err());
+    assert!(
+        run_device(
+            client.clone(),
+            &model,
+            &cfg,
+            DeviceRunOpts {
+                resume: Some((620, leg2.chains.clone())),
+                ..opts()
+            },
+        )
+        .is_err()
+    );
     let mut fewer = cfg.clone();
     fewer.chains = 4;
-    assert!(run_device(
-        client,
-        &model,
-        &fewer,
-        DeviceRunOpts {
-            resume: Some((300, leg1.chains.clone())),
-            ..opts()
-        },
-    )
-    .is_err());
+    assert!(
+        run_device(
+            client,
+            &model,
+            &fewer,
+            DeviceRunOpts {
+                resume: Some((300, leg1.chains.clone())),
+                ..opts()
+            },
+        )
+        .is_err()
+    );
 }
 
 /// Extending max_steps on a completed run continues bit-identically: a fresh

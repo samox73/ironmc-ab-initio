@@ -8,14 +8,14 @@
 use std::sync::Arc;
 
 use rand::{Rng, RngExt};
+use rmc_core::Result;
 use rmc_core::dispatch_update;
 use rmc_core::mc::{WeightedUpdate, WeightedUpdateSet};
 use rmc_core::random::{exponential_sample_bounded, uniform_index_from_u01};
-use rmc_core::Result;
 
-use super::{weight, wrap_sub, FlatDiagram};
+use super::{FlatDiagram, weight, wrap_sub};
 use crate::model_abinitio::AbInitioModel;
-use rmc_diagmc::updates::{time_proposal_pdf, DELTA_TAU_LIMIT};
+use rmc_diagmc::updates::{DELTA_TAU_LIMIT, time_proposal_pdf};
 use rmc_diagmc::weight::LocalRatio;
 
 /// λ for the truncated-exponential τ₂ proposal, index-level mirror of

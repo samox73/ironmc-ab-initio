@@ -10,10 +10,10 @@
 //! extrapolation, which needs a budget ≥800 (or per-pair capping). Thresholds
 //! below are those measurements with ~2× headroom.
 
-use rmc_ab_initio::eph_svd::{EphSvd, DEFAULT_TOL, MAX_RANK};
+use rmc_ab_initio::eph_svd::{DEFAULT_TOL, EphSvd, MAX_RANK};
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::vertex_table::{
-    e2, TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+    DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision, VertexTable, e2,
 };
 use std::path::PathBuf;
 

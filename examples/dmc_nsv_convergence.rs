@@ -14,10 +14,10 @@ use rmc_ab_initio::{
     eph_svd::{EphSvd, MAX_RANK},
     epw::{Crystal, EpmatWp, EpwData, Wigner},
     model_abinitio::AbInitioModel,
-    vertex_table::{TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV},
+    vertex_table::{DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision, VertexTable},
 };
 use rmc_core::time;
-use rmc_diagmc::{run, DiagConfig};
+use rmc_diagmc::{DiagConfig, run};
 
 fn lif(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

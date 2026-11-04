@@ -2,7 +2,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use num_complex::Complex64;
-use rmc_ab_initio::vertex_table::{Tab, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
+use rmc_ab_initio::vertex_table::{DEFAULT_PHFREQ_CUTOFF_EV, Tab, VertexTable};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let calls = std::env::args()

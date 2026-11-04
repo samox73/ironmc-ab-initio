@@ -5,7 +5,7 @@ use std::sync::Arc;
 use num_complex::{Complex, Complex64};
 use rand::{RngExt, SeedableRng};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
-use rmc_ab_initio::vertex_table::{Tab, VertexTable, DEFAULT_PHFREQ_CUTOFF_EV};
+use rmc_ab_initio::vertex_table::{DEFAULT_PHFREQ_CUTOFF_EV, Tab, VertexTable};
 
 /// Small physical-ish random table: grid 4³, nbnd 2, nmodes 2, rank 8,
 /// nonzero long-range part (non-uniform q proposal weights).

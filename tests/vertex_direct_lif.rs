@@ -2,7 +2,7 @@ use nalgebra::Vector3;
 use num_complex::Complex64;
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::longrange::g_long_cart;
-use rmc_ab_initio::reconstruct::{interpolate_h, GammaModel};
+use rmc_ab_initio::reconstruct::{GammaModel, interpolate_h};
 use rmc_ab_initio::vertex_direct::DirectVertex;
 use std::path::PathBuf;
 

@@ -129,11 +129,7 @@ impl FlatDiagram {
     /// Incoming electron momentum at `key` (grid index).
     #[inline]
     pub fn incoming_momentum(&self, key: usize) -> u32 {
-        if key == 0 {
-            self.p_ext
-        } else {
-            self.p_out[key - 1]
-        }
+        if key == 0 { self.p_ext } else { self.p_out[key - 1] }
     }
 
     /// Last vertex with τ_v ≤ τ, clamped to tail−1 (mirrors `weight::segment_at`).

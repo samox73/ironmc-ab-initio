@@ -4,16 +4,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rmc_ab_initio::config::AbInitioConfig;
-use rmc_ab_initio::eph_svd::{EphSvd, DEFAULT_TOL};
+use rmc_ab_initio::eph_svd::{DEFAULT_TOL, EphSvd};
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
-use rmc_ab_initio::flat::batched::BatchedRunOutput;
 use rmc_ab_initio::flat::FlatDiagram;
-use rmc_ab_initio::model::{regular_grid, ReducedModel};
+use rmc_ab_initio::flat::batched::BatchedRunOutput;
+use rmc_ab_initio::model::{ReducedModel, regular_grid};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_ab_initio::reconstruct::GammaModel;
 use rmc_ab_initio::run::run_and_write;
 use rmc_ab_initio::vertex_table::{
-    FillDevice, ShardMeta, TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+    DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV, FillDevice, ShardMeta, TablePrecision, VertexTable,
 };
 use rmc_core::random::DefaultRng;
 use rmc_diagmc::measure::MeasurementData;
@@ -431,7 +431,7 @@ fn load_resume(
     config: &DiagConfig,
     chain_offset: u64,
 ) -> BoxResult<(Option<(u64, Vec<FlatDiagram>)>, u64)> {
-    use rmc_ab_initio::dump::{same_trajectory, Checkpoint};
+    use rmc_ab_initio::dump::{Checkpoint, same_trajectory};
 
     let checkpoint_path = out_dir.join(Checkpoint::filename(rank));
     if !checkpoint_path.exists() {
@@ -662,7 +662,7 @@ fn write_leg_outputs(
 /// slotmap engine that now backs `run-cpu` (its `FlatDiagram` does O(order)
 /// updates for GPU-friendliness). Same `RankDump`/`Checkpoint`/`merge` machinery.
 fn run_flat_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
-    use rmc_ab_initio::flat::batched::{run_batched_opts, BatchedRunOpts, DEFAULT_MAX_ORDER_GPU};
+    use rmc_ab_initio::flat::batched::{BatchedRunOpts, DEFAULT_MAX_ORDER_GPU, run_batched_opts};
 
     let mut options = options(args)?;
     let table_path: PathBuf = take(&mut options, "--table", None)?;
@@ -770,7 +770,7 @@ fn load_slotmap_resume(
     config: &DiagConfig,
     chain_offset: u64,
 ) -> BoxResult<(Option<Vec<(Diagram, DefaultRng)>>, u64)> {
-    use rmc_ab_initio::dump::{same_trajectory, SlotmapCheckpoint};
+    use rmc_ab_initio::dump::{SlotmapCheckpoint, same_trajectory};
 
     let checkpoint_path = out_dir.join(SlotmapCheckpoint::filename(rank));
     if !checkpoint_path.exists() {
@@ -931,7 +931,7 @@ fn run_cpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 
 /// Merge rank dumps into one report: `merge [--out report.json] <dumps...>`.
 fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
-    use rmc_ab_initio::dump::{merge_dumps, RankDump};
+    use rmc_ab_initio::dump::{RankDump, merge_dumps};
 
     let mut out: Option<PathBuf> = None;
     let mut paths = Vec::new();
@@ -972,8 +972,8 @@ fn merge_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 #[cfg(any(feature = "gpu-cpu", feature = "gpu-hip", feature = "gpu-cuda"))]
 fn run_gpu_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     use rmc_ab_initio::flat::batched::DEFAULT_MAX_ORDER_GPU;
-    use rmc_ab_initio::gpu::run::{run_device, DeviceRunOpts, CYCLES_PER_LAUNCH, DEFAULT_LANES};
     use rmc_ab_initio::gpu::SelectedRuntime;
+    use rmc_ab_initio::gpu::run::{CYCLES_PER_LAUNCH, DEFAULT_LANES, DeviceRunOpts, run_device};
 
     let mut options = options(args)?;
     let table_path: PathBuf = take(&mut options, "--table", None)?;

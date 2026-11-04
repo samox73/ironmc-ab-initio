@@ -12,7 +12,7 @@
 //! coarse `.epb` (full coupling) and `dynq` (full dynamical matrix) in the tests.
 
 use crate::epw::{Crystal, EpwData, Wigner};
-use crate::reconstruct::{interpolate_d_polar, Phonons, RY_TO_EV, RY_TO_THZ};
+use crate::reconstruct::{Phonons, RY_TO_EV, RY_TO_THZ, interpolate_d_polar};
 use nalgebra::Vector3;
 use num_complex::Complex64;
 
@@ -302,12 +302,16 @@ mod tests {
                 })
                 .collect(),
         };
-        assert!(quantized_eigenvectors(&cry, &phonons, 1.0e-3)
-            .iter()
-            .all(|value| *value == Cf::new(0.0, 0.0)));
+        assert!(
+            quantized_eigenvectors(&cry, &phonons, 1.0e-3)
+                .iter()
+                .all(|value| *value == Cf::new(0.0, 0.0))
+        );
         phonons.omega_thz.fill(2.0e-3 / RY_TO_EV * RY_TO_THZ);
-        assert!(quantized_eigenvectors(&cry, &phonons, 1.0e-3)
-            .iter()
-            .any(|value| value.norm() > 0.0));
+        assert!(
+            quantized_eigenvectors(&cry, &phonons, 1.0e-3)
+                .iter()
+                .any(|value| value.norm() > 0.0)
+        );
     }
 }

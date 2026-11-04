@@ -7,7 +7,7 @@
 use crate::eph_svd::EphSvd;
 use crate::epw::{Crystal, EpwData, Wigner};
 use crate::longrange::{g_long_cart, project_cartesian_branches, quantized_eigenvectors};
-use crate::reconstruct::{interpolate_d_polar, interpolate_h, phase, RY_TO_EV, RY_TO_THZ};
+use crate::reconstruct::{RY_TO_EV, RY_TO_THZ, interpolate_d_polar, interpolate_h, phase};
 use crate::vertex_direct::DirectVertex;
 use nalgebra::Vector3;
 use num_complex::{Complex, Complex64};
@@ -1191,8 +1191,8 @@ mod tests {
     /// be Hermitian; imaginary phonon branches are fine (the fill takes |ω|).
     fn synthetic_inputs() -> (EpwData, Crystal, Wigner, EpmatWp) {
         let nm = 6; // 2 atoms × 3
-                    // D(R): stiff point-independent diagonal at R=0 plus a small complex
-                    // block at R=[1,0,0] so frequencies and eigenvectors vary with q.
+        // D(R): stiff point-independent diagonal at R=0 plus a small complex
+        // block at R=[1,0,0] so frequencies and eigenvectors vary with q.
         let mut d = vec![Cf::new(0.0, 0.0); nm * nm * 2];
         for a in 0..nm {
             d[(a * nm + a) * 2] = Cf::new(((a + 1) * (a + 1)) as f64, 0.0);
@@ -1532,11 +1532,7 @@ mod tests {
                 scale = scale.max((x.re as f64).hypot(x.im as f64));
                 worst = worst.max(((x.re - y.re) as f64).hypot((x.im - y.im) as f64));
             }
-            if scale > 0.0 {
-                worst / scale
-            } else {
-                worst
-            }
+            if scale > 0.0 { worst / scale } else { worst }
         };
         let w_err = max_rel(&f32_slice(&cpu.wtab), &f32_slice(&gpu.wtab));
         let v_err = max_rel(&f32_slice(&cpu.vtab), &f32_slice(&gpu.vtab));

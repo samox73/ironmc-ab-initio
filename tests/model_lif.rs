@@ -8,8 +8,8 @@
 use nalgebra::Vector3;
 use rmc_ab_initio::epb::Epb;
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
-use rmc_ab_initio::model::{regular_grid, ReducedModel};
-use rmc_ab_initio::reconstruct::{hermitian_eig, interpolate_d_polar, GammaModel};
+use rmc_ab_initio::model::{ReducedModel, regular_grid};
+use rmc_ab_initio::reconstruct::{GammaModel, hermitian_eig, interpolate_d_polar};
 use std::path::PathBuf;
 
 const RY_TO_EV: f64 = 13.605698066;

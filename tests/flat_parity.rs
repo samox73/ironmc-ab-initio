@@ -9,9 +9,9 @@ use common::synthetic_model;
 use nalgebra::Vector3;
 use rand::{Rng, RngExt, SeedableRng};
 
-use rmc_ab_initio::flat::{self, updates as flat_updates, weight as flat_weight, FlatDiagram};
+use rmc_ab_initio::flat::{self, FlatDiagram, updates as flat_updates, weight as flat_weight};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
-use rmc_diagmc::updates::{time_proposal_pdf, DELTA_TAU_LIMIT};
+use rmc_diagmc::updates::{DELTA_TAU_LIMIT, time_proposal_pdf};
 use rmc_diagmc::weight as slot_weight;
 use rmc_diagmc::{Diagram, Model};
 

@@ -14,10 +14,10 @@ use rmc_ab_initio::{
     eph_svd::EphSvd,
     epw::{Crystal, EpmatWp, EpwData, Wigner},
     model_abinitio::AbInitioModel,
-    vertex_table::{TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV},
+    vertex_table::{DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision, VertexTable},
 };
 use rmc_core::time;
-use rmc_diagmc::{run, DiagConfig};
+use rmc_diagmc::{DiagConfig, run};
 
 fn lif(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -74,7 +74,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        println!("grid {grid_n}: min|w|={min_w:.3e} eV @{arg_w:?}   max|g(G,q,nu)|={max_g:.3e} eV @{arg_g:?}");
+        println!(
+            "grid {grid_n}: min|w|={min_w:.3e} eV @{arg_w:?}   max|g(G,q,nu)|={max_g:.3e} eV @{arg_g:?}"
+        );
 
         let max_tau = 60.0;
 

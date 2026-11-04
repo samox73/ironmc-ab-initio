@@ -10,7 +10,7 @@ use nalgebra::Vector3;
 use rayon::prelude::*;
 use rmc_ab_initio::epw::{Crystal, EpwData, Wigner};
 use rmc_ab_initio::longrange::g_long_branch;
-use rmc_ab_initio::reconstruct::{interpolate_d_polar, interpolate_h, RY_TO_EV, RY_TO_THZ};
+use rmc_ab_initio::reconstruct::{RY_TO_EV, RY_TO_THZ, interpolate_d_polar, interpolate_h};
 use rmc_ab_initio::vertex_table::DEFAULT_PHFREQ_CUTOFF_EV;
 
 fn lif(rel: &str) -> PathBuf {

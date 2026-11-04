@@ -13,7 +13,7 @@
 
 use crate::epw::{Crystal, EpwData, Wigner};
 use crate::longrange::g_long_cart;
-use crate::reconstruct::{interpolate_d_polar, GammaModel, Phonons};
+use crate::reconstruct::{GammaModel, Phonons, interpolate_d_polar};
 use nalgebra::Vector3;
 use num_complex::Complex64;
 use serde::{Deserialize, Serialize};

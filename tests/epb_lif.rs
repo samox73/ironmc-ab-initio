@@ -19,7 +19,7 @@ use num_complex::Complex64;
 use rmc_ab_initio::epb::Epb;
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::longrange::g_long_cart;
-use rmc_ab_initio::reconstruct::{interpolate_h, GammaModel};
+use rmc_ab_initio::reconstruct::{GammaModel, interpolate_h};
 use std::path::PathBuf;
 
 const RY_TO_EV: f64 = 13.605698066;

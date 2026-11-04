@@ -11,9 +11,9 @@ mod common;
 
 use common::synthetic_model;
 use nalgebra::Vector3;
-use rmc_ab_initio::flat::batched::{run_batched, BatchedRunOutput};
-use rmc_ab_initio::gpu::run::{run_device, DeviceRunOpts};
+use rmc_ab_initio::flat::batched::{BatchedRunOutput, run_batched};
 use rmc_ab_initio::gpu::SelectedRuntime;
+use rmc_ab_initio::gpu::run::{DeviceRunOpts, run_device};
 use rmc_diagmc::DiagConfig;
 
 const MAX_ORDER_GPU: usize = 24;

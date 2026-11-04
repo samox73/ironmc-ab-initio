@@ -1,9 +1,9 @@
 use rand::{RngExt, SeedableRng};
-use rmc_ab_initio::eph_svd::{EphSvd, DEFAULT_TOL};
+use rmc_ab_initio::eph_svd::{DEFAULT_TOL, EphSvd};
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
 use rmc_ab_initio::vertex_direct::DirectVertex;
 use rmc_ab_initio::vertex_table::{
-    e2, TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV,
+    DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision, VertexTable, e2,
 };
 use std::path::PathBuf;
 

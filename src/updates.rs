@@ -11,18 +11,18 @@
 
 use nalgebra::Vector3;
 use rand::{Rng, RngExt};
+use rmc_core::Result;
 use rmc_core::dispatch_update;
 use rmc_core::mc::{WeightedUpdate, WeightedUpdateSet};
 use rmc_core::random::{exponential_sample_bounded, uniform_index};
-use rmc_core::Result;
 use slotmap::Key;
 
-use rmc_frohlich::diagram::{draw_new_q_from_uniforms, VKey};
+use rmc_frohlich::Diagram;
+use rmc_frohlich::diagram::{VKey, draw_new_q_from_uniforms};
 use rmc_frohlich::physics;
 use rmc_frohlich::updates::{
     ChangeInternalTau, ChangeQDirection, ChangeTau, ChangeTopology, RescaleDiagram,
 };
-use rmc_frohlich::Diagram;
 
 use crate::vertex::Reweight;
 
@@ -41,11 +41,7 @@ fn random_vertex<R: Rng + ?Sized>(d: &Diagram, rng: &mut R) -> VKey {
 fn random_arc<R: Rng + ?Sized>(d: &Diagram, rng: &mut R) -> (VKey, VKey) {
     let vertex1 = random_vertex(d, rng);
     let vertex2 = d.v(vertex1).link;
-    if d.v(vertex2).tau < d.v(vertex1).tau {
-        (vertex2, vertex1)
-    } else {
-        (vertex1, vertex2)
-    }
+    if d.v(vertex2).tau < d.v(vertex1).tau { (vertex2, vertex1) } else { (vertex1, vertex2) }
 }
 
 /// Insert a phonon arc (Fröhlich [`rmc_frohlich::updates::phonon::AddPhonon`]),
@@ -69,11 +65,7 @@ impl AddPhonon {
     }
 
     pub fn attempt<R: Rng + ?Sized>(&mut self, d: &Diagram, rng: &mut R) -> f64 {
-        if d.order == 0 {
-            self.attempt_from_zero_fake(d, rng)
-        } else {
-            self.higher_order(d, rng)
-        }
+        if d.order == 0 { self.attempt_from_zero_fake(d, rng) } else { self.higher_order(d, rng) }
     }
 
     pub fn accept(&mut self, d: &mut Diagram) {

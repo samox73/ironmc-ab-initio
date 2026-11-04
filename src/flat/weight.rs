@@ -6,7 +6,7 @@
 
 use num_complex::Complex64;
 
-use super::{neg, wrap_sub, FlatDiagram, NONE};
+use super::{FlatDiagram, NONE, neg, wrap_sub};
 use crate::model_abinitio::AbInitioModel;
 use rmc_diagmc::weight::LocalRatio;
 

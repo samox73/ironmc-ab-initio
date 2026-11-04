@@ -7,9 +7,9 @@
 use std::io::Write;
 use std::path::Path;
 
-use rmc_core::random::DefaultRng;
 use rmc_core::Merge;
-use rmc_diagmc::measure::{summarize, MeasurementData};
+use rmc_core::random::DefaultRng;
+use rmc_diagmc::measure::{MeasurementData, summarize};
 use rmc_diagmc::{DiagConfig, Diagram, Report};
 use serde::{Deserialize, Serialize};
 

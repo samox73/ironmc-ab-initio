@@ -7,7 +7,7 @@ use std::path::Path;
 use rmc_frohlich::config::RunConfig;
 
 use crate::model::ReducedModel;
-use crate::vertex::{radial_from_model, Material, Reweight};
+use crate::vertex::{Material, Reweight, radial_from_model};
 
 type BoxResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 

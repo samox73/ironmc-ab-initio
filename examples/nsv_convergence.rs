@@ -5,10 +5,10 @@ use nalgebra::Vector3;
 use rmc_ab_initio::{
     eph_svd::EphSvd,
     epw::{Crystal, EpmatWp, EpwData, Wigner},
-    vertex_table::{e2, TablePrecision, VertexTable, DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV},
+    vertex_table::{DEFAULT_MAX_BYTES, DEFAULT_PHFREQ_CUTOFF_EV, TablePrecision, VertexTable, e2},
 };
 use rmc_core::time;
-use tabled::{settings::Style, Table, Tabled};
+use tabled::{Table, Tabled, settings::Style};
 
 fn lif(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

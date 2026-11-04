@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use common::synthetic_model;
 use nalgebra::Vector3;
-use rmc_ab_initio::dump::{merge_dumps, RankDump};
+use rmc_ab_initio::dump::{RankDump, merge_dumps};
 use rmc_ab_initio::flat::batched::{run_batched, run_batched_with_deadline};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_diagmc::{DiagConfig, Model};

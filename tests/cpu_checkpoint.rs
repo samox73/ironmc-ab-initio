@@ -8,8 +8,8 @@ mod common;
 
 use common::synthetic_model;
 use nalgebra::Vector3;
-use rmc_ab_initio::dump::{merge_dumps, same_trajectory, RankDump};
-use rmc_ab_initio::flat::batched::{run_batched_opts, BatchedRunOpts, BatchedRunOutput};
+use rmc_ab_initio::dump::{RankDump, merge_dumps, same_trajectory};
+use rmc_ab_initio::flat::batched::{BatchedRunOpts, BatchedRunOutput, run_batched_opts};
 use rmc_ab_initio::model_abinitio::AbInitioModel;
 use rmc_diagmc::{DiagConfig, Model};
 
@@ -118,26 +118,30 @@ fn resumed_legs_match_uninterrupted_run() {
     close(merged.sign.mean, full_report.sign.mean, "sign");
 
     // Guards: wrong resume shapes fail loudly.
-    assert!(run_batched_opts(
-        &model,
-        &cfg,
-        BatchedRunOpts {
-            resume: Some((620, leg2.chains.clone())),
-            ..base_opts()
-        },
-    )
-    .is_err());
+    assert!(
+        run_batched_opts(
+            &model,
+            &cfg,
+            BatchedRunOpts {
+                resume: Some((620, leg2.chains.clone())),
+                ..base_opts()
+            },
+        )
+        .is_err()
+    );
     let mut fewer = cfg.clone();
     fewer.chains = 4;
-    assert!(run_batched_opts(
-        &model,
-        &fewer,
-        BatchedRunOpts {
-            resume: Some((300, leg1.chains.clone())),
-            ..base_opts()
-        },
-    )
-    .is_err());
+    assert!(
+        run_batched_opts(
+            &model,
+            &fewer,
+            BatchedRunOpts {
+                resume: Some((300, leg1.chains.clone())),
+                ..base_opts()
+            },
+        )
+        .is_err()
+    );
 }
 
 /// Extending max_steps on a completed run continues bit-identically: a fresh

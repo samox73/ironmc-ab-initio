@@ -10,13 +10,13 @@ use std::sync::Arc;
 use cubecl::prelude::*;
 use num_complex::Complex64;
 use rmc_core::{Merge, Result, RmcError};
-use rmc_diagmc::measure::{summarize, DiagMeasurement};
+use rmc_diagmc::measure::{DiagMeasurement, summarize};
 use rmc_diagmc::{DiagConfig, Model};
 use rmc_frohlich::update_stats::UpdateStatEntry;
 
-use crate::flat::batched::{build_chain, BatchedRunOutput, DEFAULT_MAX_ORDER_GPU};
 use crate::flat::FlatDiagram;
-use crate::gpu::kernel::{mc_kernel, RY2EV};
+use crate::flat::batched::{BatchedRunOutput, DEFAULT_MAX_ORDER_GPU, build_chain};
+use crate::gpu::kernel::{RY2EV, mc_kernel};
 use crate::gpu::vertex_bench::DeviceTables;
 use crate::model_abinitio::AbInitioModel;
 

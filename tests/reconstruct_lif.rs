@@ -4,7 +4,7 @@
 
 use nalgebra::Vector3;
 use rmc_ab_initio::epw::{Crystal, EpmatWp, EpwData, Wigner};
-use rmc_ab_initio::reconstruct::{interpolate_d, interpolate_h, GammaModel};
+use rmc_ab_initio::reconstruct::{GammaModel, interpolate_d, interpolate_h};
 use std::path::PathBuf;
 
 fn lif(rel: &str) -> PathBuf {
