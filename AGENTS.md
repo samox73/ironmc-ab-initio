@@ -18,6 +18,8 @@ This repository is the ab-initio LiF polaron engine (`rmc-ab-initio`) plus its r
 
 Changes to `rmc-core`/`rmc-diagmc`/`rmc-frohlich` belong in the `../ironmc` repository. Commit them there, keeping ab-initio specifics (LiF, datasets, cluster workflow) out of that repo's code and docs, since it is public. A binary built against a dirty framework checkout records `-dirty` for it.
 
+Before planning or implementing any new feature or change, decide explicitly whether it belongs in `../ironmc` instead of here, and say which in the plan. It belongs in the framework if it works on framework types and nothing ab-initio, for example statistics and error analysis (`rmc-stats`), measurement and estimator logic (`rmc-diagmc`), the MC driver and its hooks (`rmc-core`), or generic IO (`rmc-io`). It stays here if it needs the ab-initio model, vertex tables, EPW data, the flat or GPU engines, the rank-dump/checkpoint formats, configs, or the cluster workflow. When a feature spans both, put the generic part in the framework and the wiring here. A framework feature should come with a test on a framework model (e.g. Fröhlich), so it is checked where it lives.
+
 ## Build & Test
 
 - Never run the full test suite yourself. When full-suite verification is needed, give the user the exact `rtk cargo test --release` command and wait for their results.
