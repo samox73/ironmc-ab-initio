@@ -71,8 +71,14 @@ impl std::str::FromStr for TablePrecision {
 pub enum FillDevice {
     #[default]
     Cpu,
-    Gpu,
+    /// `chunk_points`: grid points per kernel launch (see [`DEFAULT_GPU_CHUNK`]).
+    Gpu { chunk_points: usize },
 }
+
+/// Grid points processed per GPU kernel launch. The device-resident B intermediate is
+/// `chunk · nmodes · rank` complex f64 (≈ 1.3 GB at chunk=16384, rank=800), well
+/// within an A100's per-allocation cap. The CLI lowers it via `$RMC_GPU_CHUNK`.
+pub const DEFAULT_GPU_CHUNK: usize = 16384;
 
 impl std::str::FromStr for FillDevice {
     type Err = &'static str;
@@ -80,7 +86,9 @@ impl std::str::FromStr for FillDevice {
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
             "cpu" => Ok(Self::Cpu),
-            "gpu" => Ok(Self::Gpu),
+            "gpu" => Ok(Self::Gpu {
+                chunk_points: DEFAULT_GPU_CHUNK,
+            }),
             _ => Err("device must be cpu or gpu"),
         }
     }
@@ -386,15 +394,10 @@ fn gpu_fill_dispatch(
     hi: usize,
     phonon_evec: &[Cf],
     component_bands: &[(usize, usize)],
+    chunk_points: usize,
     wtab: &mut [Complex<f32>],
     vtab: &mut [Complex<f32>],
 ) -> Result<()> {
-    // Points per launch; lower it via $RMC_GPU_CHUNK if the device OOMs (the B
-    // intermediate is chunk·nmodes·rank complex f64).
-    let chunk = std::env::var("RMC_GPU_CHUNK")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(crate::gpu::table_fill::DEFAULT_GPU_CHUNK);
     crate::gpu::table_fill::fill_fourier_gpu_f32(
         wigner,
         svd,
@@ -405,7 +408,7 @@ fn gpu_fill_dispatch(
         component_bands,
         wtab,
         vtab,
-        chunk,
+        chunk_points,
     );
     Ok(())
 }
@@ -420,6 +423,7 @@ fn gpu_fill_dispatch(
     _hi: usize,
     _phonon_evec: &[Cf],
     _component_bands: &[(usize, usize)],
+    _chunk_points: usize,
     _wtab: &mut [Complex<f32>],
     _vtab: &mut [Complex<f32>],
 ) -> Result<()> {
@@ -521,7 +525,7 @@ impl VertexTable {
         if grid_n == 0 {
             return Err("grid_n must be positive".into());
         }
-        if device == FillDevice::Gpu && precision != TablePrecision::F32 {
+        if matches!(device, FillDevice::Gpu { .. }) && precision != TablePrecision::F32 {
             return Err("GPU fill produces f32 tables only; use --precision f32".into());
         }
         if !phfreq_cutoff_ev.is_finite() || phfreq_cutoff_ev < 0.0 {
@@ -671,9 +675,20 @@ impl VertexTable {
                 ),
                 _ => unreachable!("table arrays use one precision"),
             },
-            FillDevice::Gpu => match (&mut wtab, &mut vtab) {
+            FillDevice::Gpu { chunk_points } => match (&mut wtab, &mut vtab) {
                 (Tab::F32(w), Tab::F32(v)) => {
-                    gpu_fill_dispatch(wigner, svd, grid_n, lo, hi, &phonon_evec, &g_to_nm, w, v)?;
+                    gpu_fill_dispatch(
+                        wigner,
+                        svd,
+                        grid_n,
+                        lo,
+                        hi,
+                        &phonon_evec,
+                        &g_to_nm,
+                        chunk_points,
+                        w,
+                        v,
+                    )?;
                 }
                 _ => unreachable!("GPU fill is guarded to f32 above"),
             },
@@ -1483,7 +1498,6 @@ mod tests {
         let nk = grid_n.pow(3);
         // Force many small chunks (64 points / 7 per launch → 10 launches) so the
         // chunk-boundary offsets are exercised, not just the single-launch path.
-        std::env::set_var("RMC_GPU_CHUNK", "7");
         let build = |device| {
             VertexTable::build_range(
                 &epw,
@@ -1502,8 +1516,7 @@ mod tests {
             .unwrap()
         };
         let cpu = build(FillDevice::Cpu);
-        let gpu = build(FillDevice::Gpu);
-        std::env::remove_var("RMC_GPU_CHUNK");
+        let gpu = build(FillDevice::Gpu { chunk_points: 7 });
 
         let f32_slice = |t: &Tab| -> Vec<Complex<f32>> {
             match t {

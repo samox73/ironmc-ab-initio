@@ -164,9 +164,19 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
     };
     // Base data is always CPU; --device gpu moves the Fourier fill to the GPU.
     let device: FillDevice = take(&mut options, "--device", Some(FillDevice::Cpu))?;
+    // $RMC_GPU_CHUNK: points per GPU launch; lower it if the device OOMs (the B
+    // intermediate is chunk·nmodes·rank complex f64).
+    let device = match (device, std::env::var("RMC_GPU_CHUNK")) {
+        (FillDevice::Gpu { .. }, Ok(value)) => FillDevice::Gpu {
+            chunk_points: value
+                .parse()
+                .map_err(|error| format!("invalid RMC_GPU_CHUNK '{value}': {error}"))?,
+        },
+        (device, _) => device,
+    };
     // Fail GPU misconfigurations here, in milliseconds — build_range checks them
     // too, but only after the dataset load and SVD have burned walltime.
-    if device == FillDevice::Gpu {
+    if matches!(device, FillDevice::Gpu { .. }) {
         if precision != TablePrecision::F32 {
             return Err("GPU fill produces f32 tables only; use --precision f32".into());
         }

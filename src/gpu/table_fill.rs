@@ -31,10 +31,7 @@ use crate::epw::Wigner;
 use crate::reconstruct::phase;
 use crate::vertex_table::VertexTable;
 
-/// Grid points processed per kernel launch. The device-resident B intermediate is
-/// `chunk · nmodes · rank` complex f64 (≈ 1.3 GB at chunk=16384, rank=800), well
-/// within an A100's per-allocation cap. Override via `fill_fourier_gpu`'s arg.
-pub const DEFAULT_GPU_CHUNK: usize = 16384;
+pub use crate::vertex_table::DEFAULT_GPU_CHUNK;
 
 /// `wtab[p][g] = Σ_re PE[p][re] · U_w[re][g]` — one thread per (point, component).
 #[cube(launch)]
