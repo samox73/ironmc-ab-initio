@@ -371,7 +371,7 @@ fn fill_fourier_tables<T: StoredComplex>(
                 }
             }
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % progress_step == 0 || done == npoints {
+            if done.is_multiple_of(progress_step) || done == npoints {
                 log::info!(
                     "vertex Fourier data: {done}/{npoints} points ({:.0}%)",
                     done * 100 / npoints
@@ -604,7 +604,7 @@ impl VertexTable {
                         long[nu] = branches[nu];
                     }
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if done % progress_step == 0 || done == npoints {
+                    if done.is_multiple_of(progress_step) || done == npoints {
                         log::info!(
                             "vertex base data: {done}/{npoints} points ({:.0}%)",
                             done * 100 / npoints

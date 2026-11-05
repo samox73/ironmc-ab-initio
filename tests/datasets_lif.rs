@@ -26,12 +26,12 @@ fn epwdata_header_dims_ef_polar() {
         (4, 617, 6, 833, 725)
     );
     // Fermi energy (Ry)
-    close(e.ef, 5.257_179_972_899_102_3e-2);
+    close(e.ef, 5.257_179_972_899_102e-2);
 
     // Born charges: Li +1.05, F -1.05 (diagonal, isotropic)
     assert_eq!(e.zstar.len(), 2);
-    close(e.zstar[0][0][0], 1.054_549_906_134_500_1);
-    close(e.zstar[1][0][0], -1.054_549_906_134_500_1);
+    close(e.zstar[0][0][0], 1.054_549_906_134_5);
+    close(e.zstar[1][0][0], -1.054_549_906_134_5);
     // ε∞ = 2.04
     close(e.epsi[0][0], 2.043_717_745_405);
 
@@ -46,11 +46,11 @@ fn crystal_geometry_masses_positions() {
 
     assert_eq!((c.nat, c.nmodes), (2, 6));
     close(c.omega, 112.990_080_000_041_32); // bohr³
-    close(c.alat, 7.674_205_698_939_999_8); // bohr
+    close(c.alat, 7.674_205_698_94); // bohr
 
     // masses (Ry a.u.): Li then F
-    close(c.mass(0), 6326.334_491_417_183_9);
-    close(c.mass(1), 17315.617_730_578_255);
+    close(c.mass(0), 6_326.334_491_417_184);
+    close(c.mass(1), 17_315.617_730_578_255);
 
     // positions: Li at origin, F at (-1/2, 1/2, 1/2) alat
     close(c.tau[0][0], 0.0);

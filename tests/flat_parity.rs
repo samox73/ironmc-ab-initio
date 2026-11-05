@@ -250,5 +250,5 @@ fn accepted_updates_keep_cache_consistent() {
 
     // Guard parity sanity: a τ proposal landing within DELTA_TAU_LIMIT of a
     // neighbor must be impossible, exactly like the slotmap guards.
-    assert!(DELTA_TAU_LIMIT > 0.0);
+    const _: () = assert!(DELTA_TAU_LIMIT > 0.0);
 }

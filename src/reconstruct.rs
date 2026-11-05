@@ -292,7 +292,7 @@ mod tests {
         let (evals, evecs) = hermitian_eig(&a, 3);
         assert_eq!(evals.len(), 3);
         // reconstruct A = Σ λ_k v_k v_k† (basis-independent, survives degeneracy)
-        let mut r = vec![C0; 9];
+        let mut r = [C0; 9];
         for k in 0..3 {
             for i in 0..3 {
                 for j in 0..3 {

@@ -245,7 +245,7 @@ impl EpmatWp {
             .into());
         }
         let mut data = Vec::with_capacity(n);
-        for chunk in bytes.chunks_exact(16) {
+        for chunk in bytes.as_chunks::<16>().0 {
             let re = f64::from_le_bytes(chunk[..8].try_into().unwrap());
             let im = f64::from_le_bytes(chunk[8..].try_into().unwrap());
             data.push(Complex64::new(re, im));

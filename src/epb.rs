@@ -51,7 +51,7 @@ impl Epb {
         // Recover nks from the record length (everything else is known).
         let fixed = 4 + 24 * nqc + 16 * nmodes * nmodes * nqc + 8 * 27; // nqc,xqc,dynq,zstar,epsi
         let per_k = 8 * nbnd + 16 * nbndep * nbndep * nmodes * nqc; // et + epmatq
-        if (marker - fixed) % per_k != 0 {
+        if !(marker - fixed).is_multiple_of(per_k) {
             return Err(format!("epb: length {marker} inconsistent with dims (nbnd={nbnd}, nbndep={nbndep}, nmodes={nmodes}, nqc={nqc})").into());
         }
         let nks = (marker - fixed) / per_k;
@@ -127,7 +127,7 @@ impl Epb {
         (0..self.nmodes)
             .map(|imode| {
                 // epmatq(0,0,ik,imode,iq), col-major, first index fastest.
-                let idx = 0 + ne * (0 + ne * (ik + self.nks * (imode + self.nmodes * iq)));
+                let idx = ne * (ne * (ik + self.nks * (imode + self.nmodes * iq)));
                 let b = self.epmatq_off + 16 * idx;
                 Complex64::new(f64_at(&self.raw, b), f64_at(&self.raw, b + 8))
             })

@@ -32,8 +32,8 @@ fn main() {
     let e = EpwData::read(lif("epwdata.fmt")).unwrap();
     let c = Crystal::read(lif("crystal.fmt")).unwrap();
     let w = Wigner::read(lif("wigner.fmt")).unwrap();
-    let wp = EpmatWp::read(&lif("out/LiF.epmatwp"), e.nbnd, e.nrr_k, e.nmodes, e.nrr_g).unwrap();
-    let epb = Epb::read(&lif("out/LiF.epb1"), 20, 15, 6).unwrap();
+    let wp = EpmatWp::read(lif("out/LiF.epmatwp"), e.nbnd, e.nrr_k, e.nmodes, e.nrr_g).unwrap();
+    let epb = Epb::read(lif("out/LiF.epb1"), 20, 15, 6).unwrap();
 
     let ik = epb.argmin_k(5);
     let model = GammaModel::build(&e, &c, &w, &wp);

@@ -246,17 +246,15 @@ fn table_command(args: impl Iterator<Item = String>) -> BoxResult<()> {
 
     // Resume: a matching shard on disk means this leg's work is already done —
     // resubmitting the devel job is a plain no-op for finished shards.
-    if shard_out.exists() {
-        if let Ok(existing) = VertexTable::read_shard_meta(&shard_out) {
-            if existing == meta {
+    if shard_out.exists()
+        && let Ok(existing) = VertexTable::read_shard_meta(&shard_out)
+            && existing == meta {
                 println!(
                     "shard {shard}/{shards} already built: {}",
                     shard_out.display()
                 );
                 return Ok(());
             }
-        }
-    }
 
     let (epw, crystal, wigner, epmat) = load_vertex_inputs(&dataset)?;
     let started = Instant::now();

@@ -47,13 +47,13 @@ use cubecl::prelude::*;
 /// `flat::NONE` in the u32 state arrays.
 const NONE: u32 = 0xffff_ffff;
 /// 2^-53, the scale of `rand`'s 53-bit `f64` conversion.
-const U01_SCALE: f64 = 1.110_223_024_625_156_5e-16;
+const U01_SCALE: f64 = f64::EPSILON / 2.0;
 /// `f64::EPSILON`.
-const EPS: f64 = 2.220_446_049_250_313e-16;
+const EPS: f64 = f64::EPSILON;
 /// `rmc_diagmc::updates::DELTA_TAU_LIMIT` = 10 · f64::EPSILON.
-const DELTA_TAU_LIMIT: f64 = 2.220_446_049_250_313e-15;
-/// `reconstruct::RY_TO_EV` (asserted equal at launch).
-pub const RY2EV: f64 = 13.605_698_066;
+const DELTA_TAU_LIMIT: f64 = rmc_diagmc::updates::DELTA_TAU_LIMIT;
+/// `reconstruct::RY_TO_EV`.
+const RY2EV: f64 = crate::reconstruct::RY_TO_EV;
 /// Shared-memory layout: 4 partials per lane (≤ 32 lanes), then scratch
 /// slots for multi-value helper returns.
 const SM_PARTIALS: u32 = 128;

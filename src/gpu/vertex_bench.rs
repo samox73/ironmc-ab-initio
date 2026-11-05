@@ -32,8 +32,8 @@ use rand::{RngExt, SeedableRng};
 
 use crate::vertex_table::{Tab, VertexTable};
 
-/// `reconstruct::RY_TO_EV`, asserted equal at upload.
-const RY2EV: f64 = 13.605698066;
+/// `reconstruct::RY_TO_EV`.
+const RY2EV: f64 = crate::reconstruct::RY_TO_EV;
 /// Lanes per cooperative eval (one CUDA warp) and rows (evals) per cube.
 const COOP_LANES: u32 = 32;
 const COOP_ROWS: u32 = 4;
@@ -359,7 +359,6 @@ pub struct DeviceTables<R: Runtime> {
 
 impl<R: Runtime> DeviceTables<R> {
     pub fn upload(client: ComputeClient<R>, table: &VertexTable) -> Self {
-        assert_eq!(RY2EV, crate::reconstruct::RY_TO_EV);
         let nk = table.len();
         let rank = table.s.len();
         assert!(

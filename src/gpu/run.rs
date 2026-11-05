@@ -16,7 +16,7 @@ use rmc_frohlich::update_stats::UpdateStatEntry;
 
 use crate::flat::FlatDiagram;
 use crate::flat::batched::{BatchedRunOutput, DEFAULT_MAX_ORDER_GPU, build_chain};
-use crate::gpu::kernel::{RY2EV, mc_kernel};
+use crate::gpu::kernel::mc_kernel;
 use crate::gpu::vertex_bench::DeviceTables;
 use crate::model_abinitio::AbInitioModel;
 
@@ -186,7 +186,6 @@ pub fn launch_segment<R: Runtime>(
     lanes: u32,
     params: SegmentParams,
 ) -> SegmentOutput {
-    assert_eq!(RY2EV, crate::reconstruct::RY_TO_EV);
     assert!(params.n_cycles > 0);
     let client = &state.client;
     let chains = state.chains;

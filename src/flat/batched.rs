@@ -159,7 +159,7 @@ pub fn run_batched_opts(
     }
     // Whole cycles only: a short final cycle would skip step indices, breaking
     // checkpoint-extension determinism, and buys nothing.
-    if cfg.max_steps % cfg.steps_per_cycle != 0 {
+    if !cfg.max_steps.is_multiple_of(cfg.steps_per_cycle) {
         return Err(RmcError::InvalidArgument(format!(
             "max_steps ({}) must be a multiple of steps_per_cycle ({})",
             cfg.max_steps, cfg.steps_per_cycle
@@ -258,11 +258,10 @@ pub fn run_batched_opts(
     let compute_start = std::time::Instant::now();
     let mut cycles_done = cycle_start0;
     while cycles_done < leg_end {
-        if let Some(deadline) = deadline {
-            if std::time::Instant::now() >= deadline {
+        if let Some(deadline) = deadline
+            && std::time::Instant::now() >= deadline {
                 break;
             }
-        }
         let chunk_lo = cycles_done;
         let chunk_hi = leg_end.min(chunk_lo + CYCLES_PER_CHUNK);
         let chunk_stats: Vec<Vec<(u64, u64, u64)>> = chains

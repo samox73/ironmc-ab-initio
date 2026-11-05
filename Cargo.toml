@@ -36,3 +36,7 @@ gpu = ["dep:cubecl"]
 gpu-cpu = ["gpu", "cubecl/cpu"]
 gpu-hip = ["gpu", "cubecl/hip"]
 gpu-cuda = ["gpu", "cubecl/cuda"]
+
+[lints.clippy]
+needless_range_loop = "allow"
+type_complexity = "allow"
