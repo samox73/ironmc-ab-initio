@@ -14,7 +14,7 @@ use rand::{Rng, RngExt};
 use rmc_core::Result;
 use rmc_core::dispatch_update;
 use rmc_core::mc::{WeightedUpdate, WeightedUpdateSet};
-use rmc_core::random::{exponential_sample_bounded, uniform_index};
+use rmc_core::random::{exponential_sample_bounded, normal_from_uniforms, uniform_index_from_u01};
 use slotmap::Key;
 
 use rmc_frohlich::Diagram;
@@ -35,7 +35,7 @@ fn draw_new_q<R: Rng + ?Sized>(rng: &mut R) -> Vector3<f64> {
 }
 
 fn random_vertex<R: Rng + ?Sized>(d: &Diagram, rng: &mut R) -> VKey {
-    d.storage[uniform_index(rng, d.storage.len())]
+    d.storage[uniform_index_from_u01(rng.random(), d.storage.len())]
 }
 
 fn random_arc<R: Rng + ?Sized>(d: &Diagram, rng: &mut R) -> (VKey, VKey) {
@@ -248,7 +248,6 @@ impl ChangeQModulus {
     }
 
     pub fn attempt<R: Rng + ?Sized>(&mut self, d: &Diagram, rng: &mut R) -> f64 {
-        use rand_distr::{Distribution, Normal};
         if d.order == 0 {
             return 0.0;
         }
@@ -262,10 +261,10 @@ impl ChangeQModulus {
             .get_p_mean_range(left, right, q_vec)
             .dot(&(q_vec / q_norm));
         let sigma = physics::change_q_modulus_sigma(d.v(right).tau - d.v(left).tau);
-        let Ok(normal) = Normal::new(q0, sigma) else {
+        if !sigma.is_finite() || sigma < 0.0 {
             return 0.0;
-        };
-        self.q_prime = normal.sample(rng);
+        }
+        self.q_prime = normal_from_uniforms(rng.random(), rng.random(), q0, sigma);
         self.vertex1 = left;
         self.vertex2 = right;
         if self.q_prime < 0.0 || !self.q_prime.is_finite() {
